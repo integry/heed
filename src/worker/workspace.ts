@@ -235,6 +235,17 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         case "SET_STATUS":
           this.reportProgress(actor, mutation.input);
           break;
+        case "REOPEN_ITEM":
+          this.reopenItem(actor, mutation.input);
+          break;
+        case "REORDER_ITEMS":
+          this.#mutateItems(actor, (transaction) => {
+            for (const input of mutation.input) {
+              this.#editItem(transaction, this.#requireItem(input), input);
+            }
+            return mutation.input[0].item_id;
+          });
+          break;
         case "UPDATE_PROJECT":
           this.updateProject(mutation.project_id, mutation.input);
           break;
