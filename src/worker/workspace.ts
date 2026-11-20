@@ -2,7 +2,7 @@ import { buildPushPayload } from "@block65/webcrypto-web-push";
 import type { PushSubscription } from "@block65/webcrypto-web-push";
 import { DurableObject } from "cloudflare:workers";
 import { z, type ZodType } from "zod";
-import { bandsFor } from "../shared/derived-state";
+import { bandsFor, isGhost } from "../shared/derived-state";
 import { HistoryQuerySchema } from "../shared/human-api";
 import type {
   HistoryItem,
@@ -44,6 +44,12 @@ import {
   TimezoneSchema,
   UpdateProjectSchema,
 } from "../shared/workspace";
+import {
+  SocketRequestIdSchema,
+  SocketRequestSchema,
+} from "../shared/workspace-socket";
+import type { ChildCounts, WorkspaceMessage } from "../shared/workspace-socket";
+import { workspaceOperationError } from "./api-response";
 import type {
   Dependency,
   Event,
@@ -111,11 +117,15 @@ type WorkspaceEnv = Env & {
   VAPID_SERVER_PUBLIC_KEY?: string;
   VAPID_SERVER_PRIVATE_KEY?: string;
 };
+type ItemChange =
+  { before?: Item; after: Item } | { before: Item; after?: undefined };
 type Mutation = {
   actor: Actor;
   now: Date;
   timezone: string;
-  items: Item[];
+  changes: ItemChange[];
+  throttledHeartbeat?: Item;
+  removedDependencies?: Dependency[];
   ignored: Set<LockableField>;
   pruneEvents: boolean;
 };
@@ -126,6 +136,10 @@ function isReport(actor: Actor): boolean {
 
 function isTerminalStatus(status: Status): boolean {
   return status === "done" || status === "cancelled";
+}
+
+function isCanvasItem(item: Item, now: number): boolean {
+  return !isTerminalStatus(item.status) || isGhost(item, now);
 }
 
 function requireSteering(actor: Actor, action: string): void {
@@ -157,9 +171,133 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
   constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
+    ctx.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair("ping", "pong"),
+    );
     void ctx.blockConcurrencyWhile(async () => {
       migrateWorkspace(ctx.storage);
     });
+  }
+
+  fetch(request: Request): Response {
+    if (
+      request.method !== "GET" ||
+      request.headers.get("Upgrade")?.toLowerCase() !== "websocket"
+    ) {
+      return new Response("Expected a WebSocket upgrade", { status: 426 });
+    }
+    const [client, server] = Object.values(new WebSocketPair());
+    const snapshot = this.#snapshot();
+    this.ctx.acceptWebSocket(server);
+    this.#send(server, snapshot);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
+    let data: unknown;
+    if (typeof message === "string") {
+      try {
+        data = JSON.parse(message);
+      } catch {
+        // Invalid JSON is handled by the protocol validator below.
+      }
+    }
+    const request = SocketRequestSchema.safeParse(data);
+    if (!request.success) {
+      const id = SocketRequestIdSchema.safeParse(
+        data && typeof data === "object" && "requestId" in data
+          ? data.requestId
+          : undefined,
+      );
+      this.#send(socket, {
+        type: "ERROR",
+        requestId: id.success ? id.data : null,
+        error: {
+          code: "invalid_input",
+          message: request.error.issues[0].message,
+        },
+      });
+      return;
+    }
+    if (request.data.type === "GET_SNAPSHOT") {
+      this.#send(socket, this.#snapshot());
+      return;
+    }
+
+    const actor = { kind: "human" } as const;
+    const { requestId } = request.data;
+    try {
+      if (request.data.type === "UPDATE_ITEM")
+        this.updateItem(actor, request.data.input);
+      else this.reportProgress(actor, request.data.input);
+    } catch (cause) {
+      const { code, message } = workspaceOperationError(cause);
+      this.#send(socket, {
+        type: "ERROR",
+        requestId,
+        error: { code, message },
+      });
+      return;
+    }
+    this.#send(socket, { type: "ACK", requestId });
+  }
+
+  #send(socket: WebSocket, message: WorkspaceMessage): void {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    // The attachment survives eviction and keeps unicast replies from creating gaps in other tabs.
+    const seq = ((socket.deserializeAttachment() as number | null) ?? 0) + 1;
+    try {
+      socket.send(JSON.stringify({ ...message, seq }));
+    } catch {
+      socket.close(1011, "Workspace message delivery failed");
+      return;
+    }
+    socket.serializeAttachment(seq);
+  }
+
+  #broadcast(
+    message: WorkspaceMessage,
+    sockets = this.ctx.getWebSockets(),
+  ): void {
+    for (const socket of sockets) this.#send(socket, message);
+  }
+
+  #snapshot(): WorkspaceMessage {
+    const now = Date.now();
+    const counts = this.#childCounts();
+    const items = this.#sql
+      .exec<Item>(
+        `SELECT * FROM items WHERE status NOT IN ('done', 'cancelled')
+         OR (status = 'done' AND julianday(completed_at) >= julianday(?))
+         ORDER BY depth, id`,
+        new Date(now - DAY_MS).toISOString(),
+      )
+      .toArray()
+      .filter((item) => isCanvasItem(item, now))
+      .map((item) => ({
+        ...item,
+        progress: counts.get(item.id) ?? { done: 0, total: 0 },
+      }));
+    return {
+      type: "SNAPSHOT",
+      settings: this.getSettings(),
+      projects: this.listProjects(),
+      items,
+      dependencies: this.listDependencies(),
+    };
+  }
+
+  #childCounts(): Map<string, ChildCounts> {
+    return new Map(
+      this.#sql
+        .exec<ChildCounts & { parent_id: string }>(
+          `SELECT parent_id, SUM(status = 'done') AS done, COUNT(*) AS total
+           FROM items WHERE parent_id IS NOT NULL AND status <> 'cancelled'
+           GROUP BY parent_id`,
+        )
+        .toArray()
+        .map(({ parent_id, done, total }) => [parent_id, { done, total }]),
+    );
   }
 
   getSettings(): Settings {
@@ -263,11 +401,12 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
 
   setTimezone(timezone: string): void {
     const value = parseInput(TimezoneSchema, timezone);
-    this.#sql.exec(
+    const updated = this.#sql.exec(
       "UPDATE settings SET value = ? WHERE key = 'timezone' AND value <> ?",
       value,
       value,
     );
+    if (updated.rowsWritten > 0) this.#broadcastSettings();
   }
 
   getGuidance(): Guidance {
@@ -415,7 +554,18 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       value,
       updatedAt,
     );
+    this.#broadcastSettings();
     return { guidance: value, guidance_updated_at: updatedAt };
+  }
+
+  #broadcastSettings(): void {
+    const sockets = this.ctx.getWebSockets();
+    if (sockets.length > 0) {
+      this.#broadcast(
+        { type: "SETTINGS_UPDATE", settings: this.getSettings() },
+        sockets,
+      );
+    }
   }
 
   listProjects(): Project[] {
@@ -433,7 +583,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       sort = 0,
       hidden = 0,
     } = parseInput(CreateProjectSchema, input);
-    return this.#sql
+    const project = this.#sql
       .exec<Project>(
         `INSERT INTO projects (id, name, color, sort, hidden)
        VALUES (?, ?, ?, ?, ?) RETURNING *`,
@@ -444,6 +594,8 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         hidden,
       )
       .one();
+    this.#broadcast({ type: "PROJECT_UPSERT", project });
+    return project;
   }
 
   updateProject(id: string, input: Partial<Omit<Project, "id">>): Project {
@@ -470,7 +622,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     ) {
       return current;
     }
-    return this.#sql
+    const project = this.#sql
       .exec<Project>(
         "UPDATE projects SET name = ?, color = ?, sort = ?, hidden = ? WHERE id = ? RETURNING *",
         name,
@@ -480,6 +632,8 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         id,
       )
       .one();
+    this.#broadcast({ type: "PROJECT_UPSERT", project });
+    return project;
   }
 
   deleteProject(id: string): void {
@@ -499,6 +653,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       const deleted = this.#sql.exec("DELETE FROM projects WHERE id = ?", id);
       if (deleted.rowsWritten === 0) throw new Error("Project not found");
     });
+    this.#broadcast({ type: "PROJECT_REMOVE", project_id: id });
   }
 
   addItem(actor: Actor, input: AddItemInput): ItemOperationResult {
@@ -546,7 +701,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         status: item.status,
         note: item.note,
       });
-      mutation.items.push(item);
+      mutation.changes.push({ after: item });
       mutation.pruneEvents = true;
       return id;
     });
@@ -648,7 +803,15 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         );
       }
       const item = this.#requireItem(data);
-      mutation.items.push(item, ...this.#descendants(item.id));
+      const removed = [item, ...this.#descendants(item.id)];
+      mutation.changes.push(...removed.map((before) => ({ before })));
+      if (this.ctx.getWebSockets().length > 0) {
+        const ids = new Set(removed.map(({ id }) => id));
+        mutation.removedDependencies = this.listDependencies().filter(
+          ({ item_id, blocked_by_id }) =>
+            ids.has(item_id) || ids.has(blocked_by_id),
+        );
+      }
       this.#sql.exec("DELETE FROM items WHERE id = ?", item.id);
       mutation.pruneEvents = true;
       return item.id;
@@ -696,6 +859,12 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       mutation.pruneEvents = changed;
       return item_id;
     });
+    if (changed) {
+      this.#broadcast({
+        type: action === "add" ? "DEPENDENCY_ADD" : "DEPENDENCY_REMOVE",
+        dependency: { item_id, blocked_by_id },
+      });
+    }
     return { ...result, dependency: changed ? data : null };
   }
 
@@ -820,25 +989,87 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     operation: (mutation: Mutation) => string,
   ): ItemOperationResult {
     const actor = parseInput(ActorSchema, input);
-    return this.ctx.storage.transactionSync(() => {
+    const { mutation, result } = this.ctx.storage.transactionSync(() => {
       const { timezone, guidance_updated_at } = this.getSettings();
       const mutation: Mutation = {
         actor,
         now: new Date(),
         timezone,
-        items: [],
+        changes: [],
         ignored: new Set(),
         pruneEvents: false,
       };
       const item_id = operation(mutation);
       if (mutation.pruneEvents) this.#pruneEvents(mutation.now);
       return {
-        item_id,
-        items: mutation.items,
-        ignored_fields: [...mutation.ignored],
-        guidance_updated_at,
+        mutation,
+        result: {
+          item_id,
+          items: mutation.changes.map(({ before, after }) => after ?? before),
+          ignored_fields: [...mutation.ignored],
+          guidance_updated_at,
+        },
       };
     });
+    this.#broadcastItemChanges(mutation);
+    return result;
+  }
+
+  #broadcastItemChanges(mutation: Mutation): void {
+    const { changes, now, removedDependencies, throttledHeartbeat } = mutation;
+    if (changes.length === 0 && !throttledHeartbeat) return;
+    const sockets = this.ctx.getWebSockets();
+    if (sockets.length === 0) return;
+
+    const time = now.getTime();
+    const upserts = new Map<string, Item>();
+    const removed = new Set<string>();
+    const parents = new Set<string>();
+    for (const dependency of removedDependencies ?? []) {
+      this.#broadcast({ type: "DEPENDENCY_REMOVE", dependency }, sockets);
+    }
+    for (const { before, after } of changes) {
+      if (after && isCanvasItem(after, time)) {
+        upserts.set(after.id, after);
+      } else if (before && (!after || isCanvasItem(before, time))) {
+        removed.add(before.id);
+        this.#broadcast({ type: "ITEM_REMOVE", item_id: before.id }, sockets);
+      }
+
+      const oldParent =
+        before?.status === "cancelled" ? null : (before?.parent_id ?? null);
+      const newParent =
+        after?.status === "cancelled" ? null : (after?.parent_id ?? null);
+      if (
+        oldParent !== newParent ||
+        (before?.status === "done") !== (after?.status === "done")
+      ) {
+        if (oldParent) parents.add(oldParent);
+        if (newParent) parents.add(newParent);
+      }
+    }
+    if (throttledHeartbeat && isCanvasItem(throttledHeartbeat, time)) {
+      upserts.set(throttledHeartbeat.id, throttledHeartbeat);
+    }
+    for (const id of parents) {
+      if (upserts.has(id) || removed.has(id)) continue;
+      const parent = this.#findItem({ item_id: id });
+      if (parent && isCanvasItem(parent, time)) upserts.set(id, parent);
+    }
+    if (upserts.size === 0) return;
+    const counts = this.#childCounts();
+    for (const item of upserts.values()) {
+      this.#broadcast(
+        {
+          type: "ITEM_UPSERT",
+          item: {
+            ...item,
+            progress: counts.get(item.id) ?? { done: 0, total: 0 },
+          },
+        },
+        sockets,
+      );
+    }
   }
 
   #findItem({
@@ -1086,7 +1317,9 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
           item.id,
         )
         .one();
-      mutation.items.push(updated);
+      mutation.changes.push({ before: item, after: updated });
+    } else if (options.heartbeat) {
+      mutation.throttledHeartbeat = { ...item, last_heartbeat_at: now };
     }
     if (meaningful || options.notify) mutation.pruneEvents = true;
 

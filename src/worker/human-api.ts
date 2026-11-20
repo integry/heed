@@ -17,7 +17,7 @@ import {
   CreateTokenSchema,
   UpdateProjectSchema,
 } from "../shared/workspace";
-import { apiError } from "./api-response";
+import { apiError, workspaceOperationError } from "./api-response";
 import type { HumanActor } from "./session";
 import { getWorkspaceStub } from "./workspace";
 
@@ -34,38 +34,6 @@ async function withJson<T>(
     return apiError(400, "invalid_input", input.error.issues[0].message);
   }
   return Response.json(await operation(input.data), { status });
-}
-
-function operationError(error: unknown): Response {
-  if (error instanceof URIError) {
-    return apiError(400, "invalid_input", "Invalid path identifier");
-  }
-  const message = error instanceof Error ? error.message : "";
-  if (message === "Item not found" || message === "Project not found") {
-    return apiError(404, "not_found", message);
-  }
-  if (message.includes("UNIQUE constraint failed: projects.name")) {
-    return apiError(409, "conflict", "A project with that name already exists");
-  }
-  if (
-    message.startsWith("Inbox cannot ") ||
-    message === "Project still has items" ||
-    message.startsWith("Use reopenItem ") ||
-    message.startsWith("Only done or cancelled items ") ||
-    message.startsWith("Cannot add a dependency for cancelled item ") ||
-    message.includes("would create a cycle") ||
-    message.includes("would create an item cycle")
-  ) {
-    return apiError(409, "conflict", message);
-  }
-  if (
-    message === "Default project not found" ||
-    message.startsWith("Items cannot exceed depth ")
-  ) {
-    return apiError(400, "invalid_input", message);
-  }
-  console.error("Human API operation failed", error);
-  return apiError(500, "internal_error", "Workspace operation failed");
 }
 
 export async function handleHumanApi(
@@ -200,6 +168,7 @@ export async function handleHumanApi(
 
     return apiError(404, "not_found", "Not found");
   } catch (error) {
-    return operationError(error);
+    const { status, code, message } = workspaceOperationError(error);
+    return apiError(status, code, message);
   }
 }
