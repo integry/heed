@@ -6,6 +6,7 @@ import { itemStatus } from "./workspace-view";
 import { BoardLens } from "./BoardLens";
 import type { StreamMove } from "./stream-move";
 import { RadarLens } from "./RadarLens";
+import { TreemapLens } from "./TreemapLens";
 import type { RadarPlacement } from "./radar-geometry";
 
 export interface LensProps {
@@ -102,6 +103,7 @@ export const lensRegistry: readonly [Lens, ...Lens[]] = [
   { id: "radar", label: "Radar", component: RadarLens },
   { id: "board", label: "Board", component: BoardLens },
   { id: "list", label: "List", component: ListLens },
+  { id: "treemap", label: "Treemap", component: TreemapLens },
 ];
 
 const storageKey = "heed.lens";

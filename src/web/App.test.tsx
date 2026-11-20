@@ -1719,6 +1719,85 @@ it("searches and pages through history, then reopens an item with a reason", asy
   ).toBeTruthy();
 });
 
+it("selects Treemap tiles, zooms into parents and returns through their breadcrumbs", async () => {
+  const finished = {
+    ...child,
+    id: "finished",
+    title: "Shipped work",
+    status: "done",
+    completed_at: "2024-04-03T11:00:00Z",
+  } as const;
+  const parent = { ...goal, progress: { done: 1, total: 3 } };
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: [parent, child, tomorrow, finished],
+  });
+  fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
+    target: { value: "treemap" },
+  });
+
+  const lens = within(screen.getByRole("region", { name: "Treemap" }));
+  const overview = lens.getByRole("button", { name: goal.title });
+  expect(overview.getAttribute("aria-description")).toContain(
+    "1 of 3 complete",
+  );
+  expect(
+    overview.parentElement
+      ?.querySelector(".treemap-rollup")
+      ?.getAttribute("data-ring"),
+  ).toBe("handoff");
+  expect(
+    lens
+      .getByRole("button", { name: child.title })
+      .parentElement?.getAttribute("data-ring"),
+  ).toBe("handoff");
+
+  fireEvent.click(overview);
+  expect(overview.getAttribute("aria-pressed")).toBe("true");
+  expect(
+    within(screen.getByRole("region", { name: "Today" }))
+      .getByRole("button", { name: goal.title })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  expect(lens.getByRole("button", { name: project.name })).toBeTruthy();
+  fireEvent.doubleClick(overview);
+
+  const breadcrumb = within(
+    lens.getByRole("navigation", { name: "Treemap breadcrumb" }),
+  );
+  expect(breadcrumb.getByText(goal.title).getAttribute("aria-current")).toBe(
+    "location",
+  );
+  expect(lens.queryByRole("button", { name: goal.title })).toBeNull();
+  expect(breadcrumb.getByRole("button", { name: project.name })).toBeTruthy();
+  fireEvent.click(lens.getByRole("button", { name: child.title }));
+  expect(
+    lens
+      .getByRole("button", { name: child.title })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+
+  const ghost = lens.getByRole("button", { name: finished.title });
+  expect(ghost.parentElement?.getAttribute("data-ghost")).toBe("true");
+  fireEvent.click(
+    lens.getByRole("checkbox", { name: "Show completed ghosts" }),
+  );
+  expect(lens.queryByRole("button", { name: finished.title })).toBeNull();
+  fireEvent.click(breadcrumb.getByRole("button", { name: "All projects" }));
+  expect(lens.getByRole("button", { name: project.name })).toBeTruthy();
+  expect(
+    lens
+      .getByRole("button", { name: goal.title })
+      .getAttribute("aria-description"),
+  ).toContain("1 of 3 complete");
+  const fill = lens
+    .getByRole("button", { name: goal.title })
+    .parentElement?.querySelector<HTMLElement>(
+      ":scope > .treemap-progress > span",
+    );
+  expect(Number.parseFloat(fill?.style.width ?? "")).toBeCloseTo(100 / 3);
+});
+
 it("places top-level Board cards by project and Radar band with Stream ordering and markers", async () => {
   localStorage.setItem("heed.lens", "board");
   const product = { ...project, id: "product", name: "Product", sort: 1 };

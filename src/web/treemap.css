@@ -1,0 +1,219 @@
+.treemap-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 9px;
+  margin-bottom: 10px;
+  min-height: 32px;
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.treemap-breadcrumb > * + *::before {
+  content: "›";
+  color: var(--muted);
+  margin-right: 8px;
+}
+
+.treemap-breadcrumb [aria-current] {
+  font-weight: 650;
+}
+
+.treemap-chart {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: clamp(380px, 68dvh, 660px);
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid #273e38;
+  border-radius: 14px;
+  background: #111f20;
+  color: #f0f6f1;
+}
+
+.treemap-tile,
+.treemap-tile-button,
+.treemap-zoom,
+.treemap-rollup,
+.treemap-progress {
+  position: absolute;
+}
+
+.treemap-tile {
+  --tile-color: var(--tile-project, #72a395);
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.treemap-tile[data-ring] {
+  --tile-color: var(--ring-color);
+}
+
+.treemap-tile::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--tile-color) 55%, #172b29);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--tile-color) 18%, #172b29);
+  pointer-events: none;
+}
+
+.treemap-tile-button {
+  inset: 0 0 auto;
+  display: flex;
+  justify-content: flex-start;
+  align-items: flex-start;
+  width: 100%;
+  height: var(--tile-label-height);
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+.treemap-tile[data-parent="true"]::before {
+  background: color-mix(in srgb, var(--tile-color) 22%, #142522);
+}
+
+.treemap-tile[data-kind="project"]::before {
+  border-width: 2px;
+}
+
+.treemap-tile[data-ring]::before {
+  border-color: var(--ring-color);
+  border-width: 2px;
+}
+
+.treemap-tile:is([data-ring="stale"], [data-ring="blocked"])::before {
+  border-style: dashed;
+}
+
+.treemap-tile[data-ghost="true"]::before,
+.treemap-tile[data-ghost="true"] > .treemap-tile-button {
+  opacity: 0.48;
+}
+
+.treemap-tile:has(
+    > .treemap-tile-button:is(:hover, [aria-pressed="true"])
+  )::before {
+  background: color-mix(in srgb, var(--tile-color) 27%, #172b29);
+}
+
+.treemap-tile-button:focus-visible,
+.treemap-tile:has(> .treemap-tile-button[aria-pressed="true"])::before {
+  outline: 2px solid #f1fff4;
+  outline-offset: -3px;
+  opacity: 1;
+}
+
+.treemap-tile[data-ring="live"]::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 1px solid var(--ring-color);
+  border-radius: 2px;
+  pointer-events: none;
+  animation: treemap-pulse 2.6s ease-out infinite;
+}
+
+@keyframes treemap-pulse {
+  0% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+    inset: 6px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .treemap-tile[data-ring="live"]::after {
+    animation: none;
+  }
+}
+
+.treemap-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--tile-lines);
+  width: calc(100% - 14px);
+  max-height: min(calc(var(--tile-label-height) - 6px), 100%);
+  min-width: 0;
+  margin: 4px 7px 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 0.82rem;
+  font-weight: 640;
+  line-height: 16px;
+}
+
+.treemap-title[data-zoom="true"] {
+  width: calc(100% - 36px);
+}
+
+.treemap-tile[data-kind="project"] > .treemap-tile-button > .treemap-title {
+  font-size: 0.88rem;
+  font-weight: 720;
+}
+
+.treemap-zoom {
+  top: 3px;
+  right: 3px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-content: center;
+  padding: 0;
+  border: 1px solid #ffffff36;
+  border-radius: 5px;
+  background: #152a28;
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  touch-action: manipulation;
+}
+
+.treemap-zoom:hover {
+  background: #34534c;
+}
+
+.treemap-rollup {
+  inset: 3px;
+  border: 1px dotted var(--ring-color);
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.treemap-progress {
+  inset: auto 3px 1px;
+  height: 2px;
+  overflow: hidden;
+  background: #a9ddd240;
+  pointer-events: none;
+}
+
+.treemap-progress > span {
+  display: block;
+  height: 100%;
+  background: #aff6da;
+}
+
+.lens-pane[data-lens="treemap"] .inspector {
+  position: static;
+  width: 100%;
+  max-width: 600px;
+  margin-top: 12px;
+}
+
+@media (max-width: 767px) {
+  .treemap-chart {
+    height: clamp(360px, 57dvh, 540px);
+  }
+}
