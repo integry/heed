@@ -5,6 +5,9 @@ import {
   useSyncExternalStore,
   type CSSProperties,
 } from "react";
+import type { CommandCapabilities } from "../shared/command";
+import { CommandBar, Microphone, useCommandBar } from "./CommandBar";
+import { Panel } from "./workspace-controls";
 import type { StreamRow } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
 import type { Dependency } from "../shared/workspace";
@@ -33,7 +36,12 @@ import { selectWorkspace } from "./workspace-view";
 type Session =
   | { status: "loading" | "error" }
   | { status: "signed-out"; devLoginEnabled: boolean }
-  | { status: "signed-in"; email: string; workspaceId: string };
+  | {
+      status: "signed-in";
+      email: string;
+      workspaceId: string;
+      capabilities: CommandCapabilities;
+    };
 
 function Wordmark() {
   return (
@@ -137,10 +145,12 @@ function ErrorBanner({
 
 function Workspace({
   email,
+  capabilities,
   registry,
   onSessionExpired,
 }: {
   email: string;
+  capabilities: CommandCapabilities;
   registry: readonly [Lens, ...Lens[]];
   onSessionExpired: () => void;
 }) {
@@ -169,10 +179,15 @@ function Workspace({
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [hiddenOnly, setHiddenOnly] = useState(false);
   const [panel, setPanel] = useState<{
-    kind: "guidance" | "settings" | "goal" | "child";
+    kind: "guidance" | "settings" | "goal" | "child" | "command";
   } | null>(null);
   const clock = useMinuteClock();
   const desktop = useSyncExternalStore(subscribeDesktop, isDesktop);
+  const command = useCommandBar(
+    connection.save,
+    capabilities.transcription,
+    capabilities.command && (desktop || panel?.kind === "command"),
+  );
   const sheet = useMobileSheet(desktop, (next) => {
     if (next !== "full") {
       setHistory(false);
@@ -601,6 +616,9 @@ function Workspace({
             </p>
           )}
           {inspector}
+          {desktop && capabilities.command && (
+            <CommandBar command={command} live={live} />
+          )}
         </section>
         <section
           className="stream-pane"
@@ -710,25 +728,18 @@ function Workspace({
           >
             + Goal
           </button>
-          <button
-            type="button"
-            className="primary command-button"
-            aria-label="Open quick add"
-            disabled={!live}
-            onClick={() => setPanel({ kind: "goal" })}
-          >
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinecap="round"
+          {capabilities.command && (
+            <button
+              type="button"
+              className="primary command-button"
+              aria-label="Open command bar"
+              aria-haspopup="dialog"
+              disabled={!live}
+              onClick={() => setPanel({ kind: "command" })}
             >
-              <rect x="9" y="3" width="6" height="12" rx="3" />
-              <path d="M5 11v1a7 7 0 0 0 14 0v-1m-7 8v3m-3 0h6" />
-            </svg>
-          </button>
+              <Microphone />
+            </button>
+          )}
           <button
             type="button"
             className="subtle"
@@ -749,6 +760,22 @@ function Workspace({
             </button>
           )}
         </nav>
+      )}
+      {!desktop && panel?.kind === "command" && capabilities.command && (
+        <Panel
+          title="Workspace command"
+          close={closePanel}
+          className="command-panel"
+        >
+          <CommandBar command={command} live={live} />
+          <button
+            type="button"
+            className="subtle command-guidance"
+            onClick={() => setPanel({ kind: "guidance" })}
+          >
+            Edit guidance
+          </button>
+        </Panel>
       )}
       {panel?.kind === "guidance" && state.settings && (
         <Guidance
@@ -809,11 +836,19 @@ export function App({
           return;
         }
         if (!response.ok) throw new Error("Session lookup failed");
-        const { email, workspaceId } = await response.json();
+        const { email, workspaceId, capabilities } = await response.json();
         if (typeof email !== "string" || typeof workspaceId !== "string")
           throw new Error("Invalid session");
         if (!controller.signal.aborted)
-          setSession({ status: "signed-in", email, workspaceId });
+          setSession({
+            status: "signed-in",
+            email,
+            workspaceId,
+            capabilities: {
+              command: capabilities?.command === true,
+              transcription: capabilities?.transcription === true,
+            },
+          });
       } catch {
         if (!controller.signal.aborted) setSession({ status: "error" });
       }
@@ -827,6 +862,7 @@ export function App({
       <Workspace
         key={session.workspaceId}
         email={session.email}
+        capabilities={session.capabilities}
         registry={registry}
         onSessionExpired={reauthenticate}
       />

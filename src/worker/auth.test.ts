@@ -172,6 +172,7 @@ it("exchanges the Google code with PKCE and issues a sliding session", async () 
   expect(await me.json()).toEqual({
     email: "member@example.test",
     workspaceId: "default",
+    capabilities: { command: false, transcription: false },
   });
   const refreshed = getCookie(me, SESSION_COOKIE);
   expect(refreshed).not.toBe(session);
@@ -293,6 +294,7 @@ it("only enables dev login on localhost with an explicitly configured email", as
   expect(await me.json()).toEqual({
     email: bindings.DEV_LOGIN_EMAIL,
     workspaceId: "default",
+    capabilities: { command: false, transcription: false },
   });
 
   const deployed = await request("/auth/dev-login", {

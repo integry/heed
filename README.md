@@ -29,3 +29,9 @@ The Worker allows approximately 60 agent requests per minute per token at each C
 With local development sign-in configured in `.dev.vars` and Wrangler running,
 run `npm run seed:radar` and open `http://localhost:8787/auth/dev-login`.
 Use `npm run seed:radar -- --dense` to populate 300 overview bubbles.
+
+## Enable voice and chat commands
+
+Set `WORKERS_AI_COMMAND_MODEL` to a Workers AI model that supports multi-turn tool calling, or set `ANTHROPIC_COMMAND_MODEL` and the `ANTHROPIC_API_KEY` secret. Anthropic takes precedence when both are configured. The command bar appears when a provider is configured. See [the local configuration example](.dev.vars.example) for available settings. Uncomment the `ai` binding in `wrangler.jsonc` to enable Workers AI commands or Whisper. Local Wrangler requires Cloudflare sign-in when that binding is enabled.
+
+Heed sends the command, standing guidance and a compact workspace view to the selected provider. Voice input uses browser speech recognition where available and falls back to Workers AI Whisper when the `AI` binding is present. Recordings are limited to 30 seconds. Each session can make eight requests per minute to each endpoint by default. The workspace daily caps default to 100 command calls and 100 transcriptions, resetting at midnight UTC.

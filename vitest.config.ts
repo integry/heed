@@ -14,6 +14,7 @@ export default defineConfig({
         plugins: [
           cloudflareTest({
             wrangler: { configPath: "./wrangler.jsonc" },
+            remoteBindings: false,
             miniflare: {
               bindings: {
                 // Test-only P-256 key pair for signing requests to mocked endpoints.

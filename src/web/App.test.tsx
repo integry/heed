@@ -2638,7 +2638,8 @@ it("switches the Board stream between desktop and mobile sheet stops at 768px", 
   fireEvent.click(dock.getByRole("button", { name: "Lens" }));
   expect(stream.queryByRole("heading", { name: "Tomorrow" })).toBeNull();
 
-  fireEvent.click(dock.getByRole("button", { name: "Open quick add" }));
+  expect(dock.queryByRole("button", { name: "Open command bar" })).toBeNull();
+  fireEvent.click(dock.getByRole("button", { name: "+ Goal" }));
   const quickAdd = screen.getByRole("dialog", { name: "Add a goal" });
   fireEvent.click(within(quickAdd).getByRole("button", { name: "Close" }));
 

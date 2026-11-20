@@ -27,6 +27,8 @@ export function workspaceOperationError(error: unknown) {
     };
   }
   if (
+    message.includes("Undo is unavailable.") ||
+    message === "This command is no longer available to undo." ||
     message.startsWith("Inbox cannot ") ||
     message === "Project still has items" ||
     message.startsWith("Use reopenItem ") ||

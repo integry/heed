@@ -48,6 +48,7 @@ export type CreatedToken = TokenMetadata & { token: string };
 export const SocketRequestSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("GET_SNAPSHOT") }),
   mutation("ADD_ITEM", AddItemSchema),
+  mutation("UNDO_COMMAND", z.strictObject({ id: z.uuid() })),
   mutation("DELETE_ITEM", ItemIdSchema),
   mutation("REOPEN_ITEM", ReopenItemSchema),
   mutation("FLAG_HANDOFF", FlagHandoffSchema.omit({ notify: true })),
