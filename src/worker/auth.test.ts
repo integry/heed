@@ -268,7 +268,7 @@ it("requires a session with same-origin writes and upgrades, and exempts the age
   expect(
     (await request(`${localOrigin}/api/items`, { method: "POST", headers }))
       .status,
-  ).toBe(404);
+  ).toBe(400);
   expect((await request("/api/report", { method: "POST" })).status).toBe(401);
   expect((await request("/mcp", { method: "POST" })).status).toBe(401);
 });

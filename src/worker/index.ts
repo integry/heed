@@ -3,26 +3,12 @@ import { requireAgent } from "./agent-auth";
 import type { AgentAuthEnv } from "./agent-auth";
 import { handleAuth } from "./auth";
 import type { AuthEnv } from "./auth";
+import { handleHumanApi } from "./human-api";
 import { requireSession } from "./session";
-import type { HumanActor } from "./session";
 import { handleTokenBootstrap } from "./token-admin";
 import type { TokenAdminEnv } from "./token-admin";
 
 export { Workspace } from "./workspace";
-
-function handleHumanRoute(
-  request: Request,
-  url: URL,
-  actor: HumanActor,
-): Response {
-  if (request.method === "GET" && url.pathname === "/api/me") {
-    return Response.json({
-      email: actor.email,
-      workspaceId: actor.workspaceId,
-    });
-  }
-  return new Response("Not found", { status: 404 });
-}
 
 export default {
   fetch(request: Request, env) {
@@ -79,7 +65,9 @@ export default {
 
     if (pathname === "/ws" || pathname.startsWith("/api/")) {
       return requireSession(request, url, env.SESSION_SECRET, (actor) =>
-        handleHumanRoute(request, url, actor),
+        pathname === "/ws"
+          ? new Response("Not found", { status: 404 })
+          : handleHumanApi(request, url, actor, env),
       );
     }
 

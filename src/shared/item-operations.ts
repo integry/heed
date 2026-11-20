@@ -86,10 +86,15 @@ const itemSelector = z
     "Provide exactly one of item_id or external_key",
   );
 
-export const ReportProgressSchema = itemSelector.safeExtend({
+const progressFields = {
   ...assignment,
   status: StatusSchema.exclude(["queued"]).optional(),
   ref_url: itemFields.ref_url.optional(),
+};
+
+export const ReportProgressSchema = itemSelector.safeExtend(progressFields);
+export const SetStatusBodySchema = z.strictObject(progressFields).required({
+  status: true,
 });
 
 export const ReopenItemSchema = itemSelector.safeExtend({
@@ -101,13 +106,15 @@ export const FlagHandoffSchema = ItemIdSchema.extend({
   notify: z.boolean().optional(),
 });
 
-export const SetDependencySchema = ItemIdSchema.extend({
+export const DependencyBodySchema = ItemIdSchema.extend({
   blocked_by_id: id,
-  action: z.enum(["add", "remove"]),
 }).refine(
   ({ item_id, blocked_by_id }) => item_id !== blocked_by_id,
   "An item cannot depend on itself",
 );
+export const SetDependencySchema = DependencyBodySchema.safeExtend({
+  action: z.enum(["add", "remove"]),
+});
 
 export type Actor = z.infer<typeof ActorSchema>;
 export type LockableField = z.infer<typeof LockableFieldSchema>;

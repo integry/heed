@@ -3,6 +3,12 @@ import type { PushSubscription } from "@block65/webcrypto-web-push";
 import { DurableObject } from "cloudflare:workers";
 import { z, type ZodType } from "zod";
 import { bandsFor } from "../shared/derived-state";
+import { HistoryQuerySchema } from "../shared/human-api";
+import type {
+  HistoryItem,
+  HistoryPage,
+  HistoryQuery,
+} from "../shared/human-api";
 import {
   ActorSchema,
   AddItemSchema,
@@ -28,15 +34,17 @@ import type {
   UpdateItemInput,
 } from "../shared/item-operations";
 import {
+  CreateProjectSchema,
   CreateTokenSchema,
   DEFAULT_WORKSPACE_ID,
   GuidanceTextSchema,
   INBOX_PROJECT_ID,
-  ProjectSchema,
   TimezoneSchema,
+  UpdateProjectSchema,
 } from "../shared/workspace";
 import type {
   Dependency,
+  Event,
   EventKind,
   Guidance,
   Item,
@@ -55,8 +63,6 @@ import {
 } from "./token-secrets";
 import { migrateWorkspace } from "./workspace-migrations";
 
-const projectUpdateSchema = ProjectSchema.omit({ id: true }).partial().strict();
-const projectCreateSchema = projectUpdateSchema.required({ name: true });
 const MAX_CANVAS_ITEMS = 50;
 const canvasQuerySchema = z
   .object({
@@ -277,6 +283,55 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     return { guidance, guidance_updated_at };
   }
 
+  getHistory(input: HistoryQuery): HistoryPage {
+    const { q, project, before, limit } = parseInput(HistoryQuerySchema, input);
+    const separator = before?.indexOf("|") ?? -1;
+    const at = separator < 0 ? before : before?.slice(0, separator);
+    const id = separator < 0 ? null : before!.slice(separator + 1);
+    const items = this.#sql
+      .exec<HistoryItem>(
+        `WITH history AS (
+           SELECT i.*, strftime('%Y-%m-%dT%H:%M:%fZ',
+             COALESCE(i.completed_at, i.updated_at)) AS history_at
+           FROM items i JOIN projects p ON p.id = i.project_id
+           WHERE i.status IN ('done', 'cancelled')
+             AND (?1 IS NULL OR p.id = ?1 OR p.name = ?1)
+             AND (?2 IS NULL OR instr(lower(i.title), lower(?2)) > 0
+               OR instr(lower(i.note), lower(?2)) > 0)
+         ), cursor AS (
+           SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?3) AS at
+         )
+         SELECT history.* FROM history CROSS JOIN cursor
+         WHERE ?3 IS NULL OR history_at < cursor.at
+           OR (history_at = cursor.at AND id > ?4)
+         ORDER BY history_at DESC, id
+         LIMIT ?5`,
+        project ?? null,
+        q ?? null,
+        at ?? null,
+        id,
+        limit + 1,
+      )
+      .toArray();
+    const last = items[limit - 1];
+    return {
+      items: items.slice(0, limit),
+      next_before:
+        items.length > limit ? `${last.history_at}|${last.id}` : null,
+    };
+  }
+
+  getItemEvents(input: ItemIdInput): Event[] {
+    const data = parseInput(ItemIdSchema, input);
+    this.#requireItem(data);
+    return this.#sql
+      .exec<Event>(
+        "SELECT * FROM events WHERE item_id = ? ORDER BY julianday(at) DESC, id DESC",
+        data.item_id,
+      )
+      .toArray();
+  }
+
   getCanvas(input: z.input<typeof canvasQuerySchema> = {}) {
     const { project, parent_id, query, include_done, limit } = parseInput(
       canvasQuerySchema,
@@ -384,7 +439,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       color = null,
       sort = 0,
       hidden = 0,
-    } = parseInput(projectCreateSchema, input);
+    } = parseInput(CreateProjectSchema, input);
     return this.#sql
       .exec<Project>(
         `INSERT INTO projects (id, name, color, sort, hidden)
@@ -399,7 +454,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
   }
 
   updateProject(id: string, input: Partial<Omit<Project, "id">>): Project {
-    const patch = parseInput(projectUpdateSchema, input);
+    const patch = parseInput(UpdateProjectSchema, input);
     const current = this.#sql
       .exec<Project>("SELECT * FROM projects WHERE id = ?", id)
       .toArray()[0];
