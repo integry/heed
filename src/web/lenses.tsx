@@ -108,7 +108,6 @@ export const lensRegistry: readonly [Lens, ...Lens[]] = [
   { id: "board", label: "Board", component: BoardLens },
   { id: "treemap", label: "Treemap", component: TreemapLens },
   { id: "list", label: "List", component: ListLens },
-  { id: "treemap", label: "Treemap", component: TreemapLens },
   { id: "dependencies", label: "Dependencies", component: DependenciesLens },
 ];
 

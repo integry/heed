@@ -271,6 +271,9 @@ function Workspace({
   function switchLens(id: string) {
     setLensId(id);
     rememberLens(id);
+    if (id === "dependencies" && !desktop && sheet.stop === "full") {
+      sheet.changeStop("peek");
+    }
   }
 
   function changeDependency(edge: Dependency, action: "add" | "remove") {
@@ -425,6 +428,9 @@ function Workspace({
         inspectedGoal &&
         (lens.id !== dependenciesLens.id || focusedGoal !== inspectedGoal)
           ? () => {
+              if (!desktop) {
+                setSelectedItem({ id: inspected.id, openDrawer: false });
+              }
               focusGoal(inspectedGoal);
               switchLens(dependenciesLens.id);
             }

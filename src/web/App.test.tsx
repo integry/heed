@@ -2410,6 +2410,90 @@ function mockMobileViewport() {
   );
 }
 
+it.each(["desktop", "mobile"])(
+  "lists each lens once in the %s selector",
+  async (layout) => {
+    if (layout === "mobile") mockMobileViewport();
+    await openWorkspace();
+    const selector = within(screen.getByRole("combobox", { name: "Lens" }));
+    expect(
+      selector.getAllByRole("option").map((option) => option.textContent),
+    ).toEqual(["Radar", "Board", "Treemap", "List"]);
+  },
+);
+
+it.each([
+  ["Half", "ArrowUp", "Half"],
+  ["Full", "End", "Peek"],
+])(
+  "reveals an interactive graph from the mobile inspector at %s",
+  async (start, key, end) => {
+    mockMobileViewport();
+    await openWorkspace();
+    const stream = within(
+      screen.getByRole("region", { name: "Horizon Stream" }),
+    );
+    const handle = stream.getByRole("button", { name: /size: Peek/ });
+    fireEvent.keyDown(handle, { key });
+    expect(
+      stream.getByRole("button", { name: new RegExp(`size: ${start}`) }),
+    ).toBe(handle);
+    const today = within(screen.getByRole("region", { name: "Today" }));
+    fireEvent.click(
+      today.getByRole("button", { name: `Expand ${goal.title}` }),
+    );
+    fireEvent.click(today.getByRole("button", { name: child.title }));
+    const drawer = within(screen.getByRole("dialog", { name: "Inspector" }));
+
+    fireEvent.click(
+      drawer.getByRole("button", { name: "Open dependency graph" }),
+    );
+
+    expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+    expect(
+      stream.getByRole("button", { name: new RegExp(`size: ${end}`) }),
+    ).toBe(handle);
+    const lens = screen.getByRole("region", { name: "Dependencies" });
+    expect(lens.hasAttribute("inert")).toBe(false);
+    const graph = within(
+      within(lens).getByRole("region", {
+        name: `Dependency graph for ${goal.title}`,
+      }),
+    );
+    expect(
+      graph.getByRole("button", {
+        name: /^Review retry policy/,
+        pressed: true,
+      }),
+    ).toBeTruthy();
+    fireEvent.click(graph.getByRole("button", { name: /^Run failover drill/ }));
+    expect(
+      within(
+        screen.getByRole("dialog", { name: "Inspector" }),
+      ).getByDisplayValue(tomorrow.title),
+    ).toBeTruthy();
+  },
+);
+
+it("reveals Dependencies when chosen from the mobile selector with the Full stream open", async () => {
+  mockMobileViewport();
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  const handle = screen.getByRole("button", { name: /size: Peek/ });
+  fireEvent.keyDown(handle, { key: "End" });
+
+  fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
+    target: { value: "dependencies" },
+  });
+
+  expect(screen.getByRole("button", { name: /size: Peek/ })).toBe(handle);
+  const graph = screen.getByRole("region", {
+    name: `Dependency graph for ${goal.title}`,
+  });
+  expect(graph.closest("[inert]")).toBeNull();
+});
+
 it("keeps the mobile Radar priority handle usable before and after inspecting", async () => {
   mockMobileViewport();
   await openWorkspace();
