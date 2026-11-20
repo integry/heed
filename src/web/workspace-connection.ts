@@ -17,6 +17,7 @@ export function createWorkspaceConnection() {
     {
       resolve: (ack: Ack) => void;
       reject: (error: Error) => void;
+      callerReportsError?: boolean;
     }
   >();
 
@@ -55,10 +56,13 @@ export function createWorkspaceConnection() {
     return send(mutation, crypto.randomUUID());
   }
 
-  function save(mutation: MutationInput): Promise<Ack> {
+  function save(
+    mutation: MutationInput,
+    options?: { callerReportsError: boolean },
+  ): Promise<Ack> {
     return new Promise((resolve, reject) => {
       const requestId = crypto.randomUUID();
-      replies.set(requestId, { resolve, reject });
+      replies.set(requestId, { resolve, reject, ...options });
       if (!send(mutation, requestId)) {
         replies.delete(requestId);
         reject(
@@ -92,6 +96,9 @@ export function createWorkspaceConnection() {
       if (controller.signal.aborted) return;
       clearTimeout(watchdog);
       activeSocket = undefined;
+      const needsErrorBanner = [...state.pending.keys()].some(
+        (id) => !replies.get(id)?.callerReportsError,
+      );
       rejectReplies(
         "Connection lost while saving. Check the workspace after reconnecting.",
       );
@@ -100,7 +107,7 @@ export function createWorkspaceConnection() {
         seq: 0,
         connection: "reconnecting",
         pending: new Map(),
-        error: state.pending.size
+        error: needsErrorBanner
           ? "Connection lost while changes were saving. Check the workspace after reconnecting."
           : state.error,
       });
@@ -138,7 +145,16 @@ export function createWorkspaceConnection() {
         }
 
         const previous = state;
-        publish(receiveMessage(state, message));
+        const next = receiveMessage(state, message);
+        const callerReportsError =
+          message.type === "ERROR" &&
+          message.requestId &&
+          replies.get(message.requestId)?.callerReportsError;
+        publish(
+          callerReportsError && next !== previous
+            ? { ...next, error: previous.error }
+            : next,
+        );
         if (state === previous) return;
         if (
           (message.type === "ACK" || message.type === "ERROR") &&

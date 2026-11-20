@@ -3,6 +3,7 @@ import type { StreamRow } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
 import type { Dependency, Project } from "../shared/workspace";
 import { itemStatus } from "./workspace-view";
+import { DependenciesLens } from "./DependenciesLens";
 import { BoardLens } from "./BoardLens";
 import type { StreamMove } from "./stream-move";
 import { RadarLens } from "./RadarLens";
@@ -14,6 +15,9 @@ export interface LensProps {
   projects: readonly Project[];
   items: ReadonlyMap<string, CanvasItem>;
   dependencies: readonly Dependency[];
+  filtered: ReadonlyMap<string, CanvasItem>;
+  changeDependency: (edge: Dependency, action: "add" | "remove") => void;
+  savingDependency: boolean;
   selectedId: string | null;
   now: number;
   timezone: string;
@@ -105,6 +109,7 @@ export const lensRegistry: readonly [Lens, ...Lens[]] = [
   { id: "treemap", label: "Treemap", component: TreemapLens },
   { id: "list", label: "List", component: ListLens },
   { id: "treemap", label: "Treemap", component: TreemapLens },
+  { id: "dependencies", label: "Dependencies", component: DependenciesLens },
 ];
 
 const storageKey = "heed.lens";

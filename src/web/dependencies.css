@@ -1,0 +1,205 @@
+.dependency-toolbar,
+.dependency-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.dependency-toolbar h2 {
+  font-size: 1.12rem;
+  overflow-wrap: anywhere;
+}
+
+.dependency-picker {
+  display: grid;
+  gap: 12px;
+  max-width: 340px;
+}
+
+.dependency-help {
+  margin: 5px 0 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.dependency-viewport {
+  overflow: auto;
+  max-height: min(58dvh, 590px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: radial-gradient(var(--border) 1px, transparent 1px) 0 0 / 16px
+    16px var(--rail);
+}
+
+.dependency-chart {
+  position: relative;
+}
+
+.dependency-edges {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.dependency-edge {
+  --edge-color: var(--muted);
+  outline: none;
+}
+
+.dependency-edge[data-done="true"] {
+  --edge-color: color-mix(in srgb, var(--muted) 60%, var(--rail));
+}
+
+.dependency-edge:is(:hover, :focus-visible, [aria-pressed="true"]) {
+  --edge-color: var(--focus);
+}
+
+.dependency-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 16;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.dependency-edge-line,
+.dependency-preview {
+  fill: none;
+  stroke: var(--edge-color, var(--focus));
+  stroke-width: 1.75;
+}
+
+.dependency-edge:is(:hover, :focus-visible, [aria-pressed="true"])
+  .dependency-edge-line {
+  stroke-width: 3;
+}
+
+.dependency-preview {
+  stroke-dasharray: 5 4;
+}
+
+.dependency-node {
+  position: absolute;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 2px 5px #18291b12;
+}
+
+.dependency-node[data-external="true"] {
+  border-style: dashed;
+  background: var(--rail);
+}
+
+.dependency-node[data-done="true"] {
+  background: color-mix(in srgb, var(--surface) 40%, var(--rail));
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.dependency-node[data-blocker="true"] {
+  border-color: var(--attention);
+  background: var(--attention-soft);
+}
+
+.dependency-node:is([data-target="true"], [data-connecting="true"]),
+.dependency-node:has(.dependency-card[aria-pressed="true"]) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.dependency-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+  padding: 8px 31px 8px 10px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  text-align: left;
+}
+
+.dependency-title {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: 0.89rem;
+  font-weight: 660;
+  line-height: 1.2;
+}
+
+.dependency-meta,
+.dependency-labels {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.73rem;
+}
+
+.dependency-agent {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dependency-live {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--live);
+}
+
+.dependency-labels strong {
+  color: var(--attention);
+}
+
+.dependency-handle {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  right: -10px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--accent);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.dependency-handle:is(:active, [aria-pressed="true"]) {
+  border-color: var(--focus);
+  background: var(--accent-soft);
+  cursor: grabbing;
+}
+
+.dependency-actions {
+  padding: 10px 0;
+  font-size: 0.86rem;
+}
+
+.lens-pane[data-lens="dependencies"] > .inspector {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  margin-top: 16px;
+}

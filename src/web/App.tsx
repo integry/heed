@@ -7,6 +7,8 @@ import {
 } from "react";
 import type { StreamRow } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
+import type { Dependency } from "../shared/workspace";
+import { isDescendant } from "./dependency-graph";
 import { Guidance } from "./Guidance";
 import { Inspector } from "./Inspector";
 import { QuickAdd } from "./QuickAdd";
@@ -24,6 +26,7 @@ import { HorizonStream, type LensSelection } from "./horizon-stream";
 import { isRadarRowVisible } from "./RadarLens";
 import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
+import { useAction } from "./workspace-controls";
 import { workspaceView, type MutationInput } from "./workspace-state";
 import { selectWorkspace } from "./workspace-view";
 
@@ -115,6 +118,23 @@ const connectionLabels = {
   syncing: "Synchronizing workspace…",
 };
 
+function ErrorBanner({
+  message,
+  dismiss,
+}: {
+  message: string;
+  dismiss: () => void;
+}) {
+  return (
+    <div className="error-banner">
+      <p role="alert">{message}</p>
+      <button type="button" className="subtle" onClick={dismiss}>
+        Dismiss
+      </button>
+    </div>
+  );
+}
+
 function Workspace({
   email,
   registry,
@@ -136,6 +156,11 @@ function Workspace({
   } | null>(null);
   const selectedId = selectedItem?.id ?? null;
   const [goalId, focusGoal] = useState<string | null>(null);
+  // Dependency saves can outlive the graph that submitted them.
+  const [dependencyEditGoal, setDependencyEditGoal] = useState<string | null>(
+    null,
+  );
+  const dependencyEdit = useAction();
   const [showGhosts, setShowGhosts] = useState(true);
   const [lensSelection, setLensSelection] = useState<LensSelection | null>(
     null,
@@ -163,13 +188,13 @@ function Workspace({
   }, [view, clock, attentionOnly]);
   const { projects, tree, filtered, liveCount, timezone, now } = derived;
   const focusedGoal = goalId && filtered.has(goalId) ? goalId : null;
-  const lens = resolveLens(
-    registry,
-    lensId === "dependencies" && !focusedGoal ? null : lensId,
-  );
+  const lens = resolveLens(registry, lensId);
   const LensComponent = lens.component;
   const canvasLens = lens.id === "radar" || lens.id === "treemap";
   const live = state.connection === "live";
+  const dependencyError = dependencyEditGoal ? dependencyEdit.error : "";
+  const showDependencyErrorInline =
+    lens.id === "dependencies" && focusedGoal === dependencyEditGoal;
   const selection = selectedId && filtered.has(selectedId) ? selectedId : null;
   const dependenciesLens = registry.find(({ id }) => id === "dependencies");
   const selected = selectedId ? state.items.get(selectedId) : undefined;
@@ -178,7 +203,11 @@ function Workspace({
     (hiddenOnly || view.projects.get(selected.project_id)?.hidden === 0)
       ? selected
       : undefined;
-  const dependencies = [...view.dependencies.values()];
+  const dependencies = useMemo(
+    () => [...view.dependencies.values()],
+    [view.dependencies],
+  );
+  const inspectedGoal = inspected ? dependencyGoal(inspected.id) : null;
   const hiddenRows = hiddenOnly
     ? [...view.items.values()]
         .filter((item) => item.parent_id === null && item.hidden === 1)
@@ -241,7 +270,29 @@ function Workspace({
 
   function switchLens(id: string) {
     setLensId(id);
-    if (id !== "dependencies") rememberLens(id);
+    rememberLens(id);
+  }
+
+  function changeDependency(edge: Dependency, action: "add" | "remove") {
+    if (!live || !focusedGoal) return;
+    void dependencyEdit.run(() => {
+      setDependencyEditGoal(focusedGoal);
+      return connection.save(
+        { type: "SET_DEPENDENCY", input: { ...edge, action } },
+        { callerReportsError: true },
+      );
+    });
+  }
+
+  function dependencyGoal(id: string) {
+    if (
+      focusedGoal &&
+      (id === focusedGoal || isDescendant(id, focusedGoal, view.items))
+    )
+      return focusedGoal;
+    let root = view.items.get(id);
+    while (root?.parent_id) root = view.items.get(root.parent_id);
+    return root && filtered.has(root.id) ? root.id : null;
   }
 
   function inspectItem(id: string) {
@@ -250,6 +301,10 @@ function Workspace({
 
   function selectStreamItem(id: string) {
     inspectItem(id);
+    if (lens.id === "dependencies") {
+      if (!focusedGoal) focusGoal(dependencyGoal(id));
+      return;
+    }
     if (id === focusedGoal) return;
     const focusForRadar = lens.id === "radar" || lens.id === "list";
     let parent = view.items.get(id)?.parent_id ?? null;
@@ -365,6 +420,16 @@ function Workspace({
         );
       }}
       addChild={() => setPanel({ kind: "child" })}
+      openDependencies={
+        dependenciesLens &&
+        inspectedGoal &&
+        (lens.id !== dependenciesLens.id || focusedGoal !== inspectedGoal)
+          ? () => {
+              focusGoal(inspectedGoal);
+              switchLens(dependenciesLens.id);
+            }
+          : undefined
+      }
       selectChild={lens.id === "board" ? selectStreamItem : undefined}
     />
   );
@@ -389,7 +454,10 @@ function Workspace({
               onChange={(event) => switchLens(event.target.value)}
             >
               {registry
-                .filter(({ id }) => id !== "dependencies" || focusedGoal)
+                .filter(
+                  ({ id }) =>
+                    id !== "dependencies" || focusedGoal || lens.id === id,
+                )
                 .map(({ id, label }) => (
                   <option key={id} value={id}>
                     {label}
@@ -429,16 +497,13 @@ function Workspace({
         </p>
       )}
       {state.error && (
-        <div className="error-banner">
-          <p role="alert">{state.error}</p>
-          <button
-            type="button"
-            className="subtle"
-            onClick={connection.clearError}
-          >
-            Dismiss
-          </button>
-        </div>
+        <ErrorBanner message={state.error} dismiss={connection.clearError} />
+      )}
+      {dependencyError && !showDependencyErrorInline && (
+        <ErrorBanner
+          message={dependencyError}
+          dismiss={() => setDependencyEditGoal(null)}
+        />
       )}
 
       <main
@@ -482,6 +547,9 @@ function Workspace({
               tree={tree}
               projects={projects}
               items={view.items}
+              filtered={filtered}
+              changeDependency={changeDependency}
+              savingDependency={dependencyEdit.busy}
               dependencies={dependencies}
               selectedId={selection}
               now={now}
@@ -513,6 +581,11 @@ function Workspace({
                 placeItem(id, key, position, patch)
               }
             />
+          )}
+          {dependencyError && showDependencyErrorInline && (
+            <p className="action-error" role="alert">
+              {dependencyError}
+            </p>
           )}
           {desktop && inspector}
         </section>
