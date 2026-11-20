@@ -524,10 +524,8 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     const result = this.#mutateItems(actor, (mutation) => {
       for (const id of [item_id, blocked_by_id]) {
         const item = this.#requireItem({ item_id: id });
-        if (item.status === "cancelled") {
-          throw new Error(
-            `Cannot change a dependency for cancelled item ${id}`,
-          );
+        if (action === "add" && item.status === "cancelled") {
+          throw new Error(`Cannot add a dependency for cancelled item ${id}`);
         }
       }
       if (action === "add") {

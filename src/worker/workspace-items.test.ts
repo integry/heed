@@ -1038,7 +1038,7 @@ it("supports idempotent dependency changes and rejects direct and transitive cyc
   ]);
 });
 
-it("requires both dependency endpoints to exist and be non-cancelled for either action", async () => {
+it("requires both dependency endpoints to exist for either action", async () => {
   const stub = newWorkspace();
   const { item_id: task } = await stub.addItem(reporter, { title: "Task" });
   const { item_id: blocker } = await stub.addItem(reporter, {
@@ -1047,7 +1047,6 @@ it("requires both dependency endpoints to exist and be non-cancelled for either 
   });
   const edge = { item_id: task, blocked_by_id: blocker };
   await stub.setDependency(reporter, { ...edge, action: "add" });
-  await stub.reportProgress(reporter, { item_id: task, status: "cancelled" });
 
   await runInDurableObject(stub, (workspace) => {
     for (const action of ["add", "remove"] as const) {
@@ -1065,17 +1064,39 @@ it("requires both dependency endpoints to exist and be non-cancelled for either 
           action,
         }),
       ).toThrow("Item not found");
-      expect(() =>
-        workspace.setDependency(reporter, { ...edge, action }),
-      ).toThrow(`Cannot change a dependency for cancelled item ${task}`);
-      expect(() =>
-        workspace.setDependency(reporter, {
-          item_id: blocker,
-          blocked_by_id: task,
-          action,
-        }),
-      ).toThrow(`Cannot change a dependency for cancelled item ${task}`);
     }
     expect(workspace.listDependencies()).toEqual([edge]);
   });
 });
+
+it.each(["item_id", "blocked_by_id"] as const)(
+  "allows removing a dependency after cancelling %s",
+  async (cancelledEndpoint) => {
+    const stub = newWorkspace();
+    const { item_id: task } = await stub.addItem(reporter, { title: "Task" });
+    const { item_id: blocker } = await stub.addItem(reporter, {
+      title: "Blocker",
+    });
+    const edge = { item_id: task, blocked_by_id: blocker };
+    await stub.setDependency(reporter, { ...edge, action: "add" });
+    const cancelledId = edge[cancelledEndpoint];
+    await stub.reportProgress(reporter, {
+      item_id: cancelledId,
+      status: "cancelled",
+    });
+    expect(await stub.listDependencies()).toEqual([edge]);
+
+    const remove = { ...edge, action: "remove" } as const;
+    expect((await stub.setDependency(reporter, remove)).dependency).toEqual(
+      remove,
+    );
+    expect((await stub.setDependency(reporter, remove)).dependency).toBeNull();
+
+    await runInDurableObject(stub, (workspace) => {
+      expect(() =>
+        workspace.setDependency(reporter, { ...edge, action: "add" }),
+      ).toThrow(`dependency for cancelled item ${cancelledId}`);
+      expect(workspace.listDependencies()).toEqual([]);
+    });
+  },
+);
