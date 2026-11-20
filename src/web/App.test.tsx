@@ -148,7 +148,8 @@ async function openCommandBar(...results: Response[]) {
 }
 
 it("keeps each clarification reply once, including when retrying a failed submission", async () => {
-  const firstQuestion = "Which project contains the review?";
+  const firstQuestion =
+    "Which review do you mean: Billing or Invoices? Reply with the project name.";
   const secondQuestion = "Which goal is it under?";
   const firstReply = `\nClarifying question: ${firstQuestion}\nUser's answer: Billing`;
   const secondReply = `\nClarifying question: ${secondQuestion}\nUser's answer: Invoices`;
@@ -162,20 +163,31 @@ it("keeps each clarification reply once, including when retrying a failed submis
   const firstContinuation = `Original request: ${original}${firstReply}`;
   const secondContinuation = firstContinuation + secondReply;
   const { draft, send, submit } = await openCommandBar(
-    Response.json({ summary: firstQuestion, changes: [] }),
-    Response.json({ summary: secondQuestion, changes: [] }),
+    Response.json({
+      summary: firstQuestion,
+      needsClarification: true,
+      changes: [],
+    }),
+    Response.json({
+      summary: secondQuestion,
+      needsClarification: true,
+      changes: [],
+    }),
     Response.json(
       { error: { message: "Try again shortly." } },
       { status: 502 },
     ),
     Response.json({
       summary: "Moved the review to Today.",
+      needsClarification: false,
       changes: [{ type: "item" }],
     }),
   );
 
   send(original);
   await screen.findByText(firstQuestion);
+  expect(draft.placeholder).toBe("Answer the question…");
+  expect(screen.getByRole("button", { name: "New command" })).toBeTruthy();
   send("Billing");
   await screen.findByText(secondQuestion);
   send("Invoices");
@@ -189,6 +201,25 @@ it("keeps each clarification reply once, including when retrying a failed submis
     [secondContinuation],
     [secondContinuation],
   ]);
+});
+
+it("starts a fresh command after an ordinary result ending in a question mark", async () => {
+  const summary = 'No item has the title "Ready?" — could it be archived?';
+  const { draft, send, submit } = await openCommandBar(
+    Response.json({ summary, needsClarification: false, changes: [] }),
+    Response.json({
+      summary: "Moved the review to Today.",
+      needsClarification: false,
+      changes: [{ type: "item" }],
+    }),
+  );
+
+  send("Find my Ready? item");
+  await screen.findByText(summary);
+  expect(draft.placeholder).toBe("Tell Heed what to change…");
+  send("Move the billing review to Today");
+  await screen.findByText("Moved the review to Today.");
+  expect(submit.mock.lastCall).toEqual(["Move the billing review to Today"]);
 });
 
 it("keeps an oversized spoken clarification local and lets the user restate the request", async () => {
@@ -213,9 +244,10 @@ it("keeps an oversized spoken clarification local and lets the user restate the 
   );
   const restated = "Move the review in Billing to Today.";
   const { draft, send, submit } = await openCommandBar(
-    Response.json({ summary: question, changes: [] }),
+    Response.json({ summary: question, needsClarification: true, changes: [] }),
     Response.json({
       summary: "Moved the review to Today.",
+      needsClarification: false,
       changes: [{ type: "item" }],
     }),
   );

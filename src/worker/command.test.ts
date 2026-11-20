@@ -77,6 +77,7 @@ it("updates guidance through a single command and returns its actual write", asy
   );
   expect(result).toEqual({
     summary: "Updated your standing guidance.",
+    needsClarification: false,
     changes: [{ type: "guidance" }],
     undoId: expect.any(String),
   });
@@ -342,30 +343,148 @@ it("returns a tool error without partial links when the canvas result exceeds it
   ]);
 });
 
-it("returns a one-line clarification after finding ambiguous matches", async () => {
-  const clients = await workspace.createProject({ name: "Clients" });
-  await workspace.addItem(human, { title: "Rate limiter" });
-  await workspace.addItem(human, {
-    title: "Rate limiter",
-    project: clients.id,
-  });
-  const next = vi
-    .fn()
-    .mockResolvedValueOnce(
-      turn("", call("get_canvas", { query: "Rate limiter" })),
-    )
-    .mockImplementationOnce(async ({ history }) => {
-      expect(JSON.parse(history[0].replies[0].content).items).toHaveLength(2);
-      return turn(
-        "Which rate limiter should I move, the one in Inbox or Clients?",
-      );
+const reviewQuestion =
+  "Which review do you mean: Billing or Invoices? Reply with the project name.";
+
+it.each([
+  ["native", reviewQuestion],
+  [
+    "chat",
+    "Which review should I move, given the project names ".padEnd(500, "x") +
+      "?",
+  ],
+] as const)(
+  "returns explicit clarification from Workers AI's %s response",
+  async (format, question) => {
+    const billing = await workspace.createProject({ name: "Billing" });
+    const invoices = await workspace.createProject({ name: "Invoices" });
+    await workspace.addItem(human, { title: "Review", project: billing.id });
+    await workspace.addItem(human, { title: "Review", project: invoices.id });
+    run
+      .mockResolvedValueOnce({
+        tool_calls: [{ name: "get_canvas", arguments: { query: "Review" } }],
+      })
+      .mockImplementationOnce(async (_model, { messages }) => {
+        expect(JSON.parse(messages.at(-1).content).items).toHaveLength(2);
+        if (format === "native") {
+          return {
+            tool_calls: [
+              { name: "request_clarification", arguments: { question } },
+            ],
+          };
+        }
+        return {
+          choices: [
+            {
+              message: {
+                tool_calls: [
+                  {
+                    function: {
+                      name: "request_clarification",
+                      arguments: JSON.stringify({ question }),
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        };
+      });
+
+    const response = await command("Move the review into Today");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      summary: question.slice(0, 500),
+      needsClarification: true,
+      changes: [],
     });
-  expect(
-    await runCommand(workspace, { next }, "Move the rate limiter into today"),
-  ).toEqual({
-    summary: "Which rate limiter should I move, the one in Inbox or Clients?",
-    changes: [],
-  });
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[0][1].messages[0].content).toContain(
+      "call request_clarification",
+    );
+    expect(run.mock.calls[0][1].tools).toContainEqual({
+      type: "function",
+      function: expect.objectContaining({
+        name: "request_clarification",
+        parameters: expect.objectContaining({ required: ["question"] }),
+      }),
+    });
+  },
+);
+
+it.each([false, true])(
+  "skips writes batched with clarification and checks earlier writes (prior write: %s)",
+  async (priorWrite) => {
+    const next = vi.fn();
+    if (priorWrite) {
+      next.mockResolvedValueOnce(
+        turn("", call("set_guidance", { text: "Already written." })),
+      );
+    }
+    next.mockResolvedValueOnce(
+      turn(
+        "",
+        call("set_guidance", { text: "Never written." }),
+        call("request_clarification", { question: reviewQuestion }),
+      ),
+    );
+
+    const result = await runCommand(workspace, { next }, "Move the review");
+    if (priorWrite) {
+      expect(result).toMatchObject({
+        needsClarification: false,
+        changes: [{ type: "guidance" }],
+        undoId: expect.any(String),
+      });
+    } else {
+      expect(result).toEqual({
+        summary: reviewQuestion,
+        needsClarification: true,
+        changes: [],
+      });
+    }
+    expect((await workspace.getGuidance()).guidance).toBe(
+      priorWrite ? "Already written." : "",
+    );
+  },
+);
+
+it("returns explicit clarification from an Anthropic tool call", async () => {
+  const fetchMessage = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    Response.json({
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_1",
+          name: "request_clarification",
+          input: { question: reviewQuestion },
+        },
+      ],
+    }),
+  );
+  try {
+    const response = await command("Move the review into Today", {
+      ...bindings,
+      ANTHROPIC_API_KEY: "fixture-key",
+      ANTHROPIC_COMMAND_MODEL: "fixture-model",
+    } as typeof bindings);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      summary: reviewQuestion,
+      needsClarification: true,
+      changes: [],
+    });
+    expect(fetchMessage).toHaveBeenCalledTimes(1);
+    const initial = JSON.parse(String(fetchMessage.mock.calls[0][1]?.body));
+    expect(initial.tools).toContainEqual(
+      expect.objectContaining({
+        name: "request_clarification",
+        input_schema: expect.objectContaining({ required: ["question"] }),
+      }),
+    );
+  } finally {
+    fetchMessage.mockRestore();
+  }
 });
 
 it("limits model steps and tool calls, and rejects unknown tools", async () => {

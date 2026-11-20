@@ -138,11 +138,7 @@ export function useCommandBar(
       );
       setDraft("");
       setSummary(result.summary);
-      setRequest(
-        result.summary.endsWith("?") && !result.changes.length
-          ? { original, replies }
-          : undefined,
-      );
+      setRequest(result.needsClarification ? { original, replies } : undefined);
       if (result.changes.length) setUndoId(result.undoId);
     });
   }

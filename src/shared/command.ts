@@ -18,6 +18,7 @@ export interface CommandChange {
 
 export interface CommandResult {
   summary: string;
+  needsClarification: boolean;
   changes: CommandChange[];
   undoId?: string;
 }
