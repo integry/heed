@@ -2,21 +2,25 @@ import { select as d3Select } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom";
 import { useEffect, useRef } from "react";
 
-export function useCanvasZoom(
+export function useCanvasZoom<
+  Canvas extends SVGSVGElement | HTMLElement = SVGSVGElement,
+  Layer extends SVGElement | HTMLElement = SVGGElement,
+>(
   width: number,
   height: number,
   viewId: string | null,
   dragging: () => boolean,
+  { doubleTapZoom = true }: { doubleTapZoom?: boolean } = {},
 ) {
-  const svg = useRef<SVGSVGElement>(null);
-  const layer = useRef<SVGGElement>(null);
-  const behavior = useRef<ZoomBehavior<SVGSVGElement, unknown>>(null);
+  const svg = useRef<Canvas>(null);
+  const layer = useRef<Layer>(null);
+  const behavior = useRef<ZoomBehavior<Canvas, unknown>>(null);
 
   useEffect(() => {
     const element = svg.current!;
     const scene = layer.current!;
     const canvas = d3Select(element);
-    const control = zoom<SVGSVGElement, unknown>()
+    const control = zoom<Canvas, unknown>()
       .extent([
         [0, 0],
         [width, height],
@@ -35,15 +39,20 @@ export function useCanvasZoom(
         );
       })
       .on("zoom", ({ transform }) => {
-        scene.setAttribute("transform", String(transform));
+        if (scene instanceof SVGElement)
+          scene.setAttribute("transform", String(transform));
+        else
+          scene.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})`;
         element.classList.toggle("canvas-magnified", transform.k >= 1.8);
       });
     behavior.current = control;
     canvas.call(control);
+    // Lenses with their own double-click or double-tap meaning opt out.
+    if (!doubleTapZoom) canvas.on("dblclick.zoom", null);
 
-    function singleFingerDrag(event: TouchEvent) {
+    function singleFingerDrag(event: Event) {
       // d3 still handles pinch gestures and pans that begin before a long press.
-      if (!dragging() || event.touches.length !== 1) return;
+      if (!dragging() || (event as TouchEvent).touches.length !== 1) return;
       event.preventDefault();
       event.stopImmediatePropagation();
     }
@@ -56,7 +65,7 @@ export function useCanvasZoom(
       canvas.on(".zoom", null);
       behavior.current = null;
     };
-  }, [width, height, dragging]);
+  }, [width, height, dragging, doubleTapZoom]);
 
   function resetZoom() {
     if (behavior.current)

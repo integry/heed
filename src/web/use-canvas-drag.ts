@@ -26,7 +26,7 @@ export function useCanvasDrag<Data>(clearPreview: () => void) {
 
   useEffect(() => () => clearTimeout(hold.current), []);
 
-  const start = useCallback((event: PointerEvent<SVGElement>, data: Data) => {
+  const start = useCallback((event: PointerEvent<Element>, data: Data) => {
     if (event.button !== 0 || !event.isPrimary) return;
     const current = {
       id: event.pointerId,
@@ -48,7 +48,7 @@ export function useCanvasDrag<Data>(clearPreview: () => void) {
     }
   }, []);
 
-  function movement(event: PointerEvent<SVGSVGElement>) {
+  function movement(event: PointerEvent<Element>) {
     const current = pointer.current;
     if (current?.id !== event.pointerId) return;
     if (current.moved) return current.data;
@@ -66,7 +66,7 @@ export function useCanvasDrag<Data>(clearPreview: () => void) {
     return current.data;
   }
 
-  function finish(event: PointerEvent<SVGSVGElement>) {
+  function finish(event: PointerEvent<Element>) {
     if (pointer.current?.id !== event.pointerId) return;
     const data = movement(event);
     cancel();
@@ -85,26 +85,26 @@ export function useCanvasDrag<Data>(clearPreview: () => void) {
     cancel,
     dragging,
     handlers: {
-      onPointerDownCapture(event: PointerEvent<SVGSVGElement>) {
+      onPointerDownCapture(event: PointerEvent<Element>) {
         if (event.isPrimary) suppressClick.current = false;
         else if (event.pointerType === "touch") {
           suppressClick.current = true;
           cancel();
         }
       },
-      onPointerCancel(event: PointerEvent<SVGSVGElement>) {
+      onPointerCancel(event: PointerEvent<Element>) {
         if (pointer.current?.id === event.pointerId) cancel();
       },
-      onLostPointerCapture(event: PointerEvent<SVGSVGElement>) {
+      onLostPointerCapture(event: PointerEvent<Element>) {
         if (pointer.current?.id === event.pointerId) cancel();
       },
-      onClickCapture(event: React.MouseEvent<SVGSVGElement>) {
+      onClickCapture(event: React.MouseEvent<Element>) {
         if (suppressClick.current && event.detail !== 0) {
           suppressClick.current = false;
           event.stopPropagation();
         }
       },
-      onContextMenu(event: React.MouseEvent<SVGSVGElement>) {
+      onContextMenu(event: React.MouseEvent<Element>) {
         if ((event.target as Element).closest("[data-canvas-drag]"))
           event.preventDefault();
       },

@@ -7,18 +7,15 @@ import {
 } from "react";
 import {
   effectiveSchedule,
-  isBlocked,
-  isLive,
-  isStale,
   radarBandsFor,
   rollUpRing,
-  type Ring,
   type StreamRow,
 } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
 import type { Project, RadarBand } from "../shared/workspace";
 import type { LensProps } from "./lenses";
 import { RadarBubble, type Bubble } from "./RadarBubble";
+import { itemRing } from "./workspace-view";
 import {
   bubbleRadius,
   cellBounds,
@@ -327,14 +324,7 @@ export function RadarLens({
               position ?? plotted?.position ?? seedPosition(item.id),
             );
 
-        let ring: Ring | null = null;
-        if (item.status !== "done") {
-          if (item.handoff) ring = "handoff";
-          else if (isStale(item, now)) ring = "stale";
-          else if (item.reopen_count) ring = "reopened";
-          else if (isBlocked(item, items, dependencies)) ring = "blocked";
-          else if (isLive(item, now)) ring = "live";
-        }
+        const ring = itemRing(item, now, items, dependencies);
         const rollup =
           item.progress.total > 0
             ? rollUpRing(item, allItems, dependencies, now)

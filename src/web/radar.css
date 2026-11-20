@@ -208,28 +208,39 @@
   stroke-width: 2;
 }
 
-.radar-state[data-ring="handoff"] {
-  stroke: #ffd386;
+[data-ring="handoff"] {
+  --ring-color: #ffd386;
+}
+
+[data-ring="stale"] {
+  --ring-color: #a0a79e;
+}
+
+[data-ring="reopened"] {
+  --ring-color: #ff9eda;
+}
+
+[data-ring="blocked"] {
+  --ring-color: #ffa888;
+}
+
+[data-ring="live"],
+.radar-pulse {
+  --ring-color: #a7eabd;
+}
+
+.radar-state,
+.radar-pulse {
+  stroke: var(--ring-color);
 }
 
 .radar-state[data-ring="stale"] {
-  stroke: #a0a79e;
   stroke-dasharray: 3 4;
   opacity: 0.75;
 }
 
-.radar-state[data-ring="reopened"] {
-  stroke: #ff9eda;
-}
-
 .radar-state[data-ring="blocked"] {
-  stroke: #ffa888;
   stroke-dasharray: 5 2;
-}
-
-.radar-state[data-ring="live"],
-.radar-pulse {
-  stroke: #a7eabd;
 }
 
 .radar-rollup {

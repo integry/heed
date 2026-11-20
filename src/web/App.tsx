@@ -20,7 +20,7 @@ import {
 } from "./lenses";
 import { useMobileSheet } from "./mobile-sheet";
 import { StreamPeek } from "./StreamPeek";
-import { HorizonStream } from "./horizon-stream";
+import { HorizonStream, type LensSelection } from "./horizon-stream";
 import { isRadarRowVisible } from "./RadarLens";
 import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
@@ -133,7 +133,7 @@ function Workspace({
   const [selectedId, select] = useState<string | null>(null);
   const [goalId, focusGoal] = useState<string | null>(null);
   const [showGhosts, setShowGhosts] = useState(true);
-  const [lensSelection, setLensSelection] = useState<{ id: string } | null>(
+  const [lensSelection, setLensSelection] = useState<LensSelection | null>(
     null,
   );
   const [history, setHistory] = useState(false);
@@ -482,7 +482,9 @@ function Workspace({
               select={(id) => {
                 if (lens.id === "list" && id) selectStreamItem(id);
                 else select(id);
-                setLensSelection(id ? { id } : null);
+                setLensSelection(
+                  id ? { id, scrollStreamOnly: lens.id === "treemap" } : null,
+                );
                 if (id) setHistory(false);
               }}
               move={connection.mutate}
