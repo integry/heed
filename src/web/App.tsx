@@ -152,7 +152,7 @@ function Workspace({
   const [lensId, setLensId] = useState(readLensId);
   const [selectedItem, setSelectedItem] = useState<{
     id: string;
-    openDrawer: boolean;
+    inspectorOpen: boolean;
   } | null>(null);
   const selectedId = selectedItem?.id ?? null;
   const [goalId, focusGoal] = useState<string | null>(null);
@@ -203,6 +203,11 @@ function Workspace({
     (hiddenOnly || view.projects.get(selected.project_id)?.hidden === 0)
       ? selected
       : undefined;
+  // Desktop opens the inspector for a selection made on the mobile canvas.
+  // Carry that open state back to mobile if the viewport narrows again.
+  if (desktop && inspected && selectedItem && !selectedItem.inspectorOpen) {
+    setSelectedItem({ ...selectedItem, inspectorOpen: true });
+  }
   const dependencies = useMemo(
     () => [...view.dependencies.values()],
     [view.dependencies],
@@ -299,7 +304,7 @@ function Workspace({
   }
 
   function inspectItem(id: string) {
-    setSelectedItem({ id, openDrawer: true });
+    setSelectedItem({ id, inspectorOpen: true });
   }
 
   function selectStreamItem(id: string) {
@@ -401,7 +406,7 @@ function Workspace({
       </label>
     );
 
-  const inspector = inspected && (desktop || selectedItem?.openDrawer) && (
+  const inspector = inspected && selectedItem?.inspectorOpen && (
     <Inspector
       key={inspected.id}
       drawer={!desktop}
@@ -418,7 +423,7 @@ function Workspace({
           current !== selectedItem
             ? current
             : !desktop && canvasLens
-              ? { id: inspected.id, openDrawer: false }
+              ? { id: inspected.id, inspectorOpen: false }
               : null,
         );
       }}
@@ -429,7 +434,7 @@ function Workspace({
         (lens.id !== dependenciesLens.id || focusedGoal !== inspectedGoal)
           ? () => {
               if (!desktop) {
-                setSelectedItem({ id: inspected.id, openDrawer: false });
+                setSelectedItem({ id: inspected.id, inspectorOpen: false });
               }
               focusGoal(inspectedGoal);
               switchLens(dependenciesLens.id);
@@ -572,7 +577,9 @@ function Workspace({
               select={(id) => {
                 if (lens.id === "list" && id) selectStreamItem(id);
                 else
-                  setSelectedItem(id ? { id, openDrawer: !canvasLens } : null);
+                  setSelectedItem(
+                    id ? { id, inspectorOpen: desktop || !canvasLens } : null,
+                  );
                 setLensSelection(
                   id ? { id, scrollStreamOnly: lens.id === "treemap" } : null,
                 );
@@ -593,7 +600,7 @@ function Workspace({
               {dependencyError}
             </p>
           )}
-          {desktop && inspector}
+          {inspector}
         </section>
         <section
           className="stream-pane"
@@ -692,7 +699,6 @@ function Workspace({
             )}
           </div>
         </section>
-        {!desktop && inspector}
       </main>
       {!desktop && (
         <nav className="mobile-dock" aria-label="Workspace shortcuts">
