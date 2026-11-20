@@ -9,6 +9,7 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { COMMAND_TEXT_LIMIT } from "../shared/command";
 import type { SocketMessage, SocketRequest } from "../shared/workspace-socket";
 import { App } from "./App";
 import { lensRegistry, type Lens } from "./lenses";
@@ -110,6 +111,133 @@ async function openWorkspace(
   TestSocket.current.receive(initialSnapshot);
   return view;
 }
+
+async function openCommandBar(...results: Response[]) {
+  const submit = vi.fn<(_text: string) => Response>();
+  for (const result of results) submit.mockReturnValueOnce(result);
+  fetchSession.mockImplementation(
+    async (path: string, options?: RequestInit) => {
+      if (path === "/api/me") {
+        return Response.json({
+          workspaceId: "default",
+          email: "person@example.test",
+          capabilities: { command: true, transcription: false },
+        });
+      }
+      if (path === "/api/command") {
+        return submit(JSON.parse(String(options?.body)).text);
+      }
+      return Response.json([]);
+    },
+  );
+  const previousSocket = TestSocket.current;
+  render(<App />);
+  await waitFor(() => expect(TestSocket.current).not.toBe(previousSocket));
+  TestSocket.current.receive(snapshot);
+  const open = screen.queryByRole("button", { name: "Open command bar" });
+  if (open) fireEvent.click(open);
+  const draft = screen.getByRole<HTMLTextAreaElement>("textbox", {
+    name: "Workspace command",
+  });
+  const send = (text?: string) => {
+    if (text !== undefined)
+      fireEvent.change(draft, { target: { value: text } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  };
+  return { draft, send, submit };
+}
+
+it("keeps each clarification reply once, including when retrying a failed submission", async () => {
+  const firstQuestion = "Which project contains the review?";
+  const secondQuestion = "Which goal is it under?";
+  const firstReply = `\nClarifying question: ${firstQuestion}\nUser's answer: Billing`;
+  const secondReply = `\nClarifying question: ${secondQuestion}\nUser's answer: Invoices`;
+  const original = "Move the review to Today and attach this note: ".padEnd(
+    COMMAND_TEXT_LIMIT -
+      "Original request: ".length -
+      firstReply.length -
+      secondReply.length,
+    "x",
+  );
+  const firstContinuation = `Original request: ${original}${firstReply}`;
+  const secondContinuation = firstContinuation + secondReply;
+  const { draft, send, submit } = await openCommandBar(
+    Response.json({ summary: firstQuestion, changes: [] }),
+    Response.json({ summary: secondQuestion, changes: [] }),
+    Response.json(
+      { error: { message: "Try again shortly." } },
+      { status: 502 },
+    ),
+    Response.json({
+      summary: "Moved the review to Today.",
+      changes: [{ type: "item" }],
+    }),
+  );
+
+  send(original);
+  await screen.findByText(firstQuestion);
+  send("Billing");
+  await screen.findByText(secondQuestion);
+  send("Invoices");
+  await screen.findByText("Try again shortly.");
+  expect(draft.value).toBe("Invoices");
+  send();
+  await screen.findByText("Moved the review to Today.");
+  expect(submit.mock.calls).toEqual([
+    [original],
+    [firstContinuation],
+    [secondContinuation],
+    [secondContinuation],
+  ]);
+});
+
+it("keeps an oversized spoken clarification local and lets the user restate the request", async () => {
+  mockViewport(false);
+  vi.stubGlobal(
+    "SpeechRecognition",
+    class extends EventTarget {
+      start() {
+        this.dispatchEvent(
+          Object.assign(new Event("result"), {
+            results: [[{ transcript: "Billing" }]],
+          }),
+        );
+        queueMicrotask(() => this.dispatchEvent(new Event("end")));
+      }
+    },
+  );
+  const question = "Which project contains the review?";
+  const original = "Move the review to Today and attach this note: ".padEnd(
+    COMMAND_TEXT_LIMIT,
+    "x",
+  );
+  const restated = "Move the review in Billing to Today.";
+  const { draft, send, submit } = await openCommandBar(
+    Response.json({ summary: question, changes: [] }),
+    Response.json({
+      summary: "Moved the review to Today.",
+      changes: [{ type: "item" }],
+    }),
+  );
+
+  send(original);
+  await screen.findByText(question);
+  fireEvent.click(screen.getByRole("button", { name: "Hold to speak" }));
+  await waitFor(() => expect(draft.value).toBe("Billing"));
+  send();
+  expect(screen.getByRole("alert").textContent).toContain(
+    "restate the complete request",
+  );
+  expect(submit.mock.calls).toEqual([[original]]);
+  expect(draft.value).toBe("Billing");
+  expect(screen.getByText(question)).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "New command" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  send(restated);
+  await screen.findByText("Moved the review to Today.");
+  expect(submit.mock.calls).toEqual([[original], [restated]]);
+});
 
 it("cross-highlights nested and banded rows, and hides them when the project is toggled", async () => {
   localStorage.setItem("heed.lens", "list");

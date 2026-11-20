@@ -35,7 +35,11 @@ export function useCommandBar(
   const [undoId, setUndoId] = useState<string>();
   const [voice, setVoice] = useState<"listening" | "transcribing">();
   const [voiceError, setVoiceError] = useState("");
-  const [request, setRequest] = useState("");
+  const [request, setRequest] = useState<{
+    original: string;
+    replies: string[];
+  }>();
+  const [clarificationTooLong, setClarificationTooLong] = useState(false);
   const [preferRecording, setPreferRecording] = useState(false);
   const recording = useRef<{
     stopped: AbortController;
@@ -110,12 +114,22 @@ export function useCommandBar(
   function submit() {
     const input = draft.trim();
     if (!input || voice || action.busy) return;
-    const clarification = summary.endsWith("?") && request;
-    const followup = clarification
-      ? `Original request: ${request}\nClarifying question: ${summary}\nUser's answer: ${input}`
+    const original = request?.original ?? input;
+    const replies = request
+      ? [
+          ...request.replies,
+          `Clarifying question: ${summary}\nUser's answer: ${input}`,
+        ]
+      : [];
+    const text = request
+      ? [`Original request: ${original}`, ...replies].join("\n")
       : input;
-    const text = followup.length <= COMMAND_TEXT_LIMIT ? followup : input;
+    if (request && text.length > COMMAND_TEXT_LIMIT) {
+      setClarificationTooLong(true);
+      return;
+    }
     void action.run(async () => {
+      setClarificationTooLong(false);
       setVoiceError("");
       const result = await postCommandApi<CommandResult>(
         "/api/command",
@@ -125,7 +139,9 @@ export function useCommandBar(
       setDraft("");
       setSummary(result.summary);
       setRequest(
-        result.summary.endsWith("?") && !result.changes.length ? text : "",
+        result.summary.endsWith("?") && !result.changes.length
+          ? { original, replies }
+          : undefined,
       );
       if (result.changes.length) setUndoId(result.undoId);
     });
@@ -142,19 +158,22 @@ export function useCommandBar(
           { callerReportsError: true },
         );
         setUndoId(undefined);
-        setRequest("");
+        setRequest(undefined);
+        setClarificationTooLong(false);
         setSummary("Command undone.");
       })
       .finally(() => setUndoing(false));
   }
 
   function newCommand() {
-    setRequest("");
+    setRequest(undefined);
+    setClarificationTooLong(false);
     setSummary("");
   }
 
   return {
     clarification: Boolean(request),
+    clarificationTooLong,
     draft,
     setDraft,
     summary,
@@ -191,7 +210,9 @@ export function CommandBar({
       : voice === "transcribing"
         ? "Transcribing…"
         : command.summary;
-  const error = command.voiceError || action.error;
+  const error = command.clarificationTooLong
+    ? `This request and its answers exceed ${COMMAND_TEXT_LIMIT} characters. Shorten your answer or use New command to restate the complete request.`
+    : command.voiceError || action.error;
   return (
     <div className="command-bar">
       <form
