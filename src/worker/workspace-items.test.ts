@@ -901,12 +901,18 @@ it("hard-deletes only for a human and returns all removed items after cascading"
     parent_id: parent,
   });
   const { item_id: other } = await stub.addItem(human, { title: "Other task" });
-  await runInDurableObject(stub, (workspace, { storage: { sql } }) => {
-    sql.exec(
-      "INSERT INTO dependencies (item_id, blocked_by_id) VALUES (?, ?)",
-      other,
-      child,
-    );
+  await stub.setDependency(human, {
+    item_id: other,
+    blocked_by_id: child,
+    action: "add",
+  });
+  await stub.setDependency(human, {
+    item_id: parent,
+    blocked_by_id: other,
+    action: "add",
+  });
+  expect(await stub.listDependencies()).toHaveLength(2);
+  await runInDurableObject(stub, (workspace) => {
     expect(() => workspace.deleteItem(steer, { item_id: parent })).toThrow(
       "Only a human",
     );
@@ -921,8 +927,8 @@ it("hard-deletes only for a human and returns all removed items after cascading"
   ).toEqual([parent, child]);
   await runInDurableObject(stub, (_, { storage: { sql } }) => {
     expect(sql.exec("SELECT id FROM items").toArray()).toEqual([{ id: other }]);
-    expect(sql.exec("SELECT * FROM dependencies").toArray()).toEqual([]);
   });
+  expect(await stub.listDependencies()).toEqual([]);
   expect(await events(stub, parent)).toEqual([]);
   expect(await events(stub, child)).toEqual([]);
   expect(await events(stub, other)).toHaveLength(1);
@@ -975,13 +981,17 @@ it("supports idempotent dependency changes and rejects direct and transitive cyc
     blocked_by_id: second,
     action: "add",
   } as const;
-  expect((await stub.setDependency(reporter, edge)).dependency).toEqual(edge);
-  expect((await stub.setDependency(reporter, edge)).dependency).toBeNull();
-  await stub.setDependency(reporter, {
+  expect(await stub.setDependency(reporter, edge)).toMatchObject({
+    items: [],
+    dependency: edge,
+  });
+  expect((await stub.setDependency(steer, edge)).dependency).toBeNull();
+  const secondEdge = {
     item_id: second,
     blocked_by_id: third,
-    action: "add",
-  });
+  };
+  await stub.setDependency(steer, { ...secondEdge, action: "add" });
+  const storedEdges = [{ item_id: first, blocked_by_id: second }, secondEdge];
   await runInDurableObject(stub, (workspace) => {
     expect(() =>
       workspace.setDependency(reporter, { ...edge, blocked_by_id: first }),
@@ -989,19 +999,31 @@ it("supports idempotent dependency changes and rejects direct and transitive cyc
     expect(() =>
       workspace.setDependency(reporter, {
         ...edge,
+        item_id: second,
+        blocked_by_id: first,
+      }),
+    ).toThrow(
+      `Dependency would create a cycle: ${second} -> ${first} -> ${second}`,
+    );
+    expect(() =>
+      workspace.setDependency(reporter, {
+        ...edge,
         item_id: third,
         blocked_by_id: first,
       }),
-    ).toThrow("would create a cycle");
-    expect(() =>
-      workspace.setDependency(reporter, { ...edge, blocked_by_id: "missing" }),
-    ).toThrow("Item not found");
+    ).toThrow(
+      `Dependency would create a cycle: ${third} -> ${first} -> ${second} -> ${third}`,
+    );
+    const dependencies = workspace.listDependencies();
+    expect(dependencies).toHaveLength(storedEdges.length);
+    expect(dependencies).toEqual(expect.arrayContaining(storedEdges));
   });
   const remove = { ...edge, action: "remove" } as const;
   expect((await stub.setDependency(reporter, remove)).dependency).toEqual(
     remove,
   );
   expect((await stub.setDependency(reporter, remove)).dependency).toBeNull();
+  expect(await stub.listDependencies()).toEqual([secondEdge]);
   expect(
     (
       await stub.setDependency(reporter, {
@@ -1015,3 +1037,66 @@ it("supports idempotent dependency changes and rejects direct and transitive cyc
     "created",
   ]);
 });
+
+it("requires both dependency endpoints to exist for either action", async () => {
+  const stub = newWorkspace();
+  const { item_id: task } = await stub.addItem(reporter, { title: "Task" });
+  const { item_id: blocker } = await stub.addItem(reporter, {
+    title: "Blocker",
+    status: "done",
+  });
+  const edge = { item_id: task, blocked_by_id: blocker };
+  await stub.setDependency(reporter, { ...edge, action: "add" });
+
+  await runInDurableObject(stub, (workspace) => {
+    for (const action of ["add", "remove"] as const) {
+      expect(() =>
+        workspace.setDependency(reporter, {
+          ...edge,
+          item_id: "missing",
+          action,
+        }),
+      ).toThrow("Item not found");
+      expect(() =>
+        workspace.setDependency(reporter, {
+          item_id: blocker,
+          blocked_by_id: "missing",
+          action,
+        }),
+      ).toThrow("Item not found");
+    }
+    expect(workspace.listDependencies()).toEqual([edge]);
+  });
+});
+
+it.each(["item_id", "blocked_by_id"] as const)(
+  "allows removing a dependency after cancelling %s",
+  async (cancelledEndpoint) => {
+    const stub = newWorkspace();
+    const { item_id: task } = await stub.addItem(reporter, { title: "Task" });
+    const { item_id: blocker } = await stub.addItem(reporter, {
+      title: "Blocker",
+    });
+    const edge = { item_id: task, blocked_by_id: blocker };
+    await stub.setDependency(reporter, { ...edge, action: "add" });
+    const cancelledId = edge[cancelledEndpoint];
+    await stub.reportProgress(reporter, {
+      item_id: cancelledId,
+      status: "cancelled",
+    });
+    expect(await stub.listDependencies()).toEqual([edge]);
+
+    const remove = { ...edge, action: "remove" } as const;
+    expect((await stub.setDependency(reporter, remove)).dependency).toEqual(
+      remove,
+    );
+    expect((await stub.setDependency(reporter, remove)).dependency).toBeNull();
+
+    await runInDurableObject(stub, (workspace) => {
+      expect(() =>
+        workspace.setDependency(reporter, { ...edge, action: "add" }),
+      ).toThrow(`dependency for cancelled item ${cancelledId}`);
+      expect(workspace.listDependencies()).toEqual([]);
+    });
+  },
+);
