@@ -1,6 +1,32 @@
+import { buildPushPayload } from "@block65/webcrypto-web-push";
+import type { PushSubscription } from "@block65/webcrypto-web-push";
 import { DurableObject } from "cloudflare:workers";
 import { z, type ZodType } from "zod";
 import { bandsFor } from "../shared/derived-state";
+import {
+  ActorSchema,
+  AddItemSchema,
+  FlagHandoffSchema,
+  ItemIdSchema,
+  LockableFieldSchema,
+  ReopenItemSchema,
+  ReportProgressSchema,
+  SetDependencySchema,
+  UpdateItemSchema,
+} from "../shared/item-operations";
+import type {
+  Actor,
+  AddItemInput,
+  DependencyOperationResult,
+  FlagHandoffInput,
+  ItemIdInput,
+  ItemOperationResult,
+  LockableField,
+  ReopenItemInput,
+  ReportProgressInput,
+  SetDependencyInput,
+  UpdateItemInput,
+} from "../shared/item-operations";
 import {
   GuidanceTextSchema,
   INBOX_PROJECT_ID,
@@ -8,11 +34,13 @@ import {
   TimezoneSchema,
 } from "../shared/workspace";
 import type {
+  EventKind,
   Guidance,
   Item,
   Project,
   Setting,
   Settings,
+  Status,
 } from "../shared/workspace";
 import { migrateWorkspace } from "./workspace-migrations";
 
@@ -53,10 +81,70 @@ function parseInput<T>(schema: ZodType<T>, input: unknown): T {
   return result.data;
 }
 
-export class Workspace extends DurableObject<Env> {
+const DAY_MS = 24 * 60 * 60 * 1000;
+const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+const DEPTH_ERROR =
+  "Items cannot exceed depth 3. Attach to the parent of the proposed parent instead.";
+const STEER_FIELDS = [
+  "project",
+  "hidden",
+  "sort_key",
+  "layout_pos",
+  "unlock",
+] as const;
+const MOVE_FIELDS = ["scheduled_on", "project_id", "parent_id"] as const;
+
+type ItemPatch = Partial<Omit<Item, "id" | "created_at" | "updated_at">>;
+type ItemEdit = Partial<AddItemInput & UpdateItemInput>;
+type WorkspaceEnv = Env & {
+  VAPID_SUBJECT?: string;
+  VAPID_SERVER_PUBLIC_KEY?: string;
+  VAPID_SERVER_PRIVATE_KEY?: string;
+};
+type Mutation = {
+  actor: Actor;
+  now: Date;
+  timezone: string;
+  items: Item[];
+  ignored: Set<LockableField>;
+  pruneEvents: boolean;
+};
+
+function isReport(actor: Actor): boolean {
+  return actor.kind === "agent" && actor.scope === "report";
+}
+
+function isTerminalStatus(status: Status): boolean {
+  return status === "done" || status === "cancelled";
+}
+
+function requireSteering(actor: Actor, action: string): void {
+  if (isReport(actor))
+    throw new Error(
+      `Report scope cannot ${action}. Use a human or steer actor.`,
+    );
+}
+
+function today({ now, timezone }: Mutation): string {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+function timestamp(value: string): number {
+  // Schema defaults use SQLite UTC timestamps; item mutations use ISO instants.
+  return Date.parse(
+    value.includes(" ") ? value.replace(" ", "T") + "Z" : value,
+  );
+}
+
+export class Workspace extends DurableObject<WorkspaceEnv> {
   readonly #sql: SqlStorage;
 
-  constructor(ctx: DurableObjectState, env: Env) {
+  constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
     void ctx.blockConcurrencyWhile(async () => {
@@ -163,7 +251,8 @@ export class Workspace extends DurableObject<Env> {
     };
   }
 
-  setGuidance(guidance: string): Guidance {
+  setGuidance(actor: Actor, guidance: string): Guidance {
+    requireSteering(parseInput(ActorSchema, actor), "change guidance");
     const value = parseInput(GuidanceTextSchema, guidance);
     const previous = this.#sql
       .exec<{ value: string }>(
@@ -260,5 +349,642 @@ export class Workspace extends DurableObject<Env> {
     }
     const deleted = this.#sql.exec("DELETE FROM projects WHERE id = ?", id);
     if (deleted.rowsWritten === 0) throw new Error("Project not found");
+  }
+
+  addItem(actor: Actor, input: AddItemInput): ItemOperationResult {
+    const data = parseInput(AddItemSchema, input);
+    return this.#mutateItems(actor, (mutation) => {
+      const existing = data.external_key
+        ? this.#findItem({ external_key: data.external_key })
+        : undefined;
+      if (existing) {
+        this.#editItem(mutation, existing, data, {
+          heartbeat: data.status === "active",
+        });
+        return existing.id;
+      }
+
+      const placement = this.#placement(mutation, data);
+      const patch = this.#editPatch(mutation, data);
+      if (patch.agent_name === undefined && mutation.actor.kind === "agent") {
+        patch.agent_name = mutation.actor.name;
+      }
+      this.#applyStatus(mutation, patch, data.status);
+      const id = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+      const now = mutation.now.toISOString();
+      const row = {
+        ...placement,
+        ...patch,
+        id,
+        title: data.title,
+        external_key: data.external_key ?? null,
+        created_by: mutation.actor.kind,
+        last_heartbeat_at: data.status === "active" ? now : null,
+        created_at: now,
+        updated_at: now,
+      };
+      const columns = Object.keys(row);
+      const item = this.#sql
+        .exec<Item>(
+          `INSERT INTO items (${columns.join(", ")})
+         VALUES (${columns.map(() => "?").join(", ")}) RETURNING *`,
+          ...Object.values(row),
+        )
+        .one();
+
+      this.#appendEvent(mutation, id, "created", {
+        status: item.status,
+        note: item.note,
+      });
+      mutation.items.push(item);
+      mutation.pruneEvents = true;
+      return id;
+    });
+  }
+
+  updateItem(actor: Actor, input: UpdateItemInput): ItemOperationResult {
+    const data = parseInput(UpdateItemSchema, input);
+    return this.#mutateItems(actor, (mutation) => {
+      for (const field of STEER_FIELDS) {
+        if (data[field] !== undefined) {
+          requireSteering(
+            mutation.actor,
+            field === "unlock" ? "unlock fields" : `change ${field}`,
+          );
+        }
+      }
+      const item = this.#requireItem(data);
+      this.#editItem(mutation, item, data);
+      return item.id;
+    });
+  }
+
+  reportProgress(
+    actor: Actor,
+    input: ReportProgressInput,
+  ): ItemOperationResult {
+    const data = parseInput(ReportProgressSchema, input);
+    return this.#mutateItems(actor, (mutation) => {
+      const item = this.#requireItem(data);
+      const patch = this.#editPatch(mutation, data, item);
+      this.#applyStatus(mutation, patch, data.status, item);
+      this.#saveItem(mutation, item, patch, { heartbeat: true });
+      return item.id;
+    });
+  }
+
+  async flagHandoff(
+    actor: Actor,
+    input: FlagHandoffInput,
+  ): Promise<ItemOperationResult> {
+    const data = parseInput(FlagHandoffSchema, input);
+    let notifyAs: string | undefined;
+    const result = this.#mutateItems(actor, (mutation) => {
+      const item = this.#requireItem(data);
+      if (data.notify === true && mutation.actor.kind === "agent") {
+        notifyAs = mutation.actor.name;
+      }
+      this.#saveItem(
+        mutation,
+        item,
+        { handoff: 1, handoff_note: data.note },
+        {
+          notify: notifyAs !== undefined,
+        },
+      );
+      return item.id;
+    });
+    if (notifyAs !== undefined) {
+      await this.#notifyHandoff(notifyAs, data.item_id, data.note);
+    }
+    return result;
+  }
+
+  clearHandoff(actor: Actor, input: ItemIdInput): ItemOperationResult {
+    const data = parseInput(ItemIdSchema, input);
+    return this.#mutateItems(actor, (mutation) => {
+      requireSteering(mutation.actor, "clear a handoff");
+      const item = this.#requireItem(data);
+      this.#saveItem(mutation, item, { handoff: 0, handoff_note: null });
+      return item.id;
+    });
+  }
+
+  reopenItem(actor: Actor, input: ReopenItemInput): ItemOperationResult {
+    const data = parseInput(ReopenItemSchema, input);
+    return this.#mutateItems(actor, (mutation) => {
+      const item = this.#requireItem(data);
+      if (!isTerminalStatus(item.status)) {
+        throw new Error("Only done or cancelled items can be reopened");
+      }
+      const patch: ItemPatch = {
+        status: "queued",
+        completed_at: null,
+        reopen_count: item.reopen_count + 1,
+        reopen_reason: data.reason,
+      };
+      this.#scheduleToday(mutation, patch, item);
+      this.#saveItem(mutation, item, patch, { reopened: true });
+      return item.id;
+    });
+  }
+
+  deleteItem(actor: Actor, input: ItemIdInput): ItemOperationResult {
+    const data = parseInput(ItemIdSchema, input);
+    return this.#mutateItems(actor, (mutation) => {
+      if (mutation.actor.kind !== "human") {
+        throw new Error(
+          "Only a human can hard-delete items. Agents can cancel them.",
+        );
+      }
+      const item = this.#requireItem(data);
+      mutation.items.push(item, ...this.#descendants(item.id));
+      this.#sql.exec("DELETE FROM items WHERE id = ?", item.id);
+      mutation.pruneEvents = true;
+      return item.id;
+    });
+  }
+
+  setDependency(
+    actor: Actor,
+    input: SetDependencyInput,
+  ): DependencyOperationResult {
+    const data = parseInput(SetDependencySchema, input);
+    const { item_id, blocked_by_id, action } = data;
+    let changed = false;
+    const result = this.#mutateItems(actor, (mutation) => {
+      if (action === "add") {
+        this.#requireItem({ item_id });
+        this.#requireItem({ item_id: blocked_by_id });
+        const cycle =
+          this.#sql
+            .exec(
+              `WITH RECURSIVE blockers(id) AS (
+             SELECT ?
+             UNION
+             SELECT blocked_by_id FROM dependencies JOIN blockers ON dependencies.item_id = blockers.id
+           )
+           SELECT 1 FROM blockers WHERE id = ? LIMIT 1`,
+              blocked_by_id,
+              item_id,
+            )
+            .toArray().length > 0;
+        if (cycle) throw new Error("Dependency would create a cycle");
+        changed =
+          this.#sql.exec(
+            "INSERT INTO dependencies (item_id, blocked_by_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+            item_id,
+            blocked_by_id,
+          ).rowsWritten > 0;
+      } else {
+        changed =
+          this.#sql.exec(
+            "DELETE FROM dependencies WHERE item_id = ? AND blocked_by_id = ?",
+            item_id,
+            blocked_by_id,
+          ).rowsWritten > 0;
+      }
+      mutation.pruneEvents = changed;
+      return item_id;
+    });
+    return { ...result, dependency: changed ? data : null };
+  }
+
+  async #notifyHandoff(
+    actorName: string,
+    itemId: string,
+    note: string,
+  ): Promise<void> {
+    const subscriptions = this.#sql
+      .exec<{ endpoint: string; keys: string }>(
+        "SELECT endpoint, keys FROM push_subscriptions",
+      )
+      .toArray();
+    if (!subscriptions.length) return;
+
+    const handoffId = this.#latestHandoffId(itemId);
+    const item = this.#requireItem({ item_id: itemId });
+    const data = {
+      title: item.title,
+      body: note,
+      url: `/?item=${encodeURIComponent(itemId)}`,
+    };
+    const vapid = {
+      subject: this.env.VAPID_SUBJECT,
+      publicKey: this.env.VAPID_SERVER_PUBLIC_KEY,
+      privateKey: this.env.VAPID_SERVER_PRIVATE_KEY,
+    };
+
+    const attempts = await Promise.allSettled(
+      subscriptions.map(async ({ endpoint, keys }) => {
+        const subscription: PushSubscription = {
+          endpoint,
+          expirationTime: null,
+          keys: JSON.parse(keys),
+        };
+        const payload = await buildPushPayload({ data }, subscription, vapid);
+        await this.ctx.storage.sync();
+
+        // A handoff or subscription can change while the payload is prepared.
+        const stillSubscribed = this.#sql
+          .exec(
+            "SELECT 1 FROM push_subscriptions WHERE endpoint = ? AND keys = ?",
+            endpoint,
+            keys,
+          )
+          .toArray().length;
+        if (!stillSubscribed || this.#latestHandoffId(itemId) !== handoffId)
+          return;
+
+        const response = await fetch(endpoint, {
+          ...payload,
+          redirect: "error",
+        });
+        void response.body?.cancel().catch(() => {});
+        if (response.status !== 201) throw new Error("Web Push rejected");
+        return true;
+      }),
+    );
+    if (
+      attempts.some(
+        (attempt) => attempt.status === "fulfilled" && attempt.value,
+      )
+    ) {
+      // The item may have been deleted after the request reached the provider.
+      this.#sql.exec(
+        `INSERT INTO events (item_id, at, actor, kind, detail)
+         SELECT id, ?, ?, 'notified', ? FROM items WHERE id = ?`,
+        new Date().toISOString(),
+        actorName,
+        JSON.stringify(data),
+        itemId,
+      );
+    } else if (attempts.some((attempt) => attempt.status === "rejected")) {
+      throw new Error("Handoff recorded, but Web Push failed");
+    }
+  }
+
+  #latestHandoffId(itemId: string): number | undefined {
+    return this.#sql
+      .exec<{ id: number }>(
+        "SELECT id FROM events WHERE item_id = ? AND kind = 'handoff' ORDER BY id DESC LIMIT 1",
+        itemId,
+      )
+      .toArray()[0]?.id;
+  }
+
+  #mutateItems(
+    input: Actor,
+    operation: (mutation: Mutation) => string,
+  ): ItemOperationResult {
+    const actor = parseInput(ActorSchema, input);
+    return this.ctx.storage.transactionSync(() => {
+      const { timezone, guidance_updated_at } = this.getSettings();
+      const mutation: Mutation = {
+        actor,
+        now: new Date(),
+        timezone,
+        items: [],
+        ignored: new Set(),
+        pruneEvents: false,
+      };
+      const item_id = operation(mutation);
+      if (mutation.pruneEvents) this.#pruneEvents(mutation.now);
+      return {
+        item_id,
+        items: mutation.items,
+        ignored_fields: [...mutation.ignored],
+        guidance_updated_at,
+      };
+    });
+  }
+
+  #findItem({
+    item_id,
+    external_key,
+  }: {
+    item_id?: string;
+    external_key?: string;
+  }): Item | undefined {
+    return (
+      item_id !== undefined
+        ? this.#sql.exec<Item>("SELECT * FROM items WHERE id = ?", item_id)
+        : this.#sql.exec<Item>(
+            "SELECT * FROM items WHERE external_key = ?",
+            external_key!,
+          )
+    ).toArray()[0];
+  }
+
+  #requireItem(selector: { item_id?: string; external_key?: string }): Item {
+    const item = this.#findItem(selector);
+    if (!item) throw new Error("Item not found");
+    return item;
+  }
+
+  #descendants(id: string): Item[] {
+    return this.#sql
+      .exec<Item>(
+        `WITH RECURSIVE descendants(id) AS (
+         SELECT id FROM items WHERE parent_id = ?
+         UNION ALL
+         SELECT items.id FROM items JOIN descendants ON items.parent_id = descendants.id
+       )
+       SELECT items.* FROM items JOIN descendants USING (id) ORDER BY depth, id`,
+        id,
+      )
+      .toArray();
+  }
+
+  #placement(mutation: Mutation, input: ItemEdit, current?: Item) {
+    const parent_id =
+      input.parent_id === undefined
+        ? (current?.parent_id ?? null)
+        : input.parent_id;
+    const parent =
+      parent_id === null
+        ? undefined
+        : this.#requireItem({ item_id: parent_id });
+    const defaultProject =
+      mutation.actor.kind === "agent"
+        ? mutation.actor.default_project_id
+        : null;
+    const project_id =
+      parent?.project_id ??
+      input.project ??
+      current?.project_id ??
+      defaultProject ??
+      INBOX_PROJECT_ID;
+
+    if (
+      !parent &&
+      project_id !== current?.project_id &&
+      !this.#sql
+        .exec("SELECT 1 FROM projects WHERE id = ?", project_id)
+        .toArray().length
+    ) {
+      throw new Error("Project not found");
+    }
+    const depth = parent ? parent.depth + 1 : 1;
+    if (depth > 3) throw new Error(DEPTH_ERROR);
+    return { parent_id, project_id, depth };
+  }
+
+  #editItem(
+    mutation: Mutation,
+    item: Item,
+    input: ItemEdit,
+    options?: { heartbeat: boolean },
+  ): void {
+    const patch = this.#editPatch(mutation, input, item);
+    const move =
+      input.parent_id !== undefined || input.project !== undefined
+        ? this.#moveItem(mutation, item, input)
+        : undefined;
+    Object.assign(patch, move?.placement);
+
+    this.#applyStatus(mutation, patch, input.status, item);
+    this.#saveItem(mutation, item, patch, options);
+    if (!move) return;
+
+    const { placement, descendants } = move;
+    for (const child of descendants) {
+      this.#saveItem(mutation, child, {
+        depth: child.depth + placement.depth - item.depth,
+        project_id: placement.project_id,
+      });
+    }
+  }
+
+  #moveItem(mutation: Mutation, item: Item, input: ItemEdit) {
+    // An add retry may repeat its existing placement. Any actual project move needs steering.
+    if (
+      input.project !== undefined &&
+      input.project !== item.project_id &&
+      !input.parent_id
+    ) {
+      requireSteering(mutation.actor, "change project");
+    }
+    if (input.parent_id === item.id)
+      throw new Error("Parent would create an item cycle");
+    const descendants =
+      input.parent_id !== undefined && input.parent_id !== item.parent_id
+        ? this.#descendants(item.id)
+        : undefined;
+    if (descendants?.some((child) => child.id === input.parent_id)) {
+      throw new Error("Parent would create an item cycle");
+    }
+
+    const placement = this.#placement(mutation, input, item);
+    const changesProject = placement.project_id !== item.project_id;
+    if (changesProject) requireSteering(mutation.actor, "change project");
+    if (
+      descendants?.some(
+        (child) => child.depth + placement.depth - item.depth > 3,
+      )
+    ) {
+      throw new Error(DEPTH_ERROR);
+    }
+    return {
+      placement,
+      descendants:
+        descendants ?? (changesProject ? this.#descendants(item.id) : []),
+    };
+  }
+
+  #editPatch(mutation: Mutation, input: ItemEdit, item?: Item): ItemPatch {
+    const patch: ItemPatch = {};
+    for (const field of [
+      "title",
+      "ref_url",
+      "time_type",
+      "time_at",
+      "note",
+    ] as const) {
+      const value = input[field];
+      if (value !== undefined) Object.assign(patch, { [field]: value });
+    }
+    if (input.tags !== undefined) patch.tags = JSON.stringify(input.tags);
+    if (input.hidden !== undefined) patch.hidden = input.hidden ? 1 : 0;
+    if (input.agent_name !== undefined) patch.agent_name = input.agent_name;
+    const locked = LockableFieldSchema.array().parse(
+      JSON.parse(item?.locked_fields ?? "[]"),
+    );
+    const nextLocks = new Set(locked);
+    for (const field of LockableFieldSchema.options) {
+      const value = input[field];
+      if (value === undefined) continue;
+      if (isReport(mutation.actor) && nextLocks.has(field)) {
+        mutation.ignored.add(field);
+        continue;
+      }
+      Object.assign(patch, {
+        [field]: field === "layout_pos" ? JSON.stringify(value) : value,
+      });
+      if (!isReport(mutation.actor)) nextLocks.add(field);
+    }
+    if (input.unlock !== undefined) nextLocks.delete(input.unlock);
+    const serialized = JSON.stringify([...nextLocks]);
+    if (serialized !== JSON.stringify(locked)) patch.locked_fields = serialized;
+    return patch;
+  }
+
+  #applyStatus(
+    mutation: Mutation,
+    patch: ItemPatch,
+    status?: Status,
+    item?: Item,
+  ): void {
+    if (status === undefined || status === (item?.status ?? "queued")) return;
+    if (item && isTerminalStatus(item.status) && !isTerminalStatus(status)) {
+      throw new Error(
+        "Use reopenItem with a reason to reopen a done or cancelled item",
+      );
+    }
+    patch.status = status;
+    if (status === "done") patch.completed_at = mutation.now.toISOString();
+    else if (item?.status === "done") patch.completed_at = null;
+
+    const schedule =
+      patch.scheduled_on === undefined
+        ? item?.scheduled_on
+        : patch.scheduled_on;
+    if (status === "active" && schedule == null)
+      this.#scheduleToday(mutation, patch, item);
+  }
+
+  #scheduleToday(mutation: Mutation, patch: ItemPatch, item?: Item): void {
+    if (
+      isReport(mutation.actor) &&
+      item &&
+      LockableFieldSchema.array()
+        .parse(JSON.parse(item.locked_fields))
+        .includes("scheduled_on")
+    ) {
+      mutation.ignored.add("scheduled_on");
+    } else {
+      patch.scheduled_on = today(mutation);
+    }
+  }
+
+  #saveItem(
+    mutation: Mutation,
+    item: Item,
+    patch: ItemPatch,
+    options: { heartbeat?: boolean; notify?: boolean; reopened?: boolean } = {},
+  ): void {
+    const changes = (Object.keys(patch) as (keyof ItemPatch)[]).filter(
+      (field) => patch[field] !== item[field],
+    );
+    const meaningful = changes.length > 0;
+    const now = mutation.now.toISOString();
+    if (
+      options.heartbeat &&
+      (meaningful ||
+        item.last_heartbeat_at === null ||
+        mutation.now.getTime() - timestamp(item.last_heartbeat_at) >=
+          HEARTBEAT_INTERVAL_MS)
+    ) {
+      changes.push("last_heartbeat_at");
+      patch.last_heartbeat_at = now;
+    }
+
+    let updated = item;
+    if (changes.length > 0) {
+      const assignments = changes.map((field) => `${field} = ?`);
+      const values = changes.map((field) => patch[field]!);
+      if (meaningful) {
+        assignments.push("updated_at = ?");
+        values.push(now);
+      }
+      updated = this.#sql
+        .exec<Item>(
+          `UPDATE items SET ${assignments.join(", ")} WHERE id = ? RETURNING *`,
+          ...values,
+          item.id,
+        )
+        .one();
+      mutation.items.push(updated);
+    }
+    if (meaningful || options.notify) mutation.pruneEvents = true;
+
+    if (item.status !== updated.status) {
+      this.#appendEvent(mutation, item.id, "status", {
+        old: item.status,
+        new: updated.status,
+      });
+    }
+    if (item.note !== updated.note) {
+      this.#appendEvent(mutation, item.id, "note", {
+        old: item.note,
+        new: updated.note,
+      });
+    }
+    if (
+      item.handoff !== updated.handoff ||
+      item.handoff_note !== updated.handoff_note ||
+      options.notify
+    ) {
+      this.#appendEvent(mutation, item.id, "handoff", {
+        handoff: Boolean(updated.handoff),
+        note: updated.handoff_note,
+        notify: options.notify ?? false,
+      });
+    }
+    if (options.reopened) {
+      this.#appendEvent(mutation, item.id, "reopened", {
+        reason: updated.reopen_reason,
+      });
+    }
+    const moves = MOVE_FIELDS.filter((field) => item[field] !== updated[field]);
+    if (moves.length > 0) {
+      this.#appendEvent(
+        mutation,
+        item.id,
+        "moved",
+        Object.fromEntries(
+          moves.map((field) => [
+            field,
+            { old: item[field], new: updated[field] },
+          ]),
+        ),
+      );
+    }
+  }
+
+  #appendEvent(
+    mutation: Mutation,
+    id: string,
+    kind: EventKind,
+    detail: object,
+  ): void {
+    this.#sql.exec(
+      "INSERT INTO events (item_id, at, actor, kind, detail) VALUES (?, ?, ?, ?, ?)",
+      id,
+      mutation.now.toISOString(),
+      mutation.actor.kind === "human" ? "human" : mutation.actor.name,
+      kind,
+      JSON.stringify(detail),
+    );
+  }
+
+  #pruneEvents(now: Date): void {
+    const lastPrune = this.#sql
+      .exec<{ value: string }>(
+        "SELECT value FROM settings WHERE key = 'events_pruned_at'",
+      )
+      .toArray()[0]?.value;
+    if (lastPrune && now.getTime() - timestamp(lastPrune) < DAY_MS) return;
+
+    const cutoff = new Date(now.getTime() - 90 * DAY_MS).toISOString();
+    this.#sql.exec(
+      "DELETE FROM events WHERE julianday(at) < julianday(?)",
+      cutoff,
+    );
+    this.#sql.exec(
+      `INSERT INTO settings (key, value) VALUES ('events_pruned_at', ?)
+       ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+      now.toISOString(),
+    );
   }
 }

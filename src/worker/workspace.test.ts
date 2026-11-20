@@ -62,7 +62,10 @@ it("migrates a fresh object and seeds Inbox", async () => {
 it("keeps the migration and stored data intact across an eviction", async () => {
   const stub = newWorkspace();
   await stub.setTimezone("Europe/Tallinn");
-  const guidance = await stub.setGuidance("Start with billing");
+  const guidance = await stub.setGuidance(
+    { kind: "human" },
+    "Start with billing",
+  );
   const project = await stub.createProject({ name: "Billing" });
   await evictDurableObject(stub);
 
@@ -175,19 +178,19 @@ it("persists guidance and timestamps within the character limit", async () => {
   });
 
   const text = "🙂".repeat(MAX_GUIDANCE_LENGTH);
-  const saved = await stub.setGuidance(text);
+  const saved = await stub.setGuidance({ kind: "human" }, text);
   expect(saved.guidance).toBe(text);
   expect(new Date(saved.guidance_updated_at!).toISOString()).toBe(
     saved.guidance_updated_at,
   );
   await runInDurableObject(stub, (workspace) => {
-    expect(() => workspace.setGuidance(text + "!")).toThrow(
+    expect(() => workspace.setGuidance({ kind: "human" }, text + "!")).toThrow(
       "at most 2000 characters",
     );
   });
   expect(await stub.getGuidance()).toEqual(saved);
 
-  const cleared = await stub.setGuidance("");
+  const cleared = await stub.setGuidance({ kind: "human" }, "");
   expect(cleared.guidance).toBe("");
   expect(cleared.guidance_updated_at! > saved.guidance_updated_at!).toBe(true);
   expect(await stub.getGuidance()).toEqual(cleared);
@@ -207,7 +210,10 @@ it("accepts IANA timezone names and rejects invalid names and offsets", async ()
 
 it("returns a compact canvas with bands inherited from ancestors outside the query", async () => {
   const stub = newWorkspace();
-  const guidance = await stub.setGuidance("Start with billing");
+  const guidance = await stub.setGuidance(
+    { kind: "human" },
+    "Start with billing",
+  );
   await runInDurableObject(stub, (_, { storage: { sql } }) => {
     sql.exec(`
       INSERT INTO items (id, project_id, title, scheduled_on)
