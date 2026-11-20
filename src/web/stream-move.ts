@@ -17,7 +17,7 @@ export function scheduleMove(
   items: ReadonlyMap<string, CanvasItem>,
   now: number,
   timezone: string,
-): StreamMove | null {
+): Extract<StreamMove, { type: "UPDATE_ITEM" }> | null {
   const scheduled_on = firstDayOfBand(target, now, timezone);
   if (target !== "backlog" && scheduled_on === null) return null;
   if (band({ ...item, scheduled_on }, items, now, timezone) !== target)

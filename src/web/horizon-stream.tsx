@@ -8,15 +8,10 @@ import {
   type ReactNode,
 } from "react";
 import {
-  carriedOverFrom,
-  effectiveSchedule,
   firstDayOfBand,
-  isBlocked,
-  isLive,
-  isStale,
+  needsMe,
   STREAM_BANDS,
   streamOrder,
-  workspaceInstant,
   type Band,
   type StreamRow,
 } from "../shared/derived-state";
@@ -27,7 +22,8 @@ import {
   scheduleMove,
   type StreamMove,
 } from "./stream-move";
-import { useStreamDrag, type DropSlot } from "./use-stream-drag";
+import { streamDropSlot, useItemDrag, type DropSlot } from "./use-item-drag";
+import { ItemMarkers, ItemTimeBadge, itemTimeFormats } from "./item-markers";
 import type { WorkspaceData } from "./workspace-state";
 import type { selectWorkspace } from "./workspace-view";
 
@@ -43,7 +39,6 @@ const labels: Record<Band, string> = {
 type WorkspaceSelection = ReturnType<typeof selectWorkspace>;
 type Row = StreamRow<CanvasItem>;
 type BandRows = Record<Band, Row[]>;
-const timeLabels = { flexible: "FLEX", fixed: "FIXED", deadline: "DUE" };
 
 type IndexedRow = { row: Row; band: Band; path: string[]; siblings: Row[] };
 
@@ -57,6 +52,7 @@ interface Props extends Pick<
   live: boolean;
   now: number;
   attentionOnly: boolean;
+  condensed: boolean;
   toggleAttention: () => void;
   /** Extra stream filters rendered beside Needs me. */
   actions?: ReactNode;
@@ -92,22 +88,6 @@ function tagsOf(item: CanvasItem): string[] {
   return JSON.parse(item.tags) as string[];
 }
 
-const relativeTime = new Intl.RelativeTimeFormat(undefined, {
-  numeric: "always",
-});
-
-function lastSeen(value: string | null, now: number) {
-  if (!value) return "no heartbeat yet";
-  const time = workspaceInstant(value);
-  if (!Number.isFinite(time)) return "no heartbeat yet";
-  const minutes = Math.floor((now - time) / 60_000);
-  if (minutes < 60)
-    return `last seen ${relativeTime.format(-minutes, "minute")}`;
-  if (minutes < 1440)
-    return `last seen ${relativeTime.format(-Math.floor(minutes / 60), "hour")}`;
-  return `last seen ${relativeTime.format(-Math.floor(minutes / 1440), "day")}`;
-}
-
 function safeLink(value: string | null) {
   if (!value) return null;
   const protocol = URL.parse(value)?.protocol;
@@ -126,6 +106,7 @@ export function HorizonStream({
   now,
   timezone,
   attentionOnly,
+  condensed,
   toggleAttention,
   actions,
   selectedId,
@@ -181,26 +162,7 @@ export function HorizonStream({
 
   const projectNames = new Map(projects.map(({ id, name }) => [id, name]));
   const edges = [...dependencies.values()];
-  const clock = new Intl.DateTimeFormat(undefined, {
-    timeStyle: "short",
-    timeZone: timezone,
-  });
-  const dateTime = new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone: timezone,
-  });
-  const calendarDate = new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    timeZone: "UTC",
-  });
-  const weekday = new Intl.DateTimeFormat(undefined, {
-    weekday: "short",
-    timeZone: "UTC",
-  });
+  const formats = useMemo(() => itemTimeFormats(timezone), [timezone]);
   const movableBands = STREAM_BANDS.filter(
     (band) =>
       band !== "done-today" &&
@@ -339,9 +301,10 @@ export function HorizonStream({
       setKeyboardMove({ id });
   }
 
-  const { drag, root, startDrag, dragPointer, endDrag } = useStreamDrag(
+  const { drag, root, startDrag, dragPointer, endDrag } = useItemDrag(
     live,
     commit,
+    streamDropSlot,
     () => setMessage(null),
   );
 
@@ -350,27 +313,19 @@ export function HorizonStream({
       <ul className="item-list">
         {rows.map(({ item, children }) => {
           const canonical = visibleRows.get(item.id)!;
-          const alias = canonical.band !== band || path.startsWith("alias/");
+          const attention = path === "attention/";
+          const alias =
+            attention || canonical.band !== band || path.startsWith("alias/");
           const key = `row:${alias ? path : ""}${item.id}`;
           const open = expanded.get(key) ?? attentionOnly;
-          const active = isLive(item, now);
-          const stale = isStale(item, now);
-          const carried = carriedOverFrom(item, items, now, timezone);
           const link = safeLink(item.ref_url);
-          const time = workspaceInstant(item.time_at);
-          const schedule = effectiveSchedule(item, items);
           const detailId = `stream-details-${encodeURIComponent(path)}${encodeURIComponent(item.id)}`;
           const upcoming =
             canonical.band !== "today" && canonical.band !== "done-today";
-          const scheduleLabel = Number.isFinite(time)
-            ? (upcoming ? dateTime : clock).format(time)
-            : upcoming && schedule
-              ? calendarDate.format(new Date(schedule))
-              : null;
           const childrenById = new Map(
             children.map((child) => [child.item.id, child]),
           );
-          if (band !== "backlog" || !tag) {
+          if (!attention && (band !== "backlog" || !tag)) {
             for (const child of childRows.get(item.id) ?? []) {
               const entry = visibleRows.get(child.id)!;
               if (entry.band !== canonical.band)
@@ -398,7 +353,7 @@ export function HorizonStream({
                     : undefined
                 }
                 ref={(node) => {
-                  if (alias) return;
+                  if (alias && !attention) return;
                   if (node) rowNodes.current.set(item.id, node);
                   else rowNodes.current.delete(item.id);
                 }}
@@ -423,63 +378,28 @@ export function HorizonStream({
                   onClick={() => select(item.id)}
                 >
                   <span className="stream-title">
-                    <span
-                      className="time-badge"
-                      data-time-type={item.time_type}
-                    >
-                      {band === "done-today" && item.completed_at ? (
-                        clock.format(workspaceInstant(item.completed_at))
-                      ) : (
-                        <>
-                          <span>{timeLabels[item.time_type]}</span>
-                          {scheduleLabel && <span>{scheduleLabel}</span>}
-                        </>
-                      )}
-                    </span>
+                    <ItemTimeBadge
+                      item={item}
+                      items={items}
+                      formats={formats}
+                      upcoming={upcoming}
+                      completed={band === "done-today"}
+                    />
                     <span className="item-title">{item.title}</span>
                   </span>
-                  <span className="stream-meta" id={detailId}>
-                    <span>{projectNames.get(item.project_id)}</span>
-                    {(item.agent_name || stale || active) && (
-                      <span className="stream-agent">
-                        {active && (
-                          <span
-                            className="live-pulse"
-                            role="img"
-                            aria-label="Live"
-                          />
-                        )}
-                        {item.agent_name ?? (active ? "Live" : "Agent")}
-                        {stale && ` · ${lastSeen(item.last_heartbeat_at, now)}`}
-                      </span>
-                    )}
-                    {item.progress.total > 0 && (
-                      <span
-                        aria-label={`${item.progress.done} of ${item.progress.total} children complete`}
-                      >
-                        {item.progress.done}/{item.progress.total}
-                      </span>
-                    )}
-                    {item.handoff === 1 && (
-                      <span className="stream-flag">Handoff</span>
-                    )}
-                    {item.reopen_count > 0 && item.status !== "done" && (
-                      <span className="stream-flag">Reopened</span>
-                    )}
-                    {isBlocked(item, items, edges) && (
-                      <span className="stream-flag">Blocked</span>
-                    )}
-                    {carried && (
-                      <span className="stream-carried">
-                        <time dateTime={carried}>
-                          from {weekday.format(new Date(carried))}
-                        </time>
-                      </span>
-                    )}
-                    {alias && canonical.band !== band && (
+                  <ItemMarkers
+                    item={item}
+                    items={items}
+                    dependencies={edges}
+                    now={now}
+                    timezone={timezone}
+                    id={detailId}
+                    leading={<span>{projectNames.get(item.project_id)}</span>}
+                  >
+                    {(attention || (alias && canonical.band !== band)) && (
                       <span>{labels[canonical.band]}</span>
                     )}
-                  </span>
+                  </ItemMarkers>
                 </button>
                 {link && (
                   <a
@@ -546,6 +466,13 @@ export function HorizonStream({
   }
 
   const completed = expanded.get("completed") ?? true;
+  const attentionRows = condensed
+    ? streamOrder(
+        [...visibleRows.values()]
+          .map(({ row }) => row.item)
+          .filter((item) => item.status !== "done" && needsMe(item, now)),
+      ).map((item) => ({ item, children: [] }))
+    : [];
 
   return (
     <>
@@ -575,6 +502,19 @@ export function HorizonStream({
         </p>
         {ready && (
           <>
+            {condensed && (
+              <section
+                className="stream-band"
+                aria-labelledby="stream-attention-heading"
+              >
+                <h3 id="stream-attention-heading">Needs me</h3>
+                {attentionRows.length > 0 ? (
+                  renderRows(attentionRows, "today", "attention/")
+                ) : (
+                  <p className="stream-empty">Nothing needs your input.</p>
+                )}
+              </section>
+            )}
             {bands["done-today"].length > 0 && (
               <section className="stream-band stream-completed">
                 <h3>
@@ -594,90 +534,102 @@ export function HorizonStream({
                 {completed && renderRows(bands["done-today"], "done-today")}
               </section>
             )}
-            <div className="now-divider">
-              <span>
-                Now{" "}
-                <time dateTime={new Date(now).toISOString()}>
-                  {clock.format(now)}
-                </time>
-              </span>
-            </div>
-            {!STREAM_BANDS.some((band) => bands[band].length > 0) && (
-              <p className="stream-empty stream-overview">
-                {attentionOnly
-                  ? "Nothing needs your input."
-                  : "No items in the stream yet."}
-              </p>
+            {condensed && !bands["done-today"].length && (
+              <section className="stream-band stream-completed">
+                <h3>Completed earlier today</h3>
+                <p className="stream-empty">No items completed today.</p>
+              </section>
             )}
-            {renderBand("today", "Today", bands.today)}
-            <section
-              className="stream-upcoming"
-              aria-labelledby="upcoming-heading"
-            >
-              <h3 id="upcoming-heading">Tomorrow &amp; this week</h3>
-              {renderBand("tomorrow", "Tomorrow", bands.tomorrow)}
-              {movableBands.includes("this-week") &&
-                renderBand("this-week", "This week", bands["this-week"])}
-            </section>
-            {renderBand("later", "Later", bands.later)}
-            <section
-              className="stream-band stream-backlog"
-              data-stream-band="backlog"
-              data-drop-active={
-                drag?.slot?.band === "backlog" &&
-                allRows.get(drag.id)?.band !== "backlog"
-              }
-            >
-              <div className="backlog-heading">
-                <h3>Backlog</h3>
-                {(tag || backlogTags.length > 0) && (
-                  <select
-                    aria-label="Filter backlog by tag"
-                    value={tag}
-                    onChange={(event) => setTag(event.target.value)}
-                  >
-                    <option value="">All tags</option>
-                    {tag && !backlogTags.includes(tag) && (
-                      <option value={tag}>#{tag}</option>
-                    )}
-                    {backlogTags.map((value) => (
-                      <option key={value} value={value}>
-                        #{value}
-                      </option>
-                    ))}
-                  </select>
+            {!condensed && (
+              <>
+                <div className="now-divider">
+                  <span>
+                    Now{" "}
+                    <time dateTime={new Date(now).toISOString()}>
+                      {formats.clock.format(now)}
+                    </time>
+                  </span>
+                </div>
+                {!STREAM_BANDS.some((band) => bands[band].length > 0) && (
+                  <p className="stream-empty stream-overview">
+                    {attentionOnly
+                      ? "Nothing needs your input."
+                      : "No items in the stream yet."}
+                  </p>
                 )}
-              </div>
-              {backlog.length === 0 && (
-                <p className="stream-empty">
-                  {tag
-                    ? "No backlog items match this tag."
-                    : "No items in the backlog."}
-                </p>
-              )}
-              {projects.map(({ id, name }) => {
-                const rows = backlog.filter(
-                  ({ item }) => item.project_id === id,
-                );
-                if (!rows.length) return null;
-                const key = `project:${id}`;
-                const open = expanded.get(key) ?? (attentionOnly || tag !== "");
-                return (
-                  <div className="backlog-group" key={id}>
-                    <button
-                      type="button"
-                      className="stream-disclosure"
-                      aria-expanded={open}
-                      onClick={() => toggle(key, open)}
-                    >
-                      <span aria-hidden="true">{open ? "▾" : "▸"}</span> {name}{" "}
-                      <span className="stream-count">{rows.length}</span>
-                    </button>
-                    {open && renderRows(rows, "backlog")}
+                {renderBand("today", "Today", bands.today)}
+                <section
+                  className="stream-upcoming"
+                  aria-labelledby="upcoming-heading"
+                >
+                  <h3 id="upcoming-heading">Tomorrow &amp; this week</h3>
+                  {renderBand("tomorrow", "Tomorrow", bands.tomorrow)}
+                  {movableBands.includes("this-week") &&
+                    renderBand("this-week", "This week", bands["this-week"])}
+                </section>
+                {renderBand("later", "Later", bands.later)}
+                <section
+                  className="stream-band stream-backlog"
+                  data-stream-band="backlog"
+                  data-drop-active={
+                    drag?.slot?.band === "backlog" &&
+                    allRows.get(drag.id)?.band !== "backlog"
+                  }
+                >
+                  <div className="backlog-heading">
+                    <h3>Backlog</h3>
+                    {(tag || backlogTags.length > 0) && (
+                      <select
+                        aria-label="Filter backlog by tag"
+                        value={tag}
+                        onChange={(event) => setTag(event.target.value)}
+                      >
+                        <option value="">All tags</option>
+                        {tag && !backlogTags.includes(tag) && (
+                          <option value={tag}>#{tag}</option>
+                        )}
+                        {backlogTags.map((value) => (
+                          <option key={value} value={value}>
+                            #{value}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </div>
-                );
-              })}
-            </section>
+                  {backlog.length === 0 && (
+                    <p className="stream-empty">
+                      {tag
+                        ? "No backlog items match this tag."
+                        : "No items in the backlog."}
+                    </p>
+                  )}
+                  {projects.map(({ id, name }) => {
+                    const rows = backlog.filter(
+                      ({ item }) => item.project_id === id,
+                    );
+                    if (!rows.length) return null;
+                    const key = `project:${id}`;
+                    const open =
+                      expanded.get(key) ?? (attentionOnly || tag !== "");
+                    return (
+                      <div className="backlog-group" key={id}>
+                        <button
+                          type="button"
+                          className="stream-disclosure"
+                          aria-expanded={open}
+                          onClick={() => toggle(key, open)}
+                        >
+                          <span aria-hidden="true">{open ? "▾" : "▸"}</span>{" "}
+                          {name}{" "}
+                          <span className="stream-count">{rows.length}</span>
+                        </button>
+                        {open && renderRows(rows, "backlog")}
+                      </div>
+                    );
+                  })}
+                </section>
+              </>
+            )}
           </>
         )}
         <footer className="stream-footer">
