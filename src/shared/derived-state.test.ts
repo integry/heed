@@ -12,6 +12,7 @@ import {
   needsMe,
   needsMeCount,
   progress,
+  radarBandsFor,
   rollUpRing,
   streamOrder,
   streamRows,
@@ -49,6 +50,7 @@ function item(id: string, patch: Partial<Item> = {}): Item {
     hidden: 0,
     last_heartbeat_at: null,
     completed_at: null,
+    completed_band: null,
     created_at: "2024-04-01 00:00:00",
     updated_at: "2024-04-01 00:00:00",
     ...patch,
@@ -465,4 +467,37 @@ describe("stream", () => {
       { item: visible, children: [] },
     ]);
   });
+});
+
+it("groups radar bands and keeps ghosts in their recorded completion ring", () => {
+  const scheduled = item("scheduled", { scheduled_on: "2024-04-05" });
+  const rows = [
+    scheduled,
+    item("inherited", { parent_id: scheduled.id }),
+    item("tomorrow", { scheduled_on: "2024-04-04" }),
+    item("active", { status: "active", scheduled_on: "2024-05-01" }),
+    item("completed", {
+      status: "done",
+      completed_at: "2024-04-03T08:00:00Z",
+      completed_band: "backlog",
+      scheduled_on: "2024-04-03",
+    }),
+    item("older-format", {
+      status: "done",
+      completed_at: "2024-04-03T08:00:00Z",
+      scheduled_on: "2024-05-01",
+    }),
+  ];
+  expect(
+    radarBandsFor(rows, new Map([[scheduled.id, scheduled]]), now, utc),
+  ).toEqual(
+    new Map([
+      ["scheduled", "this-week"],
+      ["inherited", "this-week"],
+      ["tomorrow", "this-week"],
+      ["active", "today"],
+      ["completed", "backlog"],
+      ["older-format", "later"],
+    ]),
+  );
 });

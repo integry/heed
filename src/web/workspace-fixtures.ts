@@ -4,7 +4,7 @@ import type { Project } from "../shared/workspace";
 export const now = Date.parse("2024-04-03T12:00:00Z");
 export const settings = {
   timezone: "UTC",
-  schema_version: 2,
+  schema_version: 3,
   guidance: "",
   guidance_updated_at: null,
 };
@@ -43,6 +43,7 @@ export const goal: CanvasItem = {
   hidden: 0,
   last_heartbeat_at: null,
   completed_at: null,
+  completed_band: null,
   created_at: "2024-04-03T00:00:00Z",
   updated_at: "2024-04-03T00:00:00Z",
 };

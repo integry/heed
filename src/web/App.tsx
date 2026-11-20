@@ -13,6 +13,7 @@ import {
   type Lens,
 } from "./lenses";
 import { HorizonStream } from "./horizon-stream";
+import { isRadarRowVisible } from "./RadarLens";
 import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
 import { workspaceView, type MutationInput } from "./workspace-state";
@@ -110,6 +111,8 @@ function Workspace({
   );
   const [lensId, setLensId] = useState(readLensId);
   const [selectedId, select] = useState<string | null>(null);
+  const [goalId, focusGoal] = useState<string | null>(null);
+  const [showGhosts, setShowGhosts] = useState(true);
   const [lensSelection, setLensSelection] = useState<{ id: string } | null>(
     null,
   );
@@ -127,10 +130,15 @@ function Workspace({
     return { ...selectWorkspace(view, now, attentionOnly), now };
   }, [view, clock, attentionOnly]);
   const { projects, tree, filtered, liveCount, timezone, now } = derived;
-  const lens = resolveLens(registry, lensId);
+  const focusedGoal = goalId && filtered.has(goalId) ? goalId : null;
+  const lens = resolveLens(
+    registry,
+    lensId === "dependencies" && !focusedGoal ? null : lensId,
+  );
   const LensComponent = lens.component;
   const live = state.connection === "live";
   const selection = selectedId && filtered.has(selectedId) ? selectedId : null;
+  const dependenciesLens = registry.find(({ id }) => id === "dependencies");
   const selected = selectedId ? state.items.get(selectedId) : undefined;
   const inspected =
     selected &&
@@ -197,6 +205,42 @@ function Workspace({
     connection.mutate({ type: "UPDATE_ITEM", input: { item_id, ...patch } });
   }
 
+  function switchLens(id: string) {
+    setLensId(id);
+    if (id !== "dependencies") rememberLens(id);
+  }
+
+  function selectStreamItem(id: string) {
+    select(id);
+    if (id === focusedGoal) return;
+    const focusForRadar = lens.id === "radar" || lens.id === "list";
+    let parent = view.items.get(id)?.parent_id ?? null;
+    while (parent) {
+      const row = filtered.get(parent);
+      if (row && (!focusForRadar || isRadarRowVisible(row, showGhosts))) break;
+      parent = view.items.get(parent)?.parent_id ?? null;
+    }
+    focusGoal(parent);
+  }
+
+  function placeItem(
+    id: string,
+    key: string,
+    position: Record<string, number>,
+    patch: { scheduled_on?: string | null; project?: string } = {},
+  ) {
+    const item = workspaceView(connection.getSnapshot()).items.get(id);
+    if (!item) return;
+    const positions = JSON.parse(item.layout_pos) as Record<
+      string,
+      Record<string, number>
+    >;
+    updateItem(id, {
+      ...patch,
+      layout_pos: { ...positions, [key]: position },
+    });
+  }
+
   return (
     <div className="workspace">
       <header className="workspace-header">
@@ -239,16 +283,15 @@ function Workspace({
             Lens
             <select
               value={lens.id}
-              onChange={(event) => {
-                setLensId(event.target.value);
-                rememberLens(event.target.value);
-              }}
+              onChange={(event) => switchLens(event.target.value)}
             >
-              {registry.map(({ id, label }) => (
-                <option key={id} value={id}>
-                  {label}
-                </option>
-              ))}
+              {registry
+                .filter(({ id }) => id !== "dependencies" || focusedGoal)
+                .map(({ id, label }) => (
+                  <option key={id} value={id}>
+                    {label}
+                  </option>
+                ))}
             </select>
           </label>
           {state.settings && (
@@ -297,6 +340,19 @@ function Workspace({
         <section className="lens-pane" aria-labelledby="lens-heading">
           <div className="section-heading">
             <h1 id="lens-heading">{lens.label}</h1>
+            {lens.id === "radar" && state.settings && (
+              <details className="lens-menu">
+                <summary className="subtle">Lens options</summary>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={showGhosts}
+                    onChange={(event) => setShowGhosts(event.target.checked)}
+                  />
+                  Show completed ghosts
+                </label>
+              </details>
+            )}
             <button
               type="button"
               className="primary"
@@ -314,27 +370,29 @@ function Workspace({
               dependencies={dependencies}
               selectedId={selection}
               now={now}
+              timezone={timezone}
+              live={live}
+              showGhosts={showGhosts}
+              goalId={focusedGoal}
+              focusGoal={focusGoal}
+              openDependencies={
+                dependenciesLens && focusedGoal
+                  ? () => switchLens(dependenciesLens.id)
+                  : undefined
+              }
               select={(id) => {
-                select(id);
+                if (lens.id === "list" && id) selectStreamItem(id);
+                else select(id);
                 setLensSelection(id ? { id } : null);
                 if (id) setHistory(false);
               }}
               reschedule={(id, date) => updateItem(id, { scheduled_on: date })}
               moveProject={(id, project) => updateItem(id, { project })}
               setPriority={(id, priority) => updateItem(id, { priority })}
-              setPosition={(id, position) => {
-                const item = workspaceView(connection.getSnapshot()).items.get(
-                  id,
-                );
-                if (!item) return;
-                const positions = JSON.parse(item.layout_pos) as Record<
-                  string,
-                  Record<string, number>
-                >;
-                updateItem(id, {
-                  layout_pos: { ...positions, [lens.id]: position },
-                });
-              }}
+              setPosition={(id, position) => placeItem(id, lens.id, position)}
+              moveRadar={(id, { position, ...patch }, key = "radar") =>
+                placeItem(id, key, position, patch)
+              }
             />
           )}
           {inspected && (
@@ -419,7 +477,7 @@ function Workspace({
               lensSelection={lensSelection}
               select={(id) => {
                 setLensSelection(null);
-                select(id);
+                selectStreamItem(id);
               }}
               move={connection.mutate}
               showHistory={() => setHistory(true)}

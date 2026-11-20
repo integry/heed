@@ -23,3 +23,9 @@ npm run token:create -- "Build agent" report
 Save the printed token when you create it. Send it as `Authorization: Bearer <token>` to `POST /api/report`. The scope defaults to `report`. Pass `steer` for human-operated clients that need steering permissions. You can pass a default project ID after the scope.
 
 The Worker allows approximately 60 agent requests per minute per token at each Cloudflare location. Set the Worker variable `TOKEN_RATE_LIMIT_PER_MINUTE` to an integer from 1 to 1000 to adjust the limit.
+
+## Radar demo
+
+With local development sign-in configured in `.dev.vars` and Wrangler running,
+run `npm run seed:radar` and open `http://localhost:8787/auth/dev-login`.
+Use `npm run seed:radar -- --dense` to populate 300 overview bubbles.

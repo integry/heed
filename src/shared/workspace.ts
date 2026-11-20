@@ -8,6 +8,13 @@ export const StatusSchema = z.enum([
   "cancelled",
 ]);
 export const TimeTypeSchema = z.enum(["flexible", "fixed", "deadline"]);
+export const RadarBandSchema = z.enum([
+  "today",
+  "this-week",
+  "later",
+  "backlog",
+]);
+export type RadarBand = z.infer<typeof RadarBandSchema>;
 export const ScopeSchema = z.enum(["report", "steer"]);
 export const EventKindSchema = z.enum([
   "created",
@@ -103,6 +110,7 @@ export const ItemSchema = z.object({
   hidden: sqliteFlag,
   last_heartbeat_at: nullableText,
   completed_at: nullableText,
+  completed_band: RadarBandSchema.nullable(),
   created_at: z.string(),
   updated_at: z.string(),
 });

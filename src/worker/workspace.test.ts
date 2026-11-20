@@ -30,7 +30,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
   const stub = newWorkspace();
   const settings = await stub.getSettings();
   expect(SettingsSchema.parse(settings)).toEqual({
-    schema_version: 2,
+    schema_version: 3,
     timezone: "UTC",
     guidance: "",
     guidance_updated_at: null,
@@ -72,7 +72,7 @@ it("keeps the migration and stored data intact across an eviction", async () => 
   await evictDurableObject(stub);
 
   expect(await stub.getSettings()).toEqual({
-    schema_version: 2,
+    schema_version: 3,
     timezone: "Europe/Tallinn",
     ...guidance,
   });

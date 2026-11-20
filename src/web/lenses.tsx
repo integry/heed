@@ -3,6 +3,8 @@ import type { StreamRow } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
 import type { Dependency, Project } from "../shared/workspace";
 import { itemStatus } from "./workspace-view";
+import { RadarLens } from "./RadarLens";
+import type { RadarPlacement } from "./radar-geometry";
 
 export interface LensProps {
   tree: readonly StreamRow<CanvasItem>[];
@@ -11,11 +13,18 @@ export interface LensProps {
   dependencies: readonly Dependency[];
   selectedId: string | null;
   now: number;
+  timezone: string;
+  live: boolean;
+  showGhosts: boolean;
+  goalId: string | null;
+  focusGoal: (id: string | null) => void;
+  openDependencies?: () => void;
   select: (id: string | null) => void;
   reschedule: (id: string, date: string | null) => void;
   moveProject: (id: string, projectId: string) => void;
   setPriority: (id: string, priority: number) => void;
   setPosition: (id: string, position: Record<string, number>) => void;
+  moveRadar: (id: string, drop: RadarPlacement, layoutKey?: string) => void;
 }
 
 export interface Lens {
@@ -87,6 +96,7 @@ function ListLens({
 }
 
 export const lensRegistry: readonly [Lens, ...Lens[]] = [
+  { id: "radar", label: "Radar", component: RadarLens },
   { id: "list", label: "List", component: ListLens },
 ];
 

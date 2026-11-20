@@ -11,6 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SocketMessage, SocketRequest } from "../shared/workspace-socket";
 import { App } from "./App";
 import { lensRegistry, type Lens } from "./lenses";
+import { cellPoint, RADAR_BANDS, type Cell } from "./radar-geometry";
 import { child, goal, project, snapshot, tomorrow } from "./workspace-fixtures";
 
 class TestSocket extends EventTarget {
@@ -93,21 +94,24 @@ it.each([true, false])(
   },
 );
 
-async function openWorkspace(registry?: readonly [Lens, ...Lens[]]) {
+async function openWorkspace(
+  registry?: readonly [Lens, ...Lens[]],
+  initialSnapshot: Extract<SocketMessage, { type: "SNAPSHOT" }> = snapshot,
+) {
   fetchSession.mockImplementation(async (path: string) =>
     path === "/api/me"
       ? Response.json({ workspaceId: "default", email: "person@example.test" })
       : Response.json([]),
   );
-  const previous = TestSocket.current;
+  const previousSocket = TestSocket.current;
   const view = render(<App registry={registry} />);
-  await screen.findByRole("heading", { name: "Horizon Stream" });
-  await waitFor(() => expect(TestSocket.current).not.toBe(previous));
-  TestSocket.current.receive(snapshot);
+  await waitFor(() => expect(TestSocket.current).not.toBe(previousSocket));
+  TestSocket.current.receive(initialSnapshot);
   return view;
 }
 
 it("cross-highlights nested and banded rows, and hides them when the project is toggled", async () => {
+  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
   const list = within(screen.getByRole("region", { name: "List" }));
   const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
@@ -147,6 +151,7 @@ it("cross-highlights nested and banded rows, and hides them when the project is 
 it("keeps fall-back completions in Completed earlier today until workspace midnight", async () => {
   const completed_at = "2026-11-01T04:05:00Z";
   vi.mocked(Date.now).mockReturnValue(Date.parse(completed_at));
+  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
   TestSocket.current.receive({
     ...snapshot,
@@ -208,6 +213,7 @@ it("keeps fall-back completions in Completed earlier today until workspace midni
 });
 
 it("shows a nested List item as blocked by a hidden item until it completes", async () => {
+  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
   const socket = TestSocket.current;
   const blocker = { ...goal, id: "blocker", hidden: 1 as const };
@@ -234,6 +240,7 @@ it("shows a nested List item as blocked by a hidden item until it completes", as
 });
 
 it("updates List status when a dependency is added or removed live", async () => {
+  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
   const socket = TestSocket.current;
   const dependency = { item_id: goal.id, blocked_by_id: tomorrow.id };
@@ -295,14 +302,7 @@ it("sends the browser timezone only when the workspace has none", async () => {
   const view = await openWorkspace();
   expect(TestSocket.current.send).not.toHaveBeenCalled();
   view.unmount();
-  fetchSession.mockImplementation(async () =>
-    Response.json({ workspaceId: "default", email: "person@example.test" }),
-  );
-  const previous = TestSocket.current;
-  render(<App />);
-  await screen.findByRole("heading", { name: "Horizon Stream" });
-  await waitFor(() => expect(TestSocket.current).not.toBe(previous));
-  TestSocket.current.receive({ ...snapshot, timezoneConfigured: false });
+  await openWorkspace(undefined, { ...snapshot, timezoneConfigured: false });
   expect(JSON.parse(TestSocket.current.send.mock.lastCall![0])).toMatchObject({
     type: "INITIALIZE_TIMEZONE",
     input: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
@@ -347,6 +347,427 @@ it("reconnects with backoff and accepts a fresh connection sequence", async () =
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("defaults to Radar, opens a goal, and cross-highlights and resizes its children", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+  const socket = TestSocket.current;
+  socket.receive({
+    type: "DEPENDENCY_ADD",
+    seq: 2,
+    dependency: {
+      item_id: tomorrow.id,
+      blocked_by_id: child.id,
+    },
+  });
+  expect(radar.queryByRole("button", { name: child.title })).toBeNull();
+
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  expect(
+    radar.getByRole("navigation", { name: "Goal breadcrumb" }),
+  ).toBeTruthy();
+  expect(
+    stream
+      .getByRole("button", { name: goal.title })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  expect(
+    screen
+      .getByLabelText(`Items in ${goal.title}`)
+      .querySelector(".radar-edge"),
+  ).toBeTruthy();
+
+  fireEvent.click(stream.getByRole("button", { name: `Expand ${goal.title}` }));
+  fireEvent.click(stream.getByRole("button", { name: child.title }));
+  expect(
+    radar
+      .getByRole("button", { name: child.title })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  fireEvent.keyDown(
+    radar.getByRole("slider", { name: `Priority for ${child.title}` }),
+    { key: "End" },
+  );
+  expect(JSON.parse(socket.send.mock.lastCall![0])).toMatchObject({
+    type: "UPDATE_ITEM",
+    input: { item_id: child.id, priority: 10 },
+  });
+  fireEvent.click(radar.getByRole("button", { name: "All projects" }));
+  expect(radar.getByRole("button", { name: goal.title })).toBeTruthy();
+});
+
+it("keeps radar positions on status updates and filters attention and completed ghosts", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const socket = TestSocket.current;
+  const finished = {
+    ...goal,
+    id: "finished",
+    title: "Shipped work",
+    status: "done",
+    completed_at: "2024-04-03T12:00:00Z",
+    completed_band: "later",
+  } as const;
+  socket.receive({ ...snapshot, seq: 2, items: [...snapshot.items, finished] });
+  const marker = () =>
+    radar
+      .getByRole("button", { name: goal.title })
+      .parentElement?.getAttribute("transform");
+  const before = marker();
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 3,
+    item: {
+      ...goal,
+      status: "active",
+      last_heartbeat_at: "2024-04-03T11:58:00Z",
+    },
+  });
+  expect(marker()).toBe(before);
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 4,
+    item: {
+      ...goal,
+      status: "blocked",
+    },
+  });
+  expect(marker()).toBe(before);
+  const ghost = radar.getByRole("button", { name: finished.title });
+  expect(ghost.getAttribute("data-ghost")).toBe("true");
+  fireEvent.click(
+    radar.getByRole("checkbox", { name: "Show completed ghosts" }),
+  );
+  expect(radar.queryByRole("button", { name: finished.title })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Needs me 1" }));
+  // Needs me keeps ancestors of attention items visible in the lens.
+  expect(radar.queryByRole("button", { name: tomorrow.title })).toBeNull();
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  expect(radar.getByRole("button", { name: child.title })).toBeTruthy();
+});
+
+const completedGoal = {
+  ...goal,
+  status: "done",
+  completed_at: "2024-04-03T11:00:00Z",
+} as const;
+
+function startRadarRingDrop(
+  bubble: HTMLElement,
+  overview: boolean,
+  band: Cell["band"] = "backlog",
+) {
+  const scene = bubble.closest(".radar-node")!.parentElement!;
+  Object.defineProperty(scene, "getScreenCTM", {
+    configurable: true,
+    value: () => null,
+  });
+  const [clientX, clientY] = bubble
+    .parentElement!.getAttribute("transform")!
+    .slice("translate(".length, -1)
+    .split(",")
+    .map(Number);
+  const target = overview
+    ? cellPoint({ band, sector: 0, sectors: 1 }, { angle: 0.5, radius: 0.5 })
+    : { x: 175 + RADAR_BANDS.indexOf(band) * 150, y: 716 };
+  const pointer = { pointerId: 1, isPrimary: true, button: 0 };
+  const destination = { ...pointer, clientX: target.x, clientY: target.y };
+  fireEvent.pointerDown(bubble, { ...pointer, clientX, clientY });
+  fireEvent.pointerMove(bubble, destination);
+  return () => fireEvent.pointerUp(bubble, destination);
+}
+
+it.each(["goal", "overview", "new ancestor schedule", "no ancestor schedule"])(
+  "checks inheritance before applying a Radar Backlog drop (%s)",
+  async (scenario) => {
+    const overview = scenario === "overview";
+    const initiallyUnscheduled = scenario.includes("ancestor schedule");
+    const parent = overview
+      ? completedGoal
+      : {
+          ...goal,
+          scheduled_on: initiallyUnscheduled ? null : goal.scheduled_on,
+        };
+    const task = {
+      ...child,
+      scheduled_on: initiallyUnscheduled ? goal.scheduled_on : null,
+    };
+    await openWorkspace(undefined, { ...snapshot, items: [parent, task] });
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    if (overview)
+      fireEvent.click(
+        radar.getByRole("checkbox", { name: "Show completed ghosts" }),
+      );
+    else fireEvent.click(radar.getByRole("button", { name: parent.title }));
+
+    const release = startRadarRingDrop(
+      radar.getByRole("button", { name: task.title }),
+      overview,
+    );
+    const socket = TestSocket.current;
+    expect(socket.send).not.toHaveBeenCalled();
+    if (scenario === "new ancestor schedule")
+      socket.receive({ type: "ITEM_UPSERT", seq: 2, item: goal });
+    release();
+
+    const rejection = /it would inherit a schedule from an ancestor/;
+    if (scenario === "no ancestor schedule") {
+      expect(JSON.parse(socket.send.mock.lastCall![0])).toMatchObject({
+        type: "UPDATE_ITEM",
+        input: { item_id: task.id, scheduled_on: null },
+      });
+      expect(radar.queryByText(rejection)).toBeNull();
+    } else {
+      expect(socket.send).not.toHaveBeenCalled();
+      expect(radar.getByText(rejection)).toBeTruthy();
+    }
+  },
+);
+
+it.each(["overview", "goal"])(
+  "checks the resulting Radar Backlog band in the %s view",
+  async (view) => {
+    const overview = view === "overview";
+    const parent = { ...goal, scheduled_on: null };
+    const timed = {
+      time_type: "fixed",
+      time_at: "2024-04-10T12:00:00Z",
+    } as const;
+    const task = {
+      ...child,
+      scheduled_on: goal.scheduled_on,
+      ...(overview ? { parent_id: null, depth: 1 } : {}),
+    };
+    const timedTask = { ...task, ...timed, id: "timed", title: "Vendor call" };
+    const activeTask = {
+      ...task,
+      status: "active",
+      id: "active",
+      title: "Live rollout",
+    } as const;
+    const tasks = [task, timedTask, activeTask];
+    await openWorkspace(undefined, {
+      ...snapshot,
+      items: overview ? tasks : [parent, ...tasks],
+    });
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    if (!overview)
+      fireEvent.click(radar.getByRole("button", { name: parent.title }));
+    const socket = TestSocket.current;
+    const startDrop = (title: string) =>
+      startRadarRingDrop(radar.getByRole("button", { name: title }), overview);
+
+    startDrop(timedTask.title)();
+    expect(
+      radar.getByText(
+        `${timedTask.title} can’t move to Backlog because it still has a time set.`,
+      ),
+    ).toBeTruthy();
+    startDrop(activeTask.title)();
+    expect(
+      radar.getByText(
+        `${activeTask.title} can’t move to Backlog because it is active.`,
+      ),
+    ).toBeTruthy();
+
+    const release = startDrop(task.title);
+    socket.receive({
+      type: "ITEM_UPSERT",
+      seq: 2,
+      item: { ...task, ...timed },
+    });
+    release();
+    expect(
+      radar.getByText(
+        `${task.title} can’t move to Backlog because it still has a time set.`,
+      ),
+    ).toBeTruthy();
+    expect(socket.send).not.toHaveBeenCalled();
+
+    socket.receive({ type: "ITEM_UPSERT", seq: 3, item: task });
+    startDrop(task.title)();
+    expect(JSON.parse(socket.send.mock.lastCall![0])).toMatchObject({
+      type: "UPDATE_ITEM",
+      input: {
+        item_id: task.id,
+        scheduled_on: null,
+        ...(overview
+          ? { layout_pos: { radar: { angle: 0.5, radius: 0.5 } } }
+          : {}),
+      },
+    });
+    expect(radar.queryByText(/can’t move to Backlog/)).toBeNull();
+  },
+);
+
+it.each(["overview", "goal"])(
+  "checks future Radar destinations in the %s view using the state at release",
+  async (view) => {
+    const overview = view === "overview";
+    const task = {
+      ...child,
+      scheduled_on: goal.scheduled_on,
+      ...(overview ? { parent_id: null, depth: 1 } : {}),
+    };
+    const overdue = {
+      ...task,
+      id: "overdue",
+      title: "Vendor call",
+      time_type: "fixed",
+      time_at: "2024-04-02T12:00:00Z",
+    } as const;
+    await openWorkspace(undefined, {
+      ...snapshot,
+      items: overview ? [task, overdue] : [goal, task, overdue],
+    });
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    if (!overview)
+      fireEvent.click(radar.getByRole("button", { name: goal.title }));
+    const socket = TestSocket.current;
+    const startDrop = (title: string, target: Cell["band"]) =>
+      startRadarRingDrop(
+        radar.getByRole("button", { name: title }),
+        overview,
+        target,
+      );
+
+    startDrop(overdue.title, "this-week")();
+    expect(
+      radar.getByText(
+        `${overdue.title} can’t move to This week because its time keeps it in Today.`,
+      ),
+    ).toBeTruthy();
+
+    const release = startDrop(task.title, "later");
+    socket.receive({
+      type: "ITEM_UPSERT",
+      seq: 2,
+      item: { ...task, status: "active" },
+    });
+    release();
+    expect(
+      radar.getByText(
+        `${task.title} can’t move to Later because it is active.`,
+      ),
+    ).toBeTruthy();
+    expect(socket.send).not.toHaveBeenCalled();
+
+    socket.receive({ type: "ITEM_UPSERT", seq: 3, item: task });
+    for (const [target, date] of [
+      ["this-week", "2024-04-04"],
+      ["later", "2024-04-08"],
+      ["today", "2024-04-03"],
+    ] as const) {
+      socket.send.mockClear();
+      startDrop(task.title, target)();
+      expect(socket.send).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(socket.send.mock.lastCall![0])).toMatchObject({
+        type: "UPDATE_ITEM",
+        input: { item_id: task.id, scheduled_on: date },
+      });
+      expect(radar.queryByText(/can’t move to/)).toBeNull();
+    }
+  },
+);
+
+it("checks a Radar drop after a time becomes due between clock ticks", async () => {
+  const clock = vi.mocked(Date.now);
+  clock.mockReturnValue(Date.parse("2024-04-03T23:59:55Z"));
+  const task = {
+    ...goal,
+    scheduled_on: null,
+    time_type: "fixed",
+    time_at: "2024-04-04T00:00:07Z",
+  } as const;
+  await openWorkspace(undefined, { ...snapshot, items: [task] });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const release = startRadarRingDrop(
+    radar.getByRole("button", { name: task.title }),
+    true,
+    "later",
+  );
+  clock.mockReturnValue(Date.parse("2024-04-04T00:00:08Z"));
+  release();
+  expect(
+    radar.getByText(
+      `${task.title} can’t move to Later because its time keeps it in Today.`,
+    ),
+  ).toBeTruthy();
+  expect(TestSocket.current.send).not.toHaveBeenCalled();
+});
+
+it.each(["Radar", "List"])(
+  "reveals a selected %s child through a hidden completed ancestor",
+  async (source) => {
+    const middle = {
+      ...completedGoal,
+      id: "middle",
+      parent_id: goal.id,
+      title: "Completed milestone",
+    };
+    const task = { ...child, parent_id: middle.id, depth: 3 };
+    await openWorkspace(undefined, {
+      ...snapshot,
+      items: [goal, middle, task],
+    });
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    fireEvent.click(
+      radar.getByRole("checkbox", { name: "Show completed ghosts" }),
+    );
+    const lens = screen.getByRole("combobox", { name: "Lens" });
+    if (source === "List") {
+      fireEvent.change(lens, { target: { value: "list" } });
+      const list = within(screen.getByRole("region", { name: "List" }));
+      fireEvent.click(
+        list.getByRole("button", { name: new RegExp(task.title) }),
+      );
+      fireEvent.change(lens, { target: { value: "radar" } });
+    } else {
+      const stream = within(
+        screen.getByRole("region", { name: "Horizon Stream" }),
+      );
+      fireEvent.click(stream.getByRole("button", { name: task.title }));
+    }
+    expect(radar.queryByRole("button", { name: middle.title })).toBeNull();
+    expect(radar.getByLabelText(`Items in ${goal.title}`)).toBeTruthy();
+    expect(
+      radar
+        .getByRole("button", { name: task.title })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+  },
+);
+
+it("offers a registered Dependencies lens for the focused goal", async () => {
+  const dependencies: Lens = {
+    id: "dependencies",
+    label: "Dependencies",
+    component: ({ goalId }) => <p>Dependencies for {goalId}</p>,
+  };
+  await openWorkspace([lensRegistry[0], dependencies]);
+  expect(screen.queryByRole("option", { name: "Dependencies" })).toBeNull();
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  fireEvent.click(radar.getByRole("button", { name: "Dependencies" }));
+  expect(screen.getByText("Dependencies for goal")).toBeTruthy();
+});
+
+it("opens the selected child's goal when switching from List to Radar", async () => {
+  localStorage.setItem("heed.lens", "list");
+  await openWorkspace();
+  const list = within(screen.getByRole("region", { name: "List" }));
+  fireEvent.click(list.getByRole("button", { name: new RegExp(child.title) }));
+  fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
+    target: { value: "radar" },
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  expect(
+    radar
+      .getByRole("button", { name: child.title })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
 });
 
 function inspect(title: string) {
@@ -899,6 +1320,7 @@ it("orders fixed, manual and priority work, and shows time and attention metadat
 });
 
 it("filters both panes to stale and handoff work with ancestors, including across bands", async () => {
+  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
   const stale = {
     ...goal,
@@ -937,6 +1359,7 @@ it("filters both panes to stale and handoff work with ancestors, including acros
 });
 
 it("reveals a collapsed selected row from the lens and scrolls it into view", async () => {
+  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
   const scrollIntoView = vi.fn();
   const scroll = Object.getOwnPropertyDescriptor(
@@ -970,6 +1393,7 @@ it("reveals a collapsed selected row from the lens and scrolls it into view", as
 });
 
 it("writes a fractional key on pointer drop and reschedules or clears a date with the keyboard", async () => {
+  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
   const first = { ...goal, id: "first", title: "First", sort_key: 10 };
   const second = { ...goal, id: "second", title: "Second", sort_key: 20 };

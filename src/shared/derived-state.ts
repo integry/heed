@@ -1,4 +1,4 @@
-import type { Dependency, Item } from "./workspace";
+import type { Dependency, Item, RadarBand } from "./workspace";
 
 export const STREAM_BANDS = [
   "done-today",
@@ -129,6 +129,61 @@ export function bandsFor(
       item.id,
       resolveBand(item, effectiveSchedule(item, ancestors), dates),
     ]),
+  );
+}
+
+function toRadarBand(value: Band | null): RadarBand {
+  if (value === "tomorrow") return "this-week";
+  if (value === "done-today" || value === null) return "today";
+  return value;
+}
+
+/** Classify completion using the item's placement immediately before it became done. */
+export function completionBand(
+  item: ScheduledItem,
+  ancestors: ReadonlyMap<string, Schedule>,
+  now: number,
+  timezone: string,
+): RadarBand {
+  return toRadarBand(
+    band(
+      { ...item, status: item.status === "active" ? "active" : "queued" },
+      ancestors,
+      now,
+      timezone,
+    ),
+  );
+}
+
+export function radarBandsFor(
+  items: readonly (ScheduledItem & Pick<Item, "completed_band">)[],
+  ancestors: ReadonlyMap<string, Schedule>,
+  now: number,
+  timezone: string,
+): Map<string, RadarBand> {
+  const dates = calendar(now, timezone);
+  return new Map(
+    items.map((item) => {
+      if (item.status === "done") {
+        const completed = workspaceInstant(item.completed_at);
+        return [
+          item.id,
+          item.completed_band ??
+            completionBand(
+              item,
+              ancestors,
+              Number.isFinite(completed) ? completed : now,
+              timezone,
+            ),
+        ];
+      }
+      return [
+        item.id,
+        toRadarBand(
+          resolveBand(item, effectiveSchedule(item, ancestors), dates),
+        ),
+      ];
+    }),
   );
 }
 

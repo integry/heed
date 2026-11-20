@@ -1100,3 +1100,39 @@ it.each(["item_id", "blocked_by_id"] as const)(
     });
   },
 );
+
+it("keeps the radar completion band for active work and inherited schedules", async () => {
+  const stub = newWorkspace();
+  const future = new Date(Date.now() + 14 * day).toISOString().slice(0, 10);
+  const { item_id: parent } = await stub.addItem(human, {
+    title: "A future goal",
+    scheduled_on: future,
+  });
+  const { item_id: child } = await stub.addItem(human, {
+    title: "Inherits the future date",
+    parent_id: parent,
+  });
+  const completed = await stub.reportProgress(reporter, {
+    item_id: child,
+    status: "done",
+  });
+  expect(completed.items[0].completed_band).toBe("later");
+  await stub.reportProgress(reporter, { item_id: parent, status: "active" });
+  const activeCompletion = await stub.reportProgress(reporter, {
+    item_id: parent,
+    status: "done",
+  });
+  expect(activeCompletion.items[0].completed_band).toBe("today");
+  await evictDurableObject(stub);
+  const rescheduled = await stub.updateItem(human, {
+    item_id: child,
+    scheduled_on: null,
+    priority: 1,
+  });
+  expect(rescheduled.items[0].completed_band).toBe("later");
+  const reopened = await stub.reopenItem(human, {
+    item_id: child,
+    reason: "More work",
+  });
+  expect(reopened.items[0].completed_band).toBeNull();
+});

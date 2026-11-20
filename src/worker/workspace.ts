@@ -2,7 +2,7 @@ import { buildPushPayload } from "@block65/webcrypto-web-push";
 import type { PushSubscription } from "@block65/webcrypto-web-push";
 import { DurableObject } from "cloudflare:workers";
 import { z, type ZodType } from "zod";
-import { bandsFor, isGhost } from "../shared/derived-state";
+import { bandsFor, completionBand, isGhost } from "../shared/derived-state";
 import { HistoryQuerySchema } from "../shared/human-api";
 import type {
   HistoryItem,
@@ -805,11 +805,11 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       if (patch.agent_name === undefined && mutation.actor.kind === "agent") {
         patch.agent_name = mutation.actor.name;
       }
+      Object.assign(patch, placement);
       this.#applyStatus(mutation, patch, data.status);
       const id = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
       const now = mutation.now.toISOString();
       const row = {
-        ...placement,
         ...patch,
         id,
         title: data.title,
@@ -918,6 +918,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       const patch: ItemPatch = {
         status: "queued",
         completed_at: null,
+        completed_band: null,
         reopen_count: item.reopen_count + 1,
         reopen_reason: data.reason,
       };
@@ -1388,8 +1389,34 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       );
     }
     patch.status = status;
-    if (status === "done") patch.completed_at = mutation.now.toISOString();
-    else if (item?.status === "done") patch.completed_at = null;
+    if (status === "done") {
+      const placement = { ...item, ...patch };
+      const ancestors = new Map<string, Item>();
+      let parentId = placement.parent_id;
+      while (parentId) {
+        const parent = this.#findItem({ item_id: parentId });
+        if (!parent) break;
+        ancestors.set(parentId, parent);
+        parentId = parent.parent_id;
+      }
+      patch.completed_at = mutation.now.toISOString();
+      patch.completed_band = completionBand(
+        {
+          id: item?.id ?? "",
+          parent_id: placement.parent_id ?? null,
+          scheduled_on: placement.scheduled_on ?? null,
+          time_at: placement.time_at ?? null,
+          completed_at: null,
+          status: item?.status ?? "queued",
+        },
+        ancestors,
+        mutation.now.getTime(),
+        mutation.timezone,
+      );
+    } else if (item?.status === "done") {
+      patch.completed_at = null;
+      patch.completed_band = null;
+    }
 
     const schedule =
       patch.scheduled_on === undefined
