@@ -60,8 +60,12 @@ it("creates items in Inbox, the actor default, the explicit project or the paren
   });
   const {
     items: [other],
-  } = await stub.addItem(agent, { title: "Invoices", project: billing });
-  expect(other.project_id).toBe(billing);
+  } = await stub.addItem(agent, {
+    title: "Invoices",
+    project: billing,
+    agent_name: null,
+  });
+  expect(other).toMatchObject({ project_id: billing, agent_name: null });
 
   const {
     items: [child],
@@ -116,6 +120,7 @@ it("upserts by external key atomically, preserving omitted fields and creation i
     project,
     external_key: "heed#queue",
     tags: ["release"],
+    agent_name: "Reviewer",
   };
   const created = await Promise.all([
     stub.addItem(reporter, input),
@@ -128,7 +133,7 @@ it("upserts by external key atomically, preserving omitted fields and creation i
   const {
     items: [updated],
     guidance_updated_at,
-  } = await stub.addItem(human, {
+  } = await stub.addItem(reporter, {
     title: "Ship queue",
     external_key: input.external_key,
     status: "done",
@@ -141,7 +146,7 @@ it("upserts by external key atomically, preserving omitted fields and creation i
     project_id: project,
     tags: '["release"]',
     created_by: "agent",
-    agent_name: reporter.name,
+    agent_name: "Reviewer",
     status: "done",
     completed_at: expect.any(String),
     note: "Merged",
@@ -151,6 +156,19 @@ it("upserts by external key atomically, preserving omitted fields and creation i
     "status",
     "note",
   ]);
+  const retry = { title: updated.title, external_key: input.external_key };
+  const reassigned = await stub.addItem(reporter, {
+    ...retry,
+    agent_name: "CI",
+  });
+  expect(reassigned.items).toEqual([
+    expect.objectContaining({ id, agent_name: "CI" }),
+  ]);
+  const cleared = await stub.addItem(reporter, { ...retry, agent_name: null });
+  expect(cleared.items).toEqual([
+    expect.objectContaining({ id, agent_name: null }),
+  ]);
+  expect((await stub.addItem(reporter, retry)).items).toEqual([]);
   await runInDurableObject(stub, (workspace, { storage: { sql } }) => {
     expect(() =>
       workspace.addItem(reporter, { ...input, project: INBOX_PROJECT_ID }),
@@ -281,13 +299,19 @@ it("rejects report-only restrictions and ignores locked fields while applying th
   expect(
     await stub.addItem(reporter, {
       external_key: "locked",
-      title: "Other invoice",
+      title: "Review other invoice",
       priority: 1,
     }),
   ).toMatchObject({
     item_id: upsert.item_id,
     ignored_fields: ["priority"],
-    items: [expect.objectContaining({ priority: 5 })],
+    items: [
+      expect.objectContaining({
+        title: "Review other invoice",
+        priority: 5,
+        agent_name: null,
+      }),
+    ],
   });
 
   await runInDurableObject(stub, (workspace) => {
@@ -423,6 +447,7 @@ it("reports progress, schedules active work in the workspace timezone and leaves
     title: "Task",
     parent_id: goal,
     external_key: "release",
+    agent_name: "Reviewer",
   });
   const {
     items: [active],
@@ -433,7 +458,7 @@ it("reports progress, schedules active work in the workspace timezone and leaves
   });
   expect(active).toMatchObject({
     status: "active",
-    agent_name: "Builder",
+    agent_name: "Reviewer",
     scheduled_on: localToday,
     last_heartbeat_at: expect.any(String),
   });
@@ -461,11 +486,21 @@ it("reports progress, schedules active work in the workspace timezone and leaves
   ).toMatchObject({
     status: "done",
     completed_at: done.completed_at,
-    agent_name: "Builder",
+    agent_name: "CI",
     note: "Released",
     ref_url: "https://example.test/pr",
   });
-  await stub.reportProgress(reporter, { item_id, status: "done" });
+  const cleared = await stub.reportProgress(reporter, {
+    item_id,
+    status: "done",
+    agent_name: null,
+  });
+  expect(cleared.items).toEqual([
+    expect.objectContaining({ id: item_id, agent_name: null }),
+  ]);
+  expect(
+    (await stub.reportProgress(reporter, { item_id, status: "done" })).items,
+  ).toEqual([]);
   const itemEvents = await events(stub, item_id);
   expect(itemEvents.map(({ kind }) => kind)).toEqual([
     "created",
@@ -503,7 +538,7 @@ it("reports progress, schedules active work in the workspace timezone and leaves
     }),
   ).toMatchObject({
     ignored_fields: ["scheduled_on"],
-    items: [expect.objectContaining({ scheduled_on: null })],
+    items: [expect.objectContaining({ scheduled_on: null, agent_name: null })],
   });
 });
 
@@ -538,7 +573,9 @@ it("throttles equivalent heartbeat reports without any SQLite writes", async () 
     expect(heartbeat.last_heartbeat_at).not.toBe(old);
     expect(heartbeat.updated_at).toBe(updatedAt);
     expect(countWrites()).toBe(before + 1);
-    expect(workspace.reportProgress(reporter, input).items).toEqual([]);
+    expect(
+      workspace.reportProgress({ ...reporter, name: "Reviewer" }, input).items,
+    ).toEqual([]);
     expect(countWrites()).toBe(before + 1);
     expect(
       workspace.reportProgress(reporter, { item_id, note: "Finished build" })

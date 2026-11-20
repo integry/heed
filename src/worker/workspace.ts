@@ -254,22 +254,17 @@ export class Workspace extends DurableObject<Env> {
         ? this.#findItem({ external_key: data.external_key })
         : undefined;
       if (existing) {
-        this.#editItem(
-          mutation,
-          existing,
-          this.#withAgentName(mutation.actor, data),
-          {
-            heartbeat: data.status === "active",
-          },
-        );
+        this.#editItem(mutation, existing, data, {
+          heartbeat: data.status === "active",
+        });
         return existing.id;
       }
 
       const placement = this.#placement(mutation, data);
-      const patch = this.#editPatch(
-        mutation,
-        this.#withAgentName(mutation.actor, data),
-      );
+      const patch = this.#editPatch(mutation, data);
+      if (patch.agent_name === undefined && mutation.actor.kind === "agent") {
+        patch.agent_name = mutation.actor.name;
+      }
       this.#applyStatus(mutation, patch, data.status);
       const id = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
       const now = mutation.now.toISOString();
@@ -327,11 +322,7 @@ export class Workspace extends DurableObject<Env> {
     const data = parseInput(ReportProgressSchema, input);
     return this.#mutateItems(actor, (mutation) => {
       const item = this.#requireItem(data);
-      const patch = this.#editPatch(
-        mutation,
-        this.#withAgentName(mutation.actor, data),
-        item,
-      );
+      const patch = this.#editPatch(mutation, data, item);
       this.#applyStatus(mutation, patch, data.status, item);
       this.#saveItem(mutation, item, patch, { heartbeat: true });
       return item.id;
@@ -601,14 +592,6 @@ export class Workspace extends DurableObject<Env> {
       descendants:
         descendants ?? (changesProject ? this.#descendants(item.id) : []),
     };
-  }
-
-  #withAgentName<T extends AddItemInput | ReportProgressInput>(
-    actor: Actor,
-    input: T,
-  ): T {
-    if (actor.kind !== "agent" || input.agent_name !== undefined) return input;
-    return { ...input, agent_name: actor.name };
   }
 
   #editPatch(mutation: Mutation, input: ItemEdit, item?: Item): ItemPatch {
