@@ -14,7 +14,7 @@ import {
   resolveLens,
   type Lens,
 } from "./lenses";
-import { HorizonStream } from "./horizon-stream";
+import { HorizonStream, type LensSelection } from "./horizon-stream";
 import { isRadarRowVisible } from "./RadarLens";
 import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
@@ -150,7 +150,7 @@ function Workspace({
   );
   const dependencyEdit = useAction();
   const [showGhosts, setShowGhosts] = useState(true);
-  const [lensSelection, setLensSelection] = useState<{ id: string } | null>(
+  const [lensSelection, setLensSelection] = useState<LensSelection | null>(
     null,
   );
   const [history, setHistory] = useState(false);
@@ -412,19 +412,22 @@ function Workspace({
         >
           <div className="section-heading">
             <h1 id="lens-heading">{lens.label}</h1>
-            {(lens.id === "radar" || lens.id === "board") && state.settings && (
-              <details className="lens-menu">
-                <summary className="subtle">Lens options</summary>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={showGhosts}
-                    onChange={(event) => setShowGhosts(event.target.checked)}
-                  />
-                  Show completed ghosts
-                </label>
-              </details>
-            )}
+            {(lens.id === "radar" ||
+              lens.id === "treemap" ||
+              lens.id === "board") &&
+              state.settings && (
+                <details className="lens-menu">
+                  <summary className="subtle">Lens options</summary>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={showGhosts}
+                      onChange={(event) => setShowGhosts(event.target.checked)}
+                    />
+                    Show completed ghosts
+                  </label>
+                </details>
+              )}
             <button
               type="button"
               className="primary"
@@ -458,7 +461,9 @@ function Workspace({
               select={(id) => {
                 if (lens.id === "list" && id) selectStreamItem(id);
                 else select(id);
-                setLensSelection(id ? { id } : null);
+                setLensSelection(
+                  id ? { id, scrollStreamOnly: lens.id === "treemap" } : null,
+                );
                 if (id) setHistory(false);
               }}
               move={connection.mutate}

@@ -5,6 +5,7 @@ import {
   isLive,
   isStale,
   needsMe,
+  type Ring,
   STREAM_BANDS,
   streamOrder,
   streamRows,
@@ -13,6 +14,29 @@ import {
 import type { CanvasItem } from "../shared/workspace-socket";
 import type { Dependency } from "../shared/workspace";
 import type { WorkspaceData } from "./workspace-state";
+
+export const ringLabels: Record<Ring, string> = {
+  handoff: "Needs input",
+  stale: "Stale",
+  reopened: "Reopened",
+  blocked: "Blocked",
+  live: "Live",
+};
+
+export function itemRing(
+  item: CanvasItem,
+  now: number,
+  items: WorkspaceData["items"],
+  dependencies: readonly Dependency[],
+): Ring | null {
+  if (item.status === "done") return null;
+  if (item.handoff) return "handoff";
+  if (isStale(item, now)) return "stale";
+  if (item.reopen_count) return "reopened";
+  if (isBlocked(item, items, dependencies)) return "blocked";
+  if (isLive(item, now)) return "live";
+  return null;
+}
 
 export function selectWorkspace(
   data: WorkspaceData,

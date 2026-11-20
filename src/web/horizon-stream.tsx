@@ -57,11 +57,13 @@ interface Props extends Pick<
   /** Extra stream filters rendered beside Needs me. */
   actions?: ReactNode;
   selectedId: string | null;
-  lensSelection: { id: string } | null;
+  lensSelection: LensSelection | null;
   select: (id: string) => void;
   move: (mutation: StreamMove) => boolean;
   showHistory: () => void;
 }
+
+export type LensSelection = { id: string; scrollStreamOnly?: boolean };
 
 function indexRows(bands: BandRows) {
   const index = new Map<string, IndexedRow>();
@@ -196,7 +198,17 @@ export function HorizonStream({
     cancelAnimationFrame(revealFrame.current);
     revealFrame.current = requestAnimationFrame(() => {
       const rowNode = rowNodes.current.get(row.item.id);
-      if (fromLens) rowNode?.scrollIntoView?.({ block: "nearest" });
+      if (fromLens?.scrollStreamOnly && rowNode) {
+        // Keep the treemap in place so a second tap can reach the same tile.
+        const stream = rowNode.closest<HTMLElement>(".stream-content");
+        if (!stream) return;
+        const rowBounds = rowNode.getBoundingClientRect();
+        const streamBounds = stream.getBoundingClientRect();
+        if (rowBounds.top < streamBounds.top)
+          stream.scrollTop += rowBounds.top - streamBounds.top;
+        else if (rowBounds.bottom > streamBounds.bottom)
+          stream.scrollTop += rowBounds.bottom - streamBounds.bottom;
+      } else if (fromLens) rowNode?.scrollIntoView?.({ block: "nearest" });
       else rowNode?.querySelector<HTMLButtonElement>(".drag-handle")?.focus();
     });
   }, [keyboardMove, lensSelection, visibleRows]);
