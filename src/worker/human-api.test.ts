@@ -474,6 +474,7 @@ it("searches and pages terminal items newest first without skipping equal timest
 
 it("authenticates and stores one push subscription per endpoint and removes it idempotently", async () => {
   const path = "/api/push/subscribe";
+  const statusPath = "/api/push/status";
   const endpoint = "https://fcm.googleapis.com/fcm/send/test-subscription";
   const keys = {
     p256dh:
@@ -484,6 +485,18 @@ it("authenticates and stores one push subscription per endpoint and removes it i
     runInDurableObject(workspace, (_, { storage: { sql } }) =>
       sql.exec("SELECT endpoint, keys FROM push_subscriptions").toArray(),
     );
+  const status = async (deviceKeys = keys) =>
+    json(await request(statusPath, "POST", { endpoint, keys: deviceKeys }));
+  await error(
+    await request(statusPath, "POST", { endpoint, keys }, { Origin: origin }),
+    401,
+    "unauthorized",
+  );
+  await error(
+    await request(statusPath, "POST", { endpoint, keys }, { Cookie: cookie }),
+    403,
+    "forbidden_origin",
+  );
   await error(
     await request(path, "POST", { endpoint, keys }, { Origin: origin }),
     401,
@@ -512,6 +525,7 @@ it("authenticates and stores one push subscription per endpoint and removes it i
     "invalid_input",
   );
   expect(await subscriptions()).toEqual([]);
+  expect(await status()).toEqual({ registered: false });
   const updatedKeys = { ...keys, auth: "AAAAAAAAAAAAAAAAAAAAAA" };
   for (const body of [
     { endpoint, keys },
@@ -523,10 +537,13 @@ it("authenticates and stores one push subscription per endpoint and removes it i
   expect(await subscriptions()).toEqual([
     { endpoint, keys: JSON.stringify(updatedKeys) },
   ]);
+  expect(await status()).toEqual({ registered: false });
+  expect(await status(updatedKeys)).toEqual({ registered: true });
   for (let index = 0; index < 2; index++) {
     expect(await json(await request(path, "DELETE", { endpoint }))).toEqual({
       ok: true,
     });
   }
   expect(await subscriptions()).toEqual([]);
+  expect(await status(updatedKeys)).toEqual({ registered: false });
 });

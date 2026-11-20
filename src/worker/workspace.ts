@@ -941,6 +941,13 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     return notification ? { ...result, notification } : result;
   }
 
+  getPushStatus(input: PushSubscriptionInput): { registered: boolean } {
+    const { endpoint, keys } = parseInput(PushSubscriptionSchema, input);
+    return {
+      registered: this.#hasPushSubscription(endpoint, JSON.stringify(keys)),
+    };
+  }
+
   subscribePush(input: PushSubscriptionInput): { ok: true } {
     const { endpoint, keys } = parseInput(PushSubscriptionSchema, input);
     this.#sql.exec(
@@ -960,6 +967,18 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       endpoint,
     );
     return { ok: true };
+  }
+
+  #hasPushSubscription(endpoint: string, keys: string): boolean {
+    return (
+      this.#sql
+        .exec(
+          "SELECT 1 FROM push_subscriptions WHERE endpoint = ? AND keys = ?",
+          endpoint,
+          keys,
+        )
+        .toArray().length > 0
+    );
   }
 
   #reservePush(tokenId: string, now: number): boolean {
@@ -1150,14 +1169,10 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         await this.ctx.storage.sync();
 
         // A handoff or subscription can change while the payload is prepared.
-        const stillSubscribed = this.#sql
-          .exec(
-            "SELECT 1 FROM push_subscriptions WHERE endpoint = ? AND keys = ?",
-            endpoint,
-            keys,
-          )
-          .toArray().length;
-        if (!stillSubscribed || this.#latestHandoffId(itemId) !== handoffId)
+        if (
+          !this.#hasPushSubscription(endpoint, keys) ||
+          this.#latestHandoffId(itemId) !== handoffId
+        )
           return;
 
         const response = await fetch(endpoint, {

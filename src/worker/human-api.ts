@@ -61,6 +61,10 @@ export async function handleHumanApi(
   try {
     const workspace = getWorkspaceStub(env, session.workspaceId);
     switch (`${method} ${pathname}`) {
+      case "POST /api/push/status":
+        return await withJson(request, PushSubscriptionSchema, (input) =>
+          workspace.getPushStatus(input),
+        );
       case "POST /api/push/subscribe":
         if (!vapidKeys(env))
           return apiError(

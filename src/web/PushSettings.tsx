@@ -2,20 +2,41 @@ import { useEffect, useState } from "react";
 import { readApi, useAction } from "./workspace-controls";
 
 const subscriptionPath = "/api/push/subscribe";
+let pendingDeviceChange: Promise<void> | undefined;
 
-async function updateSubscription(
+async function requestSubscription(
+  path: string,
   method: "POST" | "DELETE",
   body: PushSubscriptionJSON,
+  errorMessage: string,
+  signal?: AbortSignal,
 ) {
-  const response = await fetch(subscriptionPath, {
+  const response = await fetch(path, {
     method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!response.ok) {
     const data = await response.json().catch(() => null);
-    throw new Error(data?.error?.message ?? "Couldn’t update notifications.");
+    throw new Error(data?.error?.message ?? errorMessage);
   }
+  return response;
+}
+
+async function registeredSubscription(
+  subscription: PushSubscription,
+  signal?: AbortSignal,
+) {
+  const response = await requestSubscription(
+    "/api/push/status",
+    "POST",
+    subscription.toJSON(),
+    "Couldn’t check notification registration.",
+    signal,
+  );
+  const { registered } = (await response.json()) as { registered: boolean };
+  return registered ? subscription : null;
 }
 
 export function PushSettings() {
@@ -35,11 +56,17 @@ export function PushSettings() {
     const controller = new AbortController();
     async function load() {
       const worker = await navigator.serviceWorker.ready;
+      // Settings can be closed while a device change is still in progress.
+      await pendingDeviceChange?.catch(() => {});
       if (controller.signal.aborted) return;
       const existing = await worker.pushManager.getSubscription();
       if (controller.signal.aborted) return;
+      const registered = existing
+        ? await registeredSubscription(existing, controller.signal)
+        : null;
+      if (controller.signal.aborted) return;
       setRegistration(worker);
-      setSubscription(existing);
+      setSubscription(registered);
       const { publicKey } = await readApi<{ publicKey: string }>(
         "/api/push/key",
         controller.signal,
@@ -51,6 +78,27 @@ export function PushSettings() {
     });
     return () => controller.abort();
   }, [supported]);
+
+  async function updateSubscription(
+    method: "POST" | "DELETE",
+    device: PushSubscription,
+  ) {
+    try {
+      await requestSubscription(
+        subscriptionPath,
+        method,
+        method === "POST" ? device.toJSON() : { endpoint: device.endpoint },
+        "Couldn’t update notifications.",
+      );
+    } catch (error) {
+      // A lost response does not tell us whether the server committed the change.
+      setSubscription(undefined);
+      setSubscription(
+        await registeredSubscription(device).catch(() => undefined),
+      );
+      throw error;
+    }
+  }
 
   async function enable() {
     if (!registration || !publicKey) return;
@@ -69,19 +117,14 @@ export function PushSettings() {
         throw error;
       });
 
-    try {
-      await updateSubscription("POST", next.toJSON());
-    } catch (error) {
-      await next.unsubscribe().catch(() => {});
-      throw error;
-    }
+    await updateSubscription("POST", next);
     setSubscription(next);
     setFeedback("Notifications enabled on this device.");
   }
 
   async function disable() {
     if (!subscription) return;
-    await updateSubscription("DELETE", { endpoint: subscription.endpoint });
+    await updateSubscription("DELETE", subscription);
     // The server is already unsubscribed. If browser cleanup fails, enabling
     // again can register the same subscription.
     setSubscription(null);
@@ -98,9 +141,19 @@ export function PushSettings() {
     setFeedback("Test notification shown on this device.");
   }
 
-  function act(action: () => Promise<void>) {
+  function act(action: () => Promise<void>, changesDevice = false) {
     setFeedback("");
-    void run(action);
+    void run(async () => {
+      if (!changesDevice) return action();
+      if (pendingDeviceChange) return;
+      const change = action();
+      pendingDeviceChange = change;
+      try {
+        await change;
+      } finally {
+        pendingDeviceChange = undefined;
+      }
+    });
   }
 
   return (
@@ -115,8 +168,12 @@ export function PushSettings() {
           <button
             type="button"
             className={subscription ? "subtle" : "primary"}
-            disabled={busy || (!subscription && !publicKey)}
-            onClick={() => act(subscription ? disable : enable)}
+            disabled={
+              busy ||
+              subscription === undefined ||
+              (!subscription && !publicKey)
+            }
+            onClick={() => act(subscription ? disable : enable, true)}
           >
             {subscription ? "Disable notifications" : "Enable notifications"}
           </button>
