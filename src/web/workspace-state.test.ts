@@ -144,8 +144,10 @@ it("rolls back rejected mutations without undoing newer pending changes or broad
 it("filters hidden projects from both panes and preserves inherited schedules in Needs me", () => {
   let state = receiveMessage(initialWorkspaceState(), snapshot);
   const view = () => selectWorkspace(workspaceView(state), now, true);
-  expect(view().tree.map(({ item }) => item.id)).toEqual([child.id]);
-  expect(view().bands.today.map(({ item }) => item.id)).toEqual([child.id]);
+  for (const rows of [view().tree, view().bands.today]) {
+    expect(rows.map(({ item }) => item.id)).toEqual([goal.id]);
+    expect(rows[0].children.map(({ item }) => item.id)).toEqual([child.id]);
+  }
   state = queueMutation(state, "hide", {
     type: "UPDATE_PROJECT",
     project_id: project.id,

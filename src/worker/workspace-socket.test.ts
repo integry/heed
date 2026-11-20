@@ -621,3 +621,55 @@ it("reorders projects with legacy tied positions while keeping Inbox fixed", asy
     error: { code: "conflict" },
   });
 });
+
+it("reopens an older item through the shared operation and publishes it to the canvas", async () => {
+  const item_id = await addItem("Investigate regression");
+  await workspace.reportProgress(human, { item_id, status: "cancelled" });
+  const client = await connect();
+  expect(await client.next()).toMatchObject({ type: "SNAPSHOT", items: [] });
+
+  client.send({
+    type: "REOPEN_ITEM",
+    requestId: "reopen",
+    input: { item_id, reason: "Regression returned" },
+  });
+  expect(await client.next()).toMatchObject({
+    type: "ITEM_UPSERT",
+    item: {
+      id: item_id,
+      status: "queued",
+      reopen_count: 1,
+      reopen_reason: "Regression returned",
+    },
+  });
+  expect(await client.next()).toMatchObject({
+    type: "ACK",
+    requestId: "reopen",
+  });
+  expect(await (await request("/api/history")).json()).toMatchObject({
+    items: [],
+  });
+});
+
+it("rolls back a reorder batch if a row disappears before the drop", async () => {
+  const item_id = await addItem("Existing item");
+  const client = await connect();
+  await client.next();
+  client.send({
+    type: "REORDER_ITEMS",
+    requestId: "reorder",
+    input: [
+      { item_id, sort_key: 1 },
+      { item_id: "missing", sort_key: 2 },
+    ],
+  });
+  expect(await client.next()).toMatchObject({
+    type: "ERROR",
+    requestId: "reorder",
+  });
+  client.send({ type: "GET_SNAPSHOT" });
+  expect(await client.next()).toMatchObject({
+    type: "SNAPSHOT",
+    items: [{ id: item_id, sort_key: null }],
+  });
+});

@@ -41,9 +41,26 @@ export function selectWorkspace(
   const attentionIds = new Set(
     canvas.filter((item) => needsMe(item, now)).map((item) => item.id),
   );
+  const allBands = streamRows(visible, now, timezone);
+  function collectAttention(rows: StreamRow<CanvasItem>[]) {
+    for (const { item, children } of rows) {
+      if (needsMe(item, now)) attentionIds.add(item.id);
+      collectAttention(children);
+    }
+  }
+  for (const band of STREAM_BANDS) collectAttention(allBands[band]);
+
+  const attentionContext = new Set(attentionIds);
+  for (const id of attentionIds) {
+    let parent = data.items.get(id)?.parent_id;
+    while (parent && !attentionContext.has(parent)) {
+      attentionContext.add(parent);
+      parent = data.items.get(parent)?.parent_id;
+    }
+  }
   const filtered = new Map(
     canvas
-      .filter((item) => !attentionOnly || attentionIds.has(item.id))
+      .filter((item) => !attentionOnly || attentionContext.has(item.id))
       .map((item) => [item.id, item]),
   );
 
@@ -61,25 +78,22 @@ export function selectWorkspace(
   }
 
   function filterRows(rows: StreamRow<CanvasItem>[]): StreamRow<CanvasItem>[] {
-    return rows.flatMap(({ item, children }) => {
-      const needsAttention = needsMe(item, now);
-      if (needsAttention) attentionIds.add(item.id);
-      const descendants = filterRows(children);
-      return !attentionOnly || needsAttention
-        ? [{ item, children: descendants }]
-        : descendants;
-    });
+    return rows
+      .filter(({ item }) => attentionContext.has(item.id))
+      .map(({ item, children }) => ({ item, children: filterRows(children) }));
   }
 
-  // Resolve inherited schedules before applying the Needs me filter.
-  const bands = streamRows(visible, now, timezone);
-  for (const band of STREAM_BANDS) bands[band] = filterRows(bands[band]);
+  const bands = { ...allBands };
+  if (attentionOnly) {
+    for (const band of STREAM_BANDS) bands[band] = filterRows(allBands[band]);
+  }
 
   return {
     projects,
     filtered,
     tree,
     bands,
+    allBands,
     timezone,
     liveCount: agentsLive([...data.items.values()], now).length,
     attentionCount: attentionIds.size,

@@ -74,6 +74,11 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
     input: SetStatusBodySchema.extend(ItemIdSchema.shape),
   }),
   z.strictObject({
+    type: z.literal("REORDER_ITEMS"),
+    requestId: SocketRequestIdSchema,
+    input: z.array(ItemIdSchema.extend({ sort_key: z.number() })).min(1),
+  }),
+  z.strictObject({
     type: z.literal("UPDATE_PROJECT"),
     requestId: SocketRequestIdSchema,
     project_id: z.string().min(1),

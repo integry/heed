@@ -1,9 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import {
-  STREAM_BANDS,
-  type Band,
-  type StreamRow,
-} from "../shared/derived-state";
+import type { StreamRow } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
 import { Guidance } from "./Guidance";
 import { Inspector } from "./Inspector";
@@ -16,18 +12,11 @@ import {
   resolveLens,
   type Lens,
 } from "./lenses";
+import { HorizonStream } from "./horizon-stream";
+import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
 import { workspaceView, type MutationInput } from "./workspace-state";
 import { selectWorkspace } from "./workspace-view";
-
-const bandLabels: Record<Band, string> = {
-  "done-today": "Done today",
-  today: "Today",
-  tomorrow: "Tomorrow",
-  "this-week": "This week",
-  later: "Later",
-  backlog: "Backlog",
-};
 
 type Session =
   | { status: "loading" | "error" }
@@ -121,6 +110,10 @@ function Workspace({
   );
   const [lensId, setLensId] = useState(readLensId);
   const [selectedId, select] = useState<string | null>(null);
+  const [lensSelection, setLensSelection] = useState<{ id: string } | null>(
+    null,
+  );
+  const [history, setHistory] = useState(false);
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [hiddenOnly, setHiddenOnly] = useState(false);
   const [panel, setPanel] = useState<{
@@ -128,20 +121,12 @@ function Workspace({
   } | null>(null);
   const clock = useMinuteClock();
   const view = useMemo(() => workspaceView(state), [state]);
-  const {
-    projects,
-    tree,
-    filtered,
-    bands,
-    attentionCount,
-    liveCount,
-    timezone,
-    now,
-  } = useMemo(() => {
+  const derived = useMemo(() => {
     // A broadcast can carry a heartbeat newer than the last clock tick.
     const now = Math.max(clock, Date.now());
     return { ...selectWorkspace(view, now, attentionOnly), now };
   }, [view, clock, attentionOnly]);
+  const { projects, tree, filtered, liveCount, timezone, now } = derived;
   const lens = resolveLens(registry, lensId);
   const LensComponent = lens.component;
   const live = state.connection === "live";
@@ -162,7 +147,40 @@ function Workspace({
   // A save can finish after the same kind of panel has been reopened.
   const closePanel = () =>
     setPanel((current) => (current === panel ? null : current));
-  const hasStreamRows = STREAM_BANDS.some((band) => bands[band].length > 0);
+  const openHistoryIds = useMemo(
+    () =>
+      new Set(
+        [...state.items.values()]
+          .filter(({ status }) => status !== "done" && status !== "cancelled")
+          .map(({ id }) => id),
+      ),
+    [state.items],
+  );
+  const pendingReopens = useMemo(
+    () =>
+      new Set(
+        [...state.pending.values()].flatMap((mutation) =>
+          mutation.type === "REOPEN_ITEM" && mutation.input.item_id
+            ? [mutation.input.item_id]
+            : [],
+        ),
+      ),
+    [state.pending],
+  );
+
+  const hiddenToggle = (
+    <button
+      type="button"
+      className="project-chip"
+      aria-pressed={hiddenOnly}
+      onClick={() => {
+        setAttentionOnly(false);
+        setHiddenOnly((value) => !value);
+      }}
+    >
+      Hidden
+    </button>
+  );
 
   useEffect(
     () => connection.start(onSessionExpired),
@@ -296,7 +314,11 @@ function Workspace({
               dependencies={dependencies}
               selectedId={selection}
               now={now}
-              select={select}
+              select={(id) => {
+                select(id);
+                setLensSelection(id ? { id } : null);
+                if (id) setHistory(false);
+              }}
               reschedule={(id, date) => updateItem(id, { scheduled_on: date })}
               moveProject={(id, project) => updateItem(id, { project })}
               setPriority={(id, priority) => updateItem(id, { priority })}
@@ -334,68 +356,75 @@ function Workspace({
         </section>
         <section className="stream-pane" aria-labelledby="stream-heading">
           <div className="sheet-handle" aria-hidden="true" />
-          <div className="section-heading stream-heading">
-            <h2 id="stream-heading">Horizon Stream</h2>
-            <div className="inline-actions">
-              <button
-                type="button"
-                className="attention-button"
-                aria-pressed={attentionOnly}
-                onClick={() => {
-                  setHiddenOnly(false);
-                  setAttentionOnly((value) => !value);
-                }}
-              >
-                Needs me <span>{attentionCount}</span>
-              </button>
-              <button
-                type="button"
-                className="project-chip"
-                aria-pressed={hiddenOnly}
-                onClick={() => {
-                  setAttentionOnly(false);
-                  setHiddenOnly((value) => !value);
-                }}
-              >
-                Hidden
-              </button>
-            </div>
-          </div>
-          <div className="stream-content">
-            {hiddenOnly ? (
-              hiddenRows.length ? (
-                <StreamItems
-                  rows={hiddenRows}
-                  selectedId={selectedId}
-                  select={select}
-                />
-              ) : (
-                <p className="empty">No hidden items.</p>
-              )
-            ) : (
-              <>
-                {state.settings && !hasStreamRows && (
-                  <p className="empty">
-                    {attentionOnly
-                      ? "Nothing needs your input."
-                      : "No items in the stream."}
-                  </p>
+          {history ? (
+            <StreamHistory
+              projects={projects}
+              timezone={timezone}
+              live={live}
+              openIds={openHistoryIds}
+              pendingIds={pendingReopens}
+              close={() => setHistory(false)}
+              reopen={(item_id, reason) =>
+                connection.mutate({
+                  type: "REOPEN_ITEM",
+                  input: { item_id, reason },
+                })
+              }
+            />
+          ) : hiddenOnly ? (
+            <>
+              <div className="section-heading stream-heading">
+                <h2 id="stream-heading">Horizon Stream</h2>
+                <div className="inline-actions">
+                  <button
+                    type="button"
+                    className="attention-button"
+                    aria-pressed={false}
+                    onClick={() => {
+                      setHiddenOnly(false);
+                      setAttentionOnly(true);
+                    }}
+                  >
+                    Needs me <span>{derived.attentionCount}</span>
+                  </button>
+                  {hiddenToggle}
+                </div>
+              </div>
+              <div className="stream-content">
+                {hiddenRows.length ? (
+                  <StreamItems
+                    rows={hiddenRows}
+                    selectedId={selectedId}
+                    select={(id) => {
+                      setLensSelection(null);
+                      select(id);
+                    }}
+                  />
+                ) : (
+                  <p className="empty">No hidden items.</p>
                 )}
-                {STREAM_BANDS.filter((band) => bands[band].length > 0).map(
-                  (band) => (
-                    <section className="stream-band" key={band}>
-                      <h3>{bandLabels[band]}</h3>
-                      <StreamItems
-                        rows={bands[band]}
-                        selectedId={selectedId}
-                        select={select}
-                      />
-                    </section>
-                  ),
-                )}
-              </>
-            )}
-          </div>
+              </div>
+            </>
+          ) : (
+            <HorizonStream
+              {...derived}
+              items={view.items}
+              dependencies={view.dependencies}
+              ready={state.settings !== null}
+              live={live}
+              attentionOnly={attentionOnly}
+              toggleAttention={() => setAttentionOnly((value) => !value)}
+              actions={hiddenToggle}
+              selectedId={selectedId}
+              lensSelection={lensSelection}
+              select={(id) => {
+                setLensSelection(null);
+                select(id);
+              }}
+              move={connection.mutate}
+              showHistory={() => setHistory(true)}
+            />
+          )}
         </section>
       </main>
       {panel?.kind === "guidance" && state.settings && (
