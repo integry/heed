@@ -1,16 +1,45 @@
 import { DurableObject } from "cloudflare:workers";
-import type { ZodType } from "zod";
+import { z, type ZodType } from "zod";
+import { bandsFor } from "../shared/derived-state";
 import {
   GuidanceTextSchema,
   INBOX_PROJECT_ID,
   ProjectSchema,
   TimezoneSchema,
 } from "../shared/workspace";
-import type { Guidance, Project, Setting, Settings } from "../shared/workspace";
+import type {
+  Guidance,
+  Item,
+  Project,
+  Setting,
+  Settings,
+} from "../shared/workspace";
 import { migrateWorkspace } from "./workspace-migrations";
 
 const projectUpdateSchema = ProjectSchema.omit({ id: true }).partial().strict();
 const projectCreateSchema = projectUpdateSchema.required({ name: true });
+const MAX_CANVAS_ITEMS = 50;
+const canvasQuerySchema = z
+  .object({
+    project: z.string().optional(),
+    parent_id: z.string().nullable().optional(),
+    query: z.string().optional(),
+    include_done: z.boolean().default(false),
+    limit: z.int().positive().default(MAX_CANVAS_ITEMS),
+  })
+  .strict();
+
+type CanvasRow = Pick<
+  Item,
+  | "id"
+  | "title"
+  | "status"
+  | "parent_id"
+  | "ref_url"
+  | "scheduled_on"
+  | "time_at"
+  | "completed_at"
+> & { project: string };
 
 export const DEFAULT_WORKSPACE_ID = "default";
 
@@ -62,6 +91,76 @@ export class Workspace extends DurableObject<Env> {
   getGuidance(): Guidance {
     const { guidance, guidance_updated_at } = this.getSettings();
     return { guidance, guidance_updated_at };
+  }
+
+  getCanvas(input: z.input<typeof canvasQuerySchema> = {}) {
+    const { project, parent_id, query, include_done, limit } = parseInput(
+      canvasQuerySchema,
+      input,
+    );
+    const { timezone, guidance, guidance_updated_at } = this.getSettings();
+    const items = this.#sql
+      .exec<CanvasRow>(
+        `SELECT i.id, i.title, i.status, i.parent_id, i.ref_url, i.scheduled_on,
+              i.time_at, i.completed_at, p.name AS project
+       FROM items i JOIN projects p ON p.id = i.project_id
+       WHERE (?1 IS NULL OR p.id = ?1 OR p.name = ?1)
+         AND (?2 OR i.parent_id IS ?3)
+         AND (?4 IS NULL OR instr(lower(i.title), lower(?4)) > 0)
+         AND (?5 OR i.status NOT IN ('done', 'cancelled'))
+       ORDER BY i.updated_at DESC, i.id
+       LIMIT ?6`,
+        project ?? null,
+        Number(parent_id === undefined),
+        parent_id ?? null,
+        query ?? null,
+        Number(include_done),
+        Math.min(limit, MAX_CANVAS_ITEMS),
+      )
+      .toArray();
+    const parentIds = [
+      ...new Set(
+        items.flatMap(({ parent_id }) =>
+          parent_id === null ? [] : [parent_id],
+        ),
+      ),
+    ];
+    const ancestors =
+      parentIds.length === 0
+        ? []
+        : this.#sql
+            .exec<Pick<Item, "id" | "parent_id" | "scheduled_on">>(
+              `WITH RECURSIVE ancestors(id, parent_id, scheduled_on) AS (
+         SELECT id, parent_id, scheduled_on FROM items WHERE id IN (SELECT value FROM json_each(?))
+         UNION
+         SELECT i.id, i.parent_id, i.scheduled_on FROM items i
+         JOIN ancestors a ON i.id = a.parent_id
+       )
+       SELECT * FROM ancestors`,
+              JSON.stringify(parentIds),
+            )
+            .toArray();
+    const bands = bandsFor(
+      items,
+      new Map(ancestors.map((item) => [item.id, item])),
+      Date.now(),
+      timezone,
+    );
+    return {
+      guidance,
+      guidance_updated_at,
+      items: items.map(
+        ({ id, title, project, status, parent_id, ref_url }) => ({
+          id,
+          title,
+          project,
+          status,
+          parent_id,
+          ref_url,
+          band: bands.get(id) ?? null,
+        }),
+      ),
+    };
   }
 
   setGuidance(guidance: string): Guidance {
