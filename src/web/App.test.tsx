@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -78,13 +79,17 @@ it.each([true, false])(
   },
 );
 
-async function openWorkspace(registry?: readonly [Lens, ...Lens[]]) {
+async function openWorkspace(
+  registry?: readonly [Lens, ...Lens[]],
+  initialSnapshot: Extract<SocketMessage, { type: "SNAPSHOT" }> = snapshot,
+) {
   fetchSession.mockImplementation(async () =>
     Response.json({ workspaceId: "default", email: "person@example.test" }),
   );
+  const previousSocket = TestSocket.current;
   const view = render(<App registry={registry} />);
-  await screen.findByRole("heading", { name: "Horizon Stream" });
-  TestSocket.current.receive(snapshot);
+  await waitFor(() => expect(TestSocket.current).not.toBe(previousSocket));
+  TestSocket.current.receive(initialSnapshot);
   return view;
 }
 
@@ -269,12 +274,7 @@ it("sends the browser timezone only when the workspace has none", async () => {
   const view = await openWorkspace();
   expect(TestSocket.current.send).not.toHaveBeenCalled();
   view.unmount();
-  fetchSession.mockImplementation(async () =>
-    Response.json({ workspaceId: "default", email: "person@example.test" }),
-  );
-  render(<App />);
-  await screen.findByRole("heading", { name: "Horizon Stream" });
-  TestSocket.current.receive({ ...snapshot, timezoneConfigured: false });
+  await openWorkspace(undefined, { ...snapshot, timezoneConfigured: false });
   expect(JSON.parse(TestSocket.current.send.mock.lastCall![0])).toMatchObject({
     type: "INITIALIZE_TIMEZONE",
     input: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
