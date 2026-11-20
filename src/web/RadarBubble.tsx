@@ -1,5 +1,5 @@
 import { memo, type PointerEvent } from "react";
-import { instant, type Ring } from "../shared/derived-state";
+import { workspaceInstant, type Ring } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
 import { truncateLabel, type Point } from "./radar-geometry";
 
@@ -23,7 +23,7 @@ const statusLabels: Record<Ring, string> = {
 };
 
 export function lastSeen(timestamp: string | null, now: number) {
-  const minutes = Math.floor((now - instant(timestamp)) / 60_000);
+  const minutes = Math.floor((now - workspaceInstant(timestamp)) / 60_000);
   if (!Number.isFinite(minutes)) return "Last seen unknown";
   if (minutes < 60) return `Last seen ${Math.max(0, minutes)}m ago`;
   const hours = Math.floor(minutes / 60);
@@ -72,7 +72,7 @@ export const RadarBubble = memo(function RadarBubble({
   const ghost = item.status === "done";
   const showResize = selected && live && !ghost;
   const stale = ring === "stale" ? lastSeen(item.last_heartbeat_at, now) : null;
-  const time = instant(item.time_at);
+  const time = workspaceInstant(item.time_at);
   const badge =
     item.time_type !== "flexible" && Number.isFinite(time)
       ? `${item.time_type === "fixed" ? "Fixed" : "Due"} ${timeFormatter.format(time)}`

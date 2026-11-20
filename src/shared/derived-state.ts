@@ -19,7 +19,7 @@ type ScheduledItem = Schedule &
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 
-export function instant(value: string | null): number {
+export function workspaceInstant(value: string | null): number {
   // SQLite datetime('now') produces UTC text without a timezone marker.
   if (value?.includes(" ")) return Date.parse(value.replace(" ", "T") + "Z");
   return value === null ? NaN : Date.parse(value);
@@ -80,14 +80,14 @@ function resolveBand(
 ): Band | null {
   if (item.status === "cancelled") return null;
   if (item.status === "done") {
-    const completed = instant(item.completed_at);
+    const completed = workspaceInstant(item.completed_at);
     return Number.isFinite(completed) &&
       dates.localDate(completed) === dates.today
       ? "done-today"
       : null;
   }
 
-  const time = instant(item.time_at);
+  const time = workspaceInstant(item.time_at);
   const timeDate = Number.isFinite(time) ? dates.localDate(time) : null;
   if (
     item.status === "active" ||
@@ -165,7 +165,7 @@ export function radarBandsFor(
   return new Map(
     items.map((item) => {
       if (item.status === "done") {
-        const completed = instant(item.completed_at);
+        const completed = workspaceInstant(item.completed_at);
         return [
           item.id,
           item.completed_band ??
@@ -206,7 +206,7 @@ export function isLive(
   item: Pick<Item, "status" | "last_heartbeat_at">,
   now: number,
 ): boolean {
-  const age = now - instant(item.last_heartbeat_at);
+  const age = now - workspaceInstant(item.last_heartbeat_at);
   return item.status === "active" && age >= 0 && age <= 15 * MINUTE;
 }
 
@@ -214,7 +214,7 @@ export function isStale(
   item: Pick<Item, "status" | "last_heartbeat_at">,
   now: number,
 ): boolean {
-  const heartbeat = instant(item.last_heartbeat_at);
+  const heartbeat = workspaceInstant(item.last_heartbeat_at);
   return (
     item.status === "active" &&
     (Number.isNaN(heartbeat) || now - heartbeat > 15 * MINUTE)
@@ -243,7 +243,7 @@ export function isGhost(
   item: Pick<Item, "status" | "completed_at">,
   now: number,
 ): boolean {
-  const age = now - instant(item.completed_at);
+  const age = now - workspaceInstant(item.completed_at);
   return item.status === "done" && age >= 0 && age < DAY;
 }
 
@@ -326,7 +326,7 @@ export function agentsLive(
 function streamSortKey(
   item: Pick<Item, "time_type" | "time_at" | "sort_key" | "priority">,
 ) {
-  const time = instant(item.time_at);
+  const time = workspaceInstant(item.time_at);
   if (item.time_type === "fixed" && Number.isFinite(time)) return [0, time];
   if (item.sort_key !== null) return [1, item.sort_key];
   return [2, -item.priority];
