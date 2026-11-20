@@ -26,3 +26,7 @@ p {
   margin: 0.5rem 0 0;
   color: #415b53;
 }
+
+.horizon-stream {
+  text-align: left;
+}
