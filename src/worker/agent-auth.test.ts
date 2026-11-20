@@ -82,6 +82,40 @@ it("limits each token before Workspace lookup across both agent routes", async (
   expect(counts.size).toBe(2);
 });
 
+it("returns JSON for an authenticated report and throttles the next report", async () => {
+  const stub = getWorkspaceStub(env);
+  const { token } = await stub.createToken("Session hook");
+  const { item_id } = await stub.addItem(
+    { kind: "human" },
+    { title: "Build", external_key: "repo#branch" },
+  );
+  const limit = vi
+    .fn<RateLimit["limit"]>()
+    .mockResolvedValueOnce({ success: true })
+    .mockResolvedValueOnce({ success: false });
+  const bindings = { ...env, TOKEN_RATE_LIMITER: { limit } };
+  const send = () =>
+    worker.fetch(
+      request("/api/report", token, {
+        external_key: "repo#branch",
+        status: "active",
+      }),
+      bindings,
+    );
+
+  const first = await send();
+  expect(first.status).toBe(200);
+  expect(first.headers.get("Content-Type")).toContain("application/json");
+  expect(await first.json()).toMatchObject({
+    item_id,
+    items: [{ status: "active" }],
+    guidance_updated_at: null,
+  });
+  const second = await send();
+  expect(second.status).toBe(429);
+  expect(second.headers.get("Retry-After")).toBe("60");
+});
+
 it("creates tokens through the guarded bootstrap and uses their scope on reports", async () => {
   const bootstrap = "/api/admin/tokens";
   const admin = "test-only-bootstrap-secret";
