@@ -1,10 +1,9 @@
-import { DurableObject } from "cloudflare:workers";
 import { handleAuth } from "./auth";
 import type { AuthEnv } from "./auth";
 import { requireSession } from "./session";
 import type { HumanActor } from "./session";
 
-export class Workspace extends DurableObject<Env> {}
+export { Workspace } from "./workspace";
 
 function handleHumanRoute(
   request: Request,
