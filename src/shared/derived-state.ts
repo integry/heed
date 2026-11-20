@@ -287,7 +287,7 @@ export function streamOrder<
 }
 
 type StreamItem = ScheduledItem &
-  Pick<Item, "time_type" | "sort_key" | "priority">;
+  Pick<Item, "time_type" | "sort_key" | "priority" | "hidden">;
 export interface StreamRow<T = Item> {
   item: T;
   children: StreamRow<T>[];
@@ -298,12 +298,8 @@ export function streamRows<T extends StreamItem>(
   now: number,
   timezone: string,
 ): Record<Band, StreamRow<T>[]> {
-  const bands = bandsFor(
-    items,
-    new Map(items.map((item) => [item.id, item])),
-    now,
-    timezone,
-  );
+  const itemsById = new Map(items.map((item) => [item.id, item]));
+  const bands = bandsFor(items, itemsById, now, timezone);
   const rowsById = new Map(
     items.map((item) => [item.id, { item, children: [] } as StreamRow<T>]),
   );
@@ -318,6 +314,13 @@ export function streamRows<T extends StreamItem>(
   for (const item of streamOrder(items)) {
     const itemBand = bands.get(item.id);
     if (!itemBand) continue;
+
+    let root: T | undefined = item;
+    while (root && root.parent_id !== null) {
+      root = itemsById.get(root.parent_id);
+    }
+    if (root?.hidden === 1) continue;
+
     const row = rowsById.get(item.id)!;
     if (item.parent_id !== null && bands.get(item.parent_id) === itemBand) {
       rowsById.get(item.parent_id)!.children.push(row);

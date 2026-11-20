@@ -440,4 +440,29 @@ describe("stream", () => {
     expect(rows.backlog).toEqual([{ item: orphan, children: [] }]);
     expect(rows["done-today"]).toEqual([]);
   });
+
+  it("omits a hidden top-level item and descendants across bands", () => {
+    const goal = item("hidden goal", {
+      hidden: 1,
+      scheduled_on: "2024-04-03",
+    });
+    const child = item("same band", { parent_id: goal.id, depth: 2 });
+    const tomorrow = item("different band", {
+      parent_id: goal.id,
+      depth: 2,
+      scheduled_on: "2024-04-04",
+    });
+    const grandchild = item("grandchild", {
+      parent_id: child.id,
+      depth: 3,
+      scheduled_on: "2024-04-05",
+    });
+    const visible = item("visible goal", { scheduled_on: "2024-04-03" });
+    const items = [grandchild, child, tomorrow, goal, visible];
+
+    expect(band(child, index(items), now, utc)).toBe("today");
+    expect(Object.values(streamRows(items, now, utc)).flat()).toEqual([
+      { item: visible, children: [] },
+    ]);
+  });
 });
