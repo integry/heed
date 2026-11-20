@@ -201,8 +201,14 @@ export function workspaceView(state: WorkspaceState): WorkspaceData {
         break;
       }
       case "UPDATE_ITEM": {
-        const { item_id, project, scheduled_on, priority, layout_pos } =
-          mutation.input;
+        const {
+          item_id,
+          project,
+          scheduled_on,
+          sort_key,
+          priority,
+          layout_pos,
+        } = mutation.input;
         const item = items.get(item_id);
         if (!item) break;
         const nextProject = item.parent_id === null ? project : undefined;
@@ -211,6 +217,7 @@ export function workspaceView(state: WorkspaceState): WorkspaceData {
           project_id: nextProject ?? item.project_id,
           scheduled_on:
             scheduled_on === undefined ? item.scheduled_on : scheduled_on,
+          sort_key: sort_key === undefined ? item.sort_key : sort_key,
           priority: priority ?? item.priority,
           layout_pos: layout_pos ? JSON.stringify(layout_pos) : item.layout_pos,
         });
@@ -225,6 +232,12 @@ export function workspaceView(state: WorkspaceState): WorkspaceData {
         }
         break;
       }
+      case "REORDER_ITEMS":
+        for (const { item_id, sort_key } of mutation.input) {
+          const item = items.get(item_id);
+          if (item) items.set(item_id, { ...item, sort_key });
+        }
+        break;
       case "SET_GUIDANCE":
         if (settings) settings = { ...settings, guidance: mutation.input.text };
         break;

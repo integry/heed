@@ -5,12 +5,6 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import {
-  STREAM_BANDS,
-  type Band,
-  type StreamRow,
-} from "../shared/derived-state";
-import type { CanvasItem } from "../shared/workspace-socket";
 import { GuidanceTextSchema, MAX_GUIDANCE_LENGTH } from "../shared/workspace";
 import {
   lensRegistry,
@@ -19,18 +13,11 @@ import {
   resolveLens,
   type Lens,
 } from "./lenses";
+import { HorizonStream } from "./horizon-stream";
+import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
 import { workspaceView, type MutationInput } from "./workspace-state";
 import { selectWorkspace } from "./workspace-view";
-
-const bandLabels: Record<Band, string> = {
-  "done-today": "Done today",
-  today: "Today",
-  tomorrow: "Tomorrow",
-  "this-week": "This week",
-  later: "Later",
-  backlog: "Backlog",
-};
 
 type Session =
   | { status: "loading" | "error" }
@@ -65,41 +52,6 @@ function useMinuteClock() {
     };
   }, []);
   return now;
-}
-
-function StreamItems({
-  rows,
-  selectedId,
-  select,
-}: {
-  rows: StreamRow<CanvasItem>[];
-  selectedId: string | null;
-  select: (id: string) => void;
-}) {
-  return (
-    <ul className="item-list">
-      {rows.map(({ item, children }) => (
-        <li key={item.id}>
-          <button
-            type="button"
-            className="item-row stream-row"
-            aria-pressed={selectedId === item.id}
-            onClick={() => select(item.id)}
-          >
-            <span className="stream-marker" aria-hidden="true" />
-            <span className="item-title">{item.title}</span>
-          </button>
-          {children.length > 0 && (
-            <StreamItems
-              rows={children}
-              selectedId={selectedId}
-              select={select}
-            />
-          )}
-        </li>
-      ))}
-    </ul>
-  );
 }
 
 function WorkspaceDialog({
@@ -201,29 +153,42 @@ function Workspace({
   );
   const [lensId, setLensId] = useState(readLensId);
   const [selectedId, select] = useState<string | null>(null);
+  const [lensSelection, setLensSelection] = useState<{ id: string } | null>(
+    null,
+  );
+  const [history, setHistory] = useState(false);
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [panel, setPanel] = useState<"guidance" | "settings" | null>(null);
   const clock = useMinuteClock();
   const view = useMemo(() => workspaceView(state), [state]);
-  const {
-    projects,
-    tree,
-    filtered,
-    bands,
-    attentionCount,
-    liveCount,
-    timezone,
-    now,
-  } = useMemo(() => {
+  const derived = useMemo(() => {
     // A broadcast can carry a heartbeat newer than the last clock tick.
     const now = Math.max(clock, Date.now());
     return { ...selectWorkspace(view, now, attentionOnly), now };
   }, [view, clock, attentionOnly]);
+  const { projects, tree, filtered, liveCount, timezone, now } = derived;
   const lens = resolveLens(registry, lensId);
   const LensComponent = lens.component;
   const live = state.connection === "live";
   const selection = selectedId && filtered.has(selectedId) ? selectedId : null;
-  const hasStreamRows = STREAM_BANDS.some((band) => bands[band].length > 0);
+  const openHistoryIds = useMemo(
+    () =>
+      new Set(
+        [...state.items.values()]
+          .filter(({ status }) => status !== "done" && status !== "cancelled")
+          .map(({ id }) => id),
+      ),
+    [state.items],
+  );
+  const pendingReopens = useMemo(
+    () =>
+      new Set(
+        [...state.pending.values()].flatMap((mutation) =>
+          mutation.type === "REOPEN_ITEM" ? [mutation.input.item_id] : [],
+        ),
+      ),
+    [state.pending],
+  );
 
   useEffect(
     () => connection.start(onSessionExpired),
@@ -349,7 +314,11 @@ function Workspace({
               dependencies={[...view.dependencies.values()]}
               selectedId={selection}
               now={now}
-              select={select}
+              select={(id) => {
+                select(id);
+                setLensSelection(id ? { id } : null);
+                if (id) setHistory(false);
+              }}
               reschedule={(id, date) => updateItem(id, { scheduled_on: date })}
               moveProject={(id, project) => updateItem(id, { project })}
               setPriority={(id, priority) => updateItem(id, { priority })}
@@ -371,38 +340,40 @@ function Workspace({
         </section>
         <section className="stream-pane" aria-labelledby="stream-heading">
           <div className="sheet-handle" aria-hidden="true" />
-          <div className="section-heading stream-heading">
-            <h2 id="stream-heading">Horizon Stream</h2>
-            <button
-              type="button"
-              className="attention-button"
-              aria-pressed={attentionOnly}
-              onClick={() => setAttentionOnly((value) => !value)}
-            >
-              Needs me <span>{attentionCount}</span>
-            </button>
-          </div>
-          <div className="stream-content">
-            {state.settings && !hasStreamRows && (
-              <p className="empty">
-                {attentionOnly
-                  ? "Nothing needs your input."
-                  : "No items in the stream."}
-              </p>
-            )}
-            {STREAM_BANDS.filter((band) => bands[band].length > 0).map(
-              (band) => (
-                <section className="stream-band" key={band}>
-                  <h3>{bandLabels[band]}</h3>
-                  <StreamItems
-                    rows={bands[band]}
-                    selectedId={selectedId}
-                    select={select}
-                  />
-                </section>
-              ),
-            )}
-          </div>
+          {history ? (
+            <StreamHistory
+              projects={projects}
+              timezone={timezone}
+              live={live}
+              openIds={openHistoryIds}
+              pendingIds={pendingReopens}
+              close={() => setHistory(false)}
+              reopen={(item_id, reason) =>
+                connection.mutate({
+                  type: "REOPEN_ITEM",
+                  input: { item_id, reason },
+                })
+              }
+            />
+          ) : (
+            <HorizonStream
+              {...derived}
+              items={view.items}
+              dependencies={view.dependencies}
+              ready={state.settings !== null}
+              live={live}
+              attentionOnly={attentionOnly}
+              toggleAttention={() => setAttentionOnly((value) => !value)}
+              selectedId={selectedId}
+              lensSelection={lensSelection}
+              select={(id) => {
+                setLensSelection(null);
+                select(id);
+              }}
+              move={connection.mutate}
+              showHistory={() => setHistory(true)}
+            />
+          )}
         </section>
       </main>
       {panel && (

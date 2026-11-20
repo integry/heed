@@ -4,7 +4,11 @@ import {
   SetStatusBodySchema,
   UpdateItemSchema,
 } from "./item-operations";
-import { GuidanceBodySchema, TimezoneBodySchema } from "./human-api";
+import {
+  GuidanceBodySchema,
+  ReopenBodySchema,
+  TimezoneBodySchema,
+} from "./human-api";
 import { UpdateProjectSchema } from "./workspace";
 import type { Dependency, Item, Project, Settings } from "./workspace";
 
@@ -22,6 +26,16 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
     type: z.literal("SET_STATUS"),
     requestId: SocketRequestIdSchema,
     input: SetStatusBodySchema.extend(ItemIdSchema.shape),
+  }),
+  z.strictObject({
+    type: z.literal("REOPEN_ITEM"),
+    requestId: SocketRequestIdSchema,
+    input: ReopenBodySchema.extend(ItemIdSchema.shape),
+  }),
+  z.strictObject({
+    type: z.literal("REORDER_ITEMS"),
+    requestId: SocketRequestIdSchema,
+    input: z.array(ItemIdSchema.extend({ sort_key: z.number() })).min(1),
   }),
   z.strictObject({
     type: z.literal("UPDATE_PROJECT"),
