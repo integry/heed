@@ -54,6 +54,7 @@ function calendar(now: number, timezone: string) {
     today,
     tomorrow: dateAfter(1),
     nextWeek: dateAfter(daysUntilMonday),
+    dateAfter,
     localDate,
     now,
   };
@@ -327,6 +328,10 @@ export function streamRows<T extends StreamItem>(
   return rows;
 }
 
+/**
+ * Returns the earliest scheduling date for a band. Null clears the schedule
+ * for Backlog or indicates that the band has no schedulable date.
+ */
 export function firstDayOfBand(
   band: Band,
   now: number,
@@ -337,10 +342,15 @@ export function firstDayOfBand(
     case "today":
       return dates.today;
     case "tomorrow":
-    case "this-week":
       return dates.tomorrow;
+    case "this-week": {
+      const first = dates.dateAfter(2);
+      return first < dates.nextWeek ? first : null;
+    }
     case "later":
-      return dates.nextWeek;
+      return dates.nextWeek === dates.tomorrow
+        ? dates.dateAfter(2)
+        : dates.nextWeek;
     case "backlog":
     case "done-today":
       return null;

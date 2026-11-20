@@ -199,28 +199,47 @@ describe("scheduling", () => {
   );
 
   it.each([
-    ["today", "2024-04-03"],
-    ["tomorrow", "2024-04-04"],
-    ["this-week", "2024-04-04"],
-    ["later", "2024-04-08"],
-    ["backlog", null],
-    ["done-today", null],
-  ] as const)("maps a %s drop to its local date", (target, expected) => {
-    expect(firstDayOfBand(target, now, utc)).toBe(expected);
-  });
+    ["today", now, utc, "2024-04-03"],
+    ["tomorrow", now, utc, "2024-04-04"],
+    ["this-week", now, utc, "2024-04-05"],
+    ["later", now, utc, "2024-04-08"],
+    ["backlog", now, utc, null],
+    ["this-week", Date.parse("2024-04-05T12:00:00Z"), utc, "2024-04-07"],
+    ["tomorrow", Date.parse("2024-04-06T12:00:00Z"), utc, "2024-04-07"],
+    ["later", Date.parse("2024-04-06T12:00:00Z"), utc, "2024-04-08"],
+    [
+      "tomorrow",
+      Date.parse("2024-04-01T06:59:59Z"),
+      "America/Los_Angeles",
+      "2024-04-01",
+    ],
+    [
+      "later",
+      Date.parse("2024-04-01T06:59:59Z"),
+      "America/Los_Angeles",
+      "2024-04-02",
+    ],
+  ] as const)(
+    "round-trips a %s drop at %s in %s",
+    (target, time, zone, expected) => {
+      const scheduled_on = firstDayOfBand(target, time, zone);
+      expect(scheduled_on).toBe(expected);
+      expect(
+        band(item("dropped", { scheduled_on }), new Map(), time, zone),
+      ).toBe(target);
+    },
+  );
 
-  it("still has a Tomorrow band on Sunday, even across the week boundary", () => {
-    const sunday = Date.parse("2024-03-31T12:00:00Z");
-    expect(firstDayOfBand("later", sunday, utc)).toBe("2024-04-01");
-    expect(
-      band(
-        item("monday", { scheduled_on: "2024-04-01" }),
-        new Map(),
-        sunday,
-        utc,
-      ),
-    ).toBe("tomorrow");
-  });
+  it.each([
+    ["this-week", Date.parse("2024-04-06T12:00:00Z"), utc],
+    ["this-week", Date.parse("2024-04-01T06:59:59Z"), "America/Los_Angeles"],
+    ["done-today", now, utc],
+  ] as const)(
+    "has no schedulable date for %s at %s in %s",
+    (target, time, zone) => {
+      expect(firstDayOfBand(target, time, zone)).toBeNull();
+    },
+  );
 });
 
 describe("activity and attention", () => {
