@@ -5,7 +5,6 @@ import {
   isLive,
   isStale,
   needsMe,
-  needsMeCount,
   STREAM_BANDS,
   streamOrder,
   streamRows,
@@ -39,9 +38,12 @@ export function selectWorkspace(
       item.status !== "cancelled" &&
       (item.status !== "done" || isGhost(item, now)),
   );
+  const attentionIds = new Set(
+    canvas.filter((item) => needsMe(item, now)).map((item) => item.id),
+  );
   const filtered = new Map(
     canvas
-      .filter((item) => !attentionOnly || needsMe(item, now))
+      .filter((item) => !attentionOnly || attentionIds.has(item.id))
       .map((item) => [item.id, item]),
   );
 
@@ -60,8 +62,10 @@ export function selectWorkspace(
 
   function filterRows(rows: StreamRow<CanvasItem>[]): StreamRow<CanvasItem>[] {
     return rows.flatMap(({ item, children }) => {
+      const needsAttention = needsMe(item, now);
+      if (needsAttention) attentionIds.add(item.id);
       const descendants = filterRows(children);
-      return filtered.has(item.id)
+      return !attentionOnly || needsAttention
         ? [{ item, children: descendants }]
         : descendants;
     });
@@ -78,7 +82,7 @@ export function selectWorkspace(
     bands,
     timezone,
     liveCount: agentsLive([...data.items.values()], now).length,
-    attentionCount: needsMeCount(canvas, now),
+    attentionCount: attentionIds.size,
   };
 }
 

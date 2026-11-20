@@ -396,7 +396,7 @@ function Workspace({
                   <h3>{bandLabels[band]}</h3>
                   <StreamItems
                     rows={bands[band]}
-                    selectedId={selection}
+                    selectedId={selectedId}
                     select={select}
                   />
                 </section>

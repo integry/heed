@@ -122,6 +122,62 @@ it("cross-highlights nested and banded rows, and hides them when the project is 
   });
 });
 
+it("keeps fall-back completions in Done today until workspace midnight", async () => {
+  const completed_at = "2026-11-01T04:05:00Z";
+  vi.mocked(Date.now).mockReturnValue(Date.parse(completed_at));
+  await openWorkspace();
+  TestSocket.current.receive({
+    ...snapshot,
+    seq: 2,
+    settings: { ...snapshot.settings, timezone: "America/New_York" },
+    items: [goal, child],
+  });
+  TestSocket.current.receive({
+    type: "ITEM_UPSERT",
+    seq: 3,
+    item: { ...goal, status: "done", completed_at },
+  });
+  TestSocket.current.receive({
+    type: "ITEM_UPSERT",
+    seq: 4,
+    item: { ...child, status: "done", completed_at },
+  });
+
+  const list = within(screen.getByRole("region", { name: "List" }));
+  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+  const doneToday = () =>
+    within(stream.getByRole("heading", { name: "Done today" }).parentElement!);
+  const advanceTo = (time: string) => {
+    vi.mocked(Date.now).mockReturnValue(Date.parse(time));
+    fireEvent(document, new Event("visibilitychange"));
+  };
+
+  const listGoal = { name: new RegExp(goal.title) };
+  expect(list.getByRole("button", listGoal)).toBeTruthy();
+  expect(doneToday().getByRole("button", { name: goal.title })).toBeTruthy();
+
+  advanceTo("2026-11-02T04:30:00Z");
+  expect(list.queryByRole("button", listGoal)).toBeNull();
+  const row = doneToday().getByRole("button", { name: goal.title });
+  fireEvent.click(row);
+  expect(row.getAttribute("aria-pressed")).toBe("true");
+
+  const attention = stream.getByRole("button", { name: "Needs me 1" });
+  fireEvent.click(attention);
+  expect(doneToday().queryByRole("button", { name: goal.title })).toBeNull();
+  expect(doneToday().getByRole("button", { name: child.title })).toBeTruthy();
+
+  const projectToggle = screen.getByRole("button", { name: project.name });
+  fireEvent.click(projectToggle);
+  expect(stream.queryByRole("heading", { name: "Done today" })).toBeNull();
+  fireEvent.click(projectToggle);
+  fireEvent.click(attention);
+  expect(doneToday().getByRole("button", { name: goal.title })).toBeTruthy();
+
+  advanceTo("2026-11-02T05:00:00Z");
+  expect(stream.queryByRole("heading", { name: "Done today" })).toBeNull();
+});
+
 it("shows a nested List item as blocked by a hidden item until it completes", async () => {
   await openWorkspace();
   const socket = TestSocket.current;
