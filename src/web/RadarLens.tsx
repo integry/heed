@@ -10,7 +10,6 @@ import {
   type PointerEvent,
 } from "react";
 import {
-  band,
   effectiveSchedule,
   isBlocked,
   isLive,
@@ -21,7 +20,7 @@ import {
   type StreamRow,
 } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
-import type { Project } from "../shared/workspace";
+import type { Project, RadarBand } from "../shared/workspace";
 import type { LensProps } from "./lenses";
 import { RadarBubble, type Bubble } from "./RadarBubble";
 import {
@@ -519,21 +518,33 @@ export function RadarLens({
     };
   }
 
-  function canApplySchedule(item: CanvasItem, date: string | null | undefined) {
-    if (date !== null) return true;
+  function canApplySchedule(
+    item: CanvasItem,
+    target: RadarBand,
+    date: string | null | undefined,
+    dropTime: number,
+  ) {
+    if (date === undefined) return true;
 
-    const proposed = { ...item, scheduled_on: null };
-    const destination = band(proposed, items, now, timezone);
-    if (destination === "backlog") return true;
+    const proposed = { ...item, scheduled_on: date };
+    const open = item.status !== "done" && item.status !== "cancelled";
+    if (
+      open &&
+      radarBandsFor([proposed], items, dropTime, timezone).get(item.id) ===
+        target
+    )
+      return true;
 
     let reason;
-    if (destination === null || destination === "done-today")
-      reason = "it is no longer open";
+    if (!open) reason = "it is no longer open";
     else if (item.status === "active") reason = "it is active";
-    else if (effectiveSchedule(proposed, items) !== null)
+    else if (date === null && effectiveSchedule(proposed, items) !== null)
       reason = "it would inherit a schedule from an ancestor";
-    else reason = "it still has a time set";
-    setDropMessage(`${item.title} can’t move to Backlog because ${reason}.`);
+    else if (target === "backlog") reason = "it still has a time set";
+    else reason = "its time keeps it in Today";
+    setDropMessage(
+      `${item.title} can’t move to ${RADAR_LABELS[target]} because ${reason}.`,
+    );
     return false;
   }
 
@@ -544,14 +555,16 @@ export function RadarLens({
     if (!drag || !live) return;
     const { next, bubble } = drag;
     const { item } = bubble;
+    const dropTime = Math.max(now, Date.now());
     if (next.priority !== undefined) {
       if (item.priority !== next.priority) setPriority(item.id, next.priority);
     } else if (goal) {
       const target = goalDropTarget(next.point);
       const currentBand = bandById.get(item.id);
       if (target && target !== currentBand) {
-        const date = scheduleForRing(target, now, timezone);
-        if (canApplySchedule(item, date)) reschedule(item.id, date);
+        const date = scheduleForRing(target, dropTime, timezone);
+        if (canApplySchedule(item, target, date, dropTime))
+          reschedule(item.id, date);
       } else if (distance(next.point, CENTER) <= GOAL_RADIUS) {
         moveRadar(
           item.id,
@@ -572,11 +585,13 @@ export function RadarLens({
           project: item.project_id,
           topLevel: item.parent_id === null,
         },
-        now,
+        dropTime,
         timezone,
       );
-      if (drop && canApplySchedule(item, drop.scheduled_on))
-        moveRadar(item.id, drop);
+      if (!drop) return;
+      const { band: target, ...placement } = drop;
+      if (canApplySchedule(item, target, placement.scheduled_on, dropTime))
+        moveRadar(item.id, placement);
     }
   }
 

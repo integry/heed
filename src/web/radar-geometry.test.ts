@@ -56,7 +56,10 @@ it("maps drops to the first day of a ring in the workspace timezone and moves to
     scheduled_on: "2024-04-04",
     project: "work",
   });
-  expect(drop("later")).toMatchObject({ scheduled_on: "2024-04-08" });
+  expect(drop("later")).toMatchObject({
+    band: "later",
+    scheduled_on: "2024-04-08",
+  });
   expect(drop("backlog")).toMatchObject({ scheduled_on: null });
   const point = cellPoint(
     { band: "today", sector: 1, sectors: 2 },

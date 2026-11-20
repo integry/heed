@@ -11,7 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SocketMessage } from "../shared/workspace-socket";
 import { App } from "./App";
 import { lensRegistry, type Lens } from "./lenses";
-import { cellPoint } from "./radar-geometry";
+import { cellPoint, RADAR_BANDS, type Cell } from "./radar-geometry";
 import { child, goal, project, snapshot, tomorrow } from "./workspace-fixtures";
 
 class TestSocket extends EventTarget {
@@ -438,7 +438,11 @@ const completedGoal = {
   completed_at: "2024-04-03T11:00:00Z",
 } as const;
 
-function startRadarBacklogDrop(bubble: HTMLElement, overview: boolean) {
+function startRadarRingDrop(
+  bubble: HTMLElement,
+  overview: boolean,
+  band: Cell["band"] = "backlog",
+) {
   const scene = bubble.closest(".radar-node")!.parentElement!;
   Object.defineProperty(scene, "getScreenCTM", {
     configurable: true,
@@ -450,11 +454,8 @@ function startRadarBacklogDrop(bubble: HTMLElement, overview: boolean) {
     .split(",")
     .map(Number);
   const target = overview
-    ? cellPoint(
-        { band: "backlog", sector: 0, sectors: 1 },
-        { angle: 0.5, radius: 0.5 },
-      )
-    : { x: 625, y: 716 };
+    ? cellPoint({ band, sector: 0, sectors: 1 }, { angle: 0.5, radius: 0.5 })
+    : { x: 175 + RADAR_BANDS.indexOf(band) * 150, y: 716 };
   const pointer = { pointerId: 1, isPrimary: true, button: 0 };
   const destination = { ...pointer, clientX: target.x, clientY: target.y };
   fireEvent.pointerDown(bubble, { ...pointer, clientX, clientY });
@@ -485,7 +486,7 @@ it.each(["goal", "overview", "new ancestor schedule", "no ancestor schedule"])(
       );
     else fireEvent.click(radar.getByRole("button", { name: parent.title }));
 
-    const release = startRadarBacklogDrop(
+    const release = startRadarRingDrop(
       radar.getByRole("button", { name: task.title }),
       overview,
     );
@@ -540,10 +541,7 @@ it.each(["overview", "goal"])(
       fireEvent.click(radar.getByRole("button", { name: parent.title }));
     const socket = TestSocket.current;
     const startDrop = (title: string) =>
-      startRadarBacklogDrop(
-        radar.getByRole("button", { name: title }),
-        overview,
-      );
+      startRadarRingDrop(radar.getByRole("button", { name: title }), overview);
 
     startDrop(timedTask.title)();
     expect(
@@ -587,6 +585,102 @@ it.each(["overview", "goal"])(
     expect(radar.queryByText(/can’t move to Backlog/)).toBeNull();
   },
 );
+
+it.each(["overview", "goal"])(
+  "checks future Radar destinations in the %s view using the state at release",
+  async (view) => {
+    const overview = view === "overview";
+    const task = {
+      ...child,
+      scheduled_on: goal.scheduled_on,
+      ...(overview ? { parent_id: null, depth: 1 } : {}),
+    };
+    const overdue = {
+      ...task,
+      id: "overdue",
+      title: "Vendor call",
+      time_type: "fixed",
+      time_at: "2024-04-02T12:00:00Z",
+    } as const;
+    await openWorkspace(undefined, {
+      ...snapshot,
+      items: overview ? [task, overdue] : [goal, task, overdue],
+    });
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    if (!overview)
+      fireEvent.click(radar.getByRole("button", { name: goal.title }));
+    const socket = TestSocket.current;
+    const startDrop = (title: string, target: Cell["band"]) =>
+      startRadarRingDrop(
+        radar.getByRole("button", { name: title }),
+        overview,
+        target,
+      );
+
+    startDrop(overdue.title, "this-week")();
+    expect(
+      radar.getByText(
+        `${overdue.title} can’t move to This week because its time keeps it in Today.`,
+      ),
+    ).toBeTruthy();
+
+    const release = startDrop(task.title, "later");
+    socket.receive({
+      type: "ITEM_UPSERT",
+      seq: 2,
+      item: { ...task, status: "active" },
+    });
+    release();
+    expect(
+      radar.getByText(
+        `${task.title} can’t move to Later because it is active.`,
+      ),
+    ).toBeTruthy();
+    expect(socket.send).not.toHaveBeenCalled();
+
+    socket.receive({ type: "ITEM_UPSERT", seq: 3, item: task });
+    for (const [target, date] of [
+      ["this-week", "2024-04-04"],
+      ["later", "2024-04-08"],
+      ["today", "2024-04-03"],
+    ] as const) {
+      socket.send.mockClear();
+      startDrop(task.title, target)();
+      expect(socket.send).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(socket.send.mock.lastCall![0])).toMatchObject({
+        type: "UPDATE_ITEM",
+        input: { item_id: task.id, scheduled_on: date },
+      });
+      expect(radar.queryByText(/can’t move to/)).toBeNull();
+    }
+  },
+);
+
+it("checks a Radar drop after a time becomes due between clock ticks", async () => {
+  const clock = vi.mocked(Date.now);
+  clock.mockReturnValue(Date.parse("2024-04-03T23:59:55Z"));
+  const task = {
+    ...goal,
+    scheduled_on: null,
+    time_type: "fixed",
+    time_at: "2024-04-04T00:00:07Z",
+  } as const;
+  await openWorkspace(undefined, { ...snapshot, items: [task] });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const release = startRadarRingDrop(
+    radar.getByRole("button", { name: task.title }),
+    true,
+    "later",
+  );
+  clock.mockReturnValue(Date.parse("2024-04-04T00:00:08Z"));
+  release();
+  expect(
+    radar.getByText(
+      `${task.title} can’t move to Later because its time keeps it in Today.`,
+    ),
+  ).toBeTruthy();
+  expect(TestSocket.current.send).not.toHaveBeenCalled();
+});
 
 it.each(["Radar", "List"])(
   "reveals a selected %s child through a hidden completed ancestor",

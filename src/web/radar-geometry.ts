@@ -111,12 +111,13 @@ export function radarDrop(
   source: { band: RadarBand; project: string; topLevel: boolean },
   now: number,
   timezone: string,
-): RadarPlacement | null {
+): (RadarPlacement & { band: RadarBand }) | null {
   const cell = targetCell(point, projects.length);
   if (!cell) return null;
   const project = projects[cell.sector];
   if (!source.topLevel && project !== source.project) return null;
   return {
+    band: cell.band,
     position: cellPosition(cell, point),
     scheduled_on:
       cell.band === source.band
