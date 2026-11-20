@@ -17,7 +17,7 @@ export function createWorkspaceConnection() {
     {
       resolve: (ack: Ack) => void;
       reject: (error: Error) => void;
-      inlineError?: boolean;
+      callerReportsError?: boolean;
     }
   >();
 
@@ -58,7 +58,7 @@ export function createWorkspaceConnection() {
 
   function save(
     mutation: MutationInput,
-    options?: { inlineError: boolean },
+    options?: { callerReportsError: boolean },
   ): Promise<Ack> {
     return new Promise((resolve, reject) => {
       const requestId = crypto.randomUUID();
@@ -96,6 +96,9 @@ export function createWorkspaceConnection() {
       if (controller.signal.aborted) return;
       clearTimeout(watchdog);
       activeSocket = undefined;
+      const needsErrorBanner = [...state.pending.keys()].some(
+        (id) => !replies.get(id)?.callerReportsError,
+      );
       rejectReplies(
         "Connection lost while saving. Check the workspace after reconnecting.",
       );
@@ -104,7 +107,7 @@ export function createWorkspaceConnection() {
         seq: 0,
         connection: "reconnecting",
         pending: new Map(),
-        error: state.pending.size
+        error: needsErrorBanner
           ? "Connection lost while changes were saving. Check the workspace after reconnecting."
           : state.error,
       });
@@ -143,13 +146,12 @@ export function createWorkspaceConnection() {
 
         const previous = state;
         const next = receiveMessage(state, message);
-        const inlineError =
+        const callerReportsError =
           message.type === "ERROR" &&
           message.requestId &&
-          next.connection === "live" &&
-          replies.get(message.requestId)?.inlineError;
+          replies.get(message.requestId)?.callerReportsError;
         publish(
-          inlineError && next !== previous
+          callerReportsError && next !== previous
             ? { ...next, error: previous.error }
             : next,
         );

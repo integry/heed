@@ -8,7 +8,6 @@ import { BoardLens } from "./BoardLens";
 import type { StreamMove } from "./stream-move";
 import { RadarLens } from "./RadarLens";
 import type { RadarPlacement } from "./radar-geometry";
-import type { SaveMutation } from "./workspace-controls";
 
 export interface LensProps {
   tree: readonly StreamRow<CanvasItem>[];
@@ -16,7 +15,8 @@ export interface LensProps {
   items: ReadonlyMap<string, CanvasItem>;
   dependencies: readonly Dependency[];
   filtered: ReadonlyMap<string, CanvasItem>;
-  save: SaveMutation;
+  changeDependency: (edge: Dependency, action: "add" | "remove") => void;
+  savingDependency: boolean;
   selectedId: string | null;
   now: number;
   timezone: string;

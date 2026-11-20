@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { StreamRow } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
+import type { Dependency } from "../shared/workspace";
 import { isDescendant } from "./dependency-graph";
 import { Guidance } from "./Guidance";
 import { Inspector } from "./Inspector";
@@ -17,6 +18,7 @@ import { HorizonStream } from "./horizon-stream";
 import { isRadarRowVisible } from "./RadarLens";
 import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
+import { useAction } from "./workspace-controls";
 import { workspaceView, type MutationInput } from "./workspace-state";
 import { selectWorkspace } from "./workspace-view";
 
@@ -108,6 +110,23 @@ const connectionLabels = {
   syncing: "Synchronizing workspace…",
 };
 
+function ErrorBanner({
+  message,
+  dismiss,
+}: {
+  message: string;
+  dismiss: () => void;
+}) {
+  return (
+    <div className="error-banner">
+      <p role="alert">{message}</p>
+      <button type="button" className="subtle" onClick={dismiss}>
+        Dismiss
+      </button>
+    </div>
+  );
+}
+
 function Workspace({
   email,
   registry,
@@ -125,6 +144,11 @@ function Workspace({
   const [lensId, setLensId] = useState(readLensId);
   const [selectedId, select] = useState<string | null>(null);
   const [goalId, focusGoal] = useState<string | null>(null);
+  // Dependency saves can outlive the graph that submitted them.
+  const [dependencyEditGoal, setDependencyEditGoal] = useState<string | null>(
+    null,
+  );
+  const dependencyEdit = useAction();
   const [showGhosts, setShowGhosts] = useState(true);
   const [lensSelection, setLensSelection] = useState<{ id: string } | null>(
     null,
@@ -148,6 +172,9 @@ function Workspace({
   const lens = resolveLens(registry, lensId);
   const LensComponent = lens.component;
   const live = state.connection === "live";
+  const dependencyError = dependencyEditGoal ? dependencyEdit.error : "";
+  const showDependencyErrorInline =
+    lens.id === "dependencies" && focusedGoal === dependencyEditGoal;
   const selection = selectedId && filtered.has(selectedId) ? selectedId : null;
   const dependenciesLens = registry.find(({ id }) => id === "dependencies");
   const selected = selectedId ? state.items.get(selectedId) : undefined;
@@ -223,6 +250,17 @@ function Workspace({
   function switchLens(id: string) {
     setLensId(id);
     rememberLens(id);
+  }
+
+  function changeDependency(edge: Dependency, action: "add" | "remove") {
+    if (!live || !focusedGoal) return;
+    void dependencyEdit.run(() => {
+      setDependencyEditGoal(focusedGoal);
+      return connection.save(
+        { type: "SET_DEPENDENCY", input: { ...edge, action } },
+        { callerReportsError: true },
+      );
+    });
   }
 
   function dependencyGoal(id: string) {
@@ -357,16 +395,13 @@ function Workspace({
         </p>
       )}
       {state.error && (
-        <div className="error-banner">
-          <p role="alert">{state.error}</p>
-          <button
-            type="button"
-            className="subtle"
-            onClick={connection.clearError}
-          >
-            Dismiss
-          </button>
-        </div>
+        <ErrorBanner message={state.error} dismiss={connection.clearError} />
+      )}
+      {dependencyError && !showDependencyErrorInline && (
+        <ErrorBanner
+          message={dependencyError}
+          dismiss={() => setDependencyEditGoal(null)}
+        />
       )}
 
       <main className="split-layout">
@@ -405,7 +440,8 @@ function Workspace({
               projects={projects}
               items={view.items}
               filtered={filtered}
-              save={connection.save}
+              changeDependency={changeDependency}
+              savingDependency={dependencyEdit.busy}
               dependencies={dependencies}
               selectedId={selection}
               now={now}
@@ -434,6 +470,11 @@ function Workspace({
                 placeItem(id, key, position, patch)
               }
             />
+          )}
+          {dependencyError && showDependencyErrorInline && (
+            <p className="action-error" role="alert">
+              {dependencyError}
+            </p>
           )}
           {inspected && (
             <Inspector

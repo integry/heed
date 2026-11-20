@@ -1,4 +1,12 @@
-import { useId, useMemo, useRef, useState, type PointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent,
+} from "react";
 import { isLive } from "../shared/derived-state";
 import type { Dependency } from "../shared/workspace";
 import {
@@ -10,7 +18,6 @@ import {
   scopeDependencies,
 } from "./dependency-graph";
 import type { LensProps } from "./lenses";
-import { useAction } from "./workspace-controls";
 import { itemStatus } from "./workspace-view";
 import "./dependencies.css";
 
@@ -30,7 +37,8 @@ function DependencyGraph({
   focusGoal,
   now,
   live,
-  save,
+  changeDependency,
+  savingDependency,
 }: LensProps) {
   const arrow = useId();
   const chart = useRef<HTMLDivElement>(null);
@@ -44,7 +52,20 @@ function DependencyGraph({
   const [preview, setPreview] = useState<Point>();
   const [source, setSource] = useState<string>();
   const [chosenEdge, setChosenEdge] = useState<Dependency>();
-  const { busy, error, run } = useAction();
+  const cancelConnection = useCallback(() => {
+    if (gesture.current) suppressClick.current = true;
+    gesture.current = null;
+    setPreview(undefined);
+    setSource(undefined);
+  }, []);
+
+  useEffect(() => {
+    function onEscape(event: KeyboardEvent) {
+      if (event.key === "Escape" && gesture.current) cancelConnection();
+    }
+    window.addEventListener("keydown", onEscape);
+    return () => window.removeEventListener("keydown", onEscape);
+  }, [cancelConnection]);
   const goal = goalId ? filtered.get(goalId) : undefined;
   const graph = useMemo(() => {
     if (!goalId) return;
@@ -96,20 +117,10 @@ function DependencyGraph({
       edge.item_id === chosenEdge?.item_id &&
       edge.blocked_by_id === chosenEdge.blocked_by_id,
   );
-  const canEdit = live && !busy;
+  const canEdit = live && !savingDependency;
   const title = (id: string) => items.get(id)!.title;
   const edgeLabel = ({ item_id, blocked_by_id }: Dependency) =>
     `${title(blocked_by_id)} blocks ${title(item_id)}`;
-
-  function changeDependency(edge: Dependency, action: "add" | "remove") {
-    if (!canEdit) return;
-    void run(async () => {
-      await save(
-        { type: "SET_DEPENDENCY", input: { ...edge, action } },
-        { inlineError: true },
-      );
-    });
-  }
 
   function canConnect(blocker: string, blocked: string) {
     return (
@@ -191,9 +202,7 @@ function DependencyGraph({
 
   function cancelDrag(event: PointerEvent) {
     if (gesture.current?.pointer !== event.pointerId) return;
-    gesture.current = null;
-    setPreview(undefined);
-    setSource(undefined);
+    cancelConnection();
   }
 
   return (
@@ -201,7 +210,7 @@ function DependencyGraph({
       className="dependency-lens"
       onKeyDown={(event) => {
         if (event.key !== "Escape") return;
-        setSource(undefined);
+        cancelConnection();
         setChosenEdge(undefined);
       }}
     >
@@ -406,11 +415,6 @@ function DependencyGraph({
                 Remove dependency
               </button>
             </div>
-          )}
-          {error && (
-            <p className="action-error" role="alert">
-              {error}
-            </p>
           )}
         </>
       ) : (
