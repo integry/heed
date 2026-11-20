@@ -438,6 +438,30 @@ const completedGoal = {
   completed_at: "2024-04-03T11:00:00Z",
 } as const;
 
+function startRadarBacklogDrop(bubble: HTMLElement, overview: boolean) {
+  const scene = bubble.closest(".radar-node")!.parentElement!;
+  Object.defineProperty(scene, "getScreenCTM", {
+    configurable: true,
+    value: () => null,
+  });
+  const [clientX, clientY] = bubble
+    .parentElement!.getAttribute("transform")!
+    .slice("translate(".length, -1)
+    .split(",")
+    .map(Number);
+  const target = overview
+    ? cellPoint(
+        { band: "backlog", sector: 0, sectors: 1 },
+        { angle: 0.5, radius: 0.5 },
+      )
+    : { x: 625, y: 716 };
+  const pointer = { pointerId: 1, isPrimary: true, button: 0 };
+  const destination = { ...pointer, clientX: target.x, clientY: target.y };
+  fireEvent.pointerDown(bubble, { ...pointer, clientX, clientY });
+  fireEvent.pointerMove(bubble, destination);
+  return () => fireEvent.pointerUp(bubble, destination);
+}
+
 it.each(["goal", "overview", "new ancestor schedule", "no ancestor schedule"])(
   "checks inheritance before applying a Radar Backlog drop (%s)",
   async (scenario) => {
@@ -461,29 +485,15 @@ it.each(["goal", "overview", "new ancestor schedule", "no ancestor schedule"])(
       );
     else fireEvent.click(radar.getByRole("button", { name: parent.title }));
 
-    const bubble = radar.getByRole("button", { name: task.title });
-    const scene = bubble.closest(".radar-node")!.parentElement!;
-    Object.defineProperty(scene, "getScreenCTM", { value: () => null });
-    const [clientX, clientY] = bubble
-      .parentElement!.getAttribute("transform")!
-      .slice("translate(".length, -1)
-      .split(",")
-      .map(Number);
-    const target = overview
-      ? cellPoint(
-          { band: "backlog", sector: 0, sectors: 1 },
-          { angle: 0.5, radius: 0.5 },
-        )
-      : { x: 625, y: 716 };
-    const pointer = { pointerId: 1, isPrimary: true, button: 0 };
-    const destination = { ...pointer, clientX: target.x, clientY: target.y };
+    const release = startRadarBacklogDrop(
+      radar.getByRole("button", { name: task.title }),
+      overview,
+    );
     const socket = TestSocket.current;
-    fireEvent.pointerDown(bubble, { ...pointer, clientX, clientY });
-    fireEvent.pointerMove(bubble, destination);
     expect(socket.send).not.toHaveBeenCalled();
     if (scenario === "new ancestor schedule")
       socket.receive({ type: "ITEM_UPSERT", seq: 2, item: goal });
-    fireEvent.pointerUp(bubble, destination);
+    release();
 
     const rejection = /it would inherit a schedule from an ancestor/;
     if (scenario === "no ancestor schedule") {
@@ -496,6 +506,85 @@ it.each(["goal", "overview", "new ancestor schedule", "no ancestor schedule"])(
       expect(socket.send).not.toHaveBeenCalled();
       expect(radar.getByText(rejection)).toBeTruthy();
     }
+  },
+);
+
+it.each(["overview", "goal"])(
+  "checks the resulting Radar Backlog band in the %s view",
+  async (view) => {
+    const overview = view === "overview";
+    const parent = { ...goal, scheduled_on: null };
+    const timed = {
+      time_type: "fixed",
+      time_at: "2024-04-10T12:00:00Z",
+    } as const;
+    const task = {
+      ...child,
+      scheduled_on: goal.scheduled_on,
+      ...(overview ? { parent_id: null, depth: 1 } : {}),
+    };
+    const timedTask = { ...task, ...timed, id: "timed", title: "Vendor call" };
+    const activeTask = {
+      ...task,
+      status: "active",
+      id: "active",
+      title: "Live rollout",
+    } as const;
+    const tasks = [task, timedTask, activeTask];
+    await openWorkspace(undefined, {
+      ...snapshot,
+      items: overview ? tasks : [parent, ...tasks],
+    });
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    if (!overview)
+      fireEvent.click(radar.getByRole("button", { name: parent.title }));
+    const socket = TestSocket.current;
+    const startDrop = (title: string) =>
+      startRadarBacklogDrop(
+        radar.getByRole("button", { name: title }),
+        overview,
+      );
+
+    startDrop(timedTask.title)();
+    expect(
+      radar.getByText(
+        `${timedTask.title} can’t move to Backlog because it still has a time set.`,
+      ),
+    ).toBeTruthy();
+    startDrop(activeTask.title)();
+    expect(
+      radar.getByText(
+        `${activeTask.title} can’t move to Backlog because it is active.`,
+      ),
+    ).toBeTruthy();
+
+    const release = startDrop(task.title);
+    socket.receive({
+      type: "ITEM_UPSERT",
+      seq: 2,
+      item: { ...task, ...timed },
+    });
+    release();
+    expect(
+      radar.getByText(
+        `${task.title} can’t move to Backlog because it still has a time set.`,
+      ),
+    ).toBeTruthy();
+    expect(socket.send).not.toHaveBeenCalled();
+
+    socket.receive({ type: "ITEM_UPSERT", seq: 3, item: task });
+    startDrop(task.title)();
+    expect(JSON.parse(socket.send.mock.lastCall![0])).toMatchObject({
+      type: "UPDATE_ITEM",
+      input: {
+        item_id: task.id,
+        scheduled_on: null,
+        ...(overview
+          ? { layout_pos: { radar: { angle: 0.5, radius: 0.5 } } }
+          : {}),
+      },
+    });
+    expect(radar.queryByText(/can’t move to Backlog/)).toBeNull();
   },
 );
 

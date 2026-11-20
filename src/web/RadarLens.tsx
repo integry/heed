@@ -10,6 +10,7 @@ import {
   type PointerEvent,
 } from "react";
 import {
+  band,
   effectiveSchedule,
   isBlocked,
   isLive,
@@ -519,16 +520,21 @@ export function RadarLens({
   }
 
   function canApplySchedule(item: CanvasItem, date: string | null | undefined) {
-    if (
-      date === null &&
-      effectiveSchedule({ ...item, scheduled_on: null }, items) !== null
-    ) {
-      setDropMessage(
-        `${item.title} can’t move to Backlog because it would inherit a schedule from an ancestor.`,
-      );
-      return false;
-    }
-    return true;
+    if (date !== null) return true;
+
+    const proposed = { ...item, scheduled_on: null };
+    const destination = band(proposed, items, now, timezone);
+    if (destination === "backlog") return true;
+
+    let reason;
+    if (destination === null || destination === "done-today")
+      reason = "it is no longer open";
+    else if (item.status === "active") reason = "it is active";
+    else if (effectiveSchedule(proposed, items) !== null)
+      reason = "it would inherit a schedule from an ancestor";
+    else reason = "it still has a time set";
+    setDropMessage(`${item.title} can’t move to Backlog because ${reason}.`);
+    return false;
   }
 
   function release(event: PointerEvent<SVGSVGElement>) {
@@ -542,8 +548,8 @@ export function RadarLens({
       if (item.priority !== next.priority) setPriority(item.id, next.priority);
     } else if (goal) {
       const target = goalDropTarget(next.point);
-      const band = bandById.get(item.id);
-      if (target && target !== band) {
+      const currentBand = bandById.get(item.id);
+      if (target && target !== currentBand) {
         const date = scheduleForRing(target, now, timezone);
         if (canApplySchedule(item, date)) reschedule(item.id, date);
       } else if (distance(next.point, CENTER) <= GOAL_RADIUS) {
