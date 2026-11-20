@@ -796,6 +796,55 @@ it("handles item deletion after the push request starts", async () => {
   expect(await events(stub, item_id)).toEqual([]);
 });
 
+it.each(["done", "cancelled"] as const)(
+  "requires reopening %s items before progress reports or upserts can set an open status",
+  async (terminalStatus) => {
+    const stub = newWorkspace();
+    const input = { title: "Release", external_key: "release" };
+    const { item_id } = await stub.addItem(reporter, {
+      ...input,
+      scheduled_on: "2000-01-01",
+    });
+    const {
+      items: [closed],
+    } = await stub.reportProgress(reporter, {
+      item_id,
+      status: terminalStatus,
+    });
+    const history = await events(stub, item_id);
+
+    await runInDurableObject(stub, (workspace, { storage: { sql } }) => {
+      for (const status of ["active", "blocked"] as const) {
+        expect(() =>
+          workspace.reportProgress(reporter, {
+            item_id,
+            status,
+            note: "Retry",
+          }),
+        ).toThrow("Use reopenItem with a reason");
+      }
+      for (const status of ["queued", "active", "blocked"] as const) {
+        expect(() =>
+          workspace.addItem(reporter, { ...input, status, title: "Retry" }),
+        ).toThrow("Use reopenItem with a reason");
+      }
+      expect(
+        sql.exec<Item>("SELECT * FROM items WHERE id = ?", item_id).one(),
+      ).toEqual(closed);
+    });
+
+    expect(
+      (await stub.reportProgress(reporter, { item_id, status: terminalStatus }))
+        .items,
+    ).toEqual([]);
+    expect(
+      (await stub.addItem(reporter, { ...input, status: terminalStatus }))
+        .items,
+    ).toEqual([]);
+    expect(await events(stub, item_id)).toEqual(history);
+  },
+);
+
 it("reopens old history, records the reason and increments the count across cancellations", async () => {
   const stub = newWorkspace();
   const { item_id } = await stub.addItem(reporter, {

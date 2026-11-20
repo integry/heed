@@ -114,6 +114,10 @@ function isReport(actor: Actor): boolean {
   return actor.kind === "agent" && actor.scope === "report";
 }
 
+function isTerminalStatus(status: Status): boolean {
+  return status === "done" || status === "cancelled";
+}
+
 function requireSteering(actor: Actor, action: string): void {
   if (isReport(actor))
     throw new Error(
@@ -470,7 +474,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     const data = parseInput(ReopenItemSchema, input);
     return this.#mutateItems(actor, (mutation) => {
       const item = this.#requireItem(data);
-      if (item.status !== "done" && item.status !== "cancelled") {
+      if (!isTerminalStatus(item.status)) {
         throw new Error("Only done or cancelled items can be reopened");
       }
       const patch: ItemPatch = {
@@ -832,6 +836,11 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     item?: Item,
   ): void {
     if (status === undefined || status === (item?.status ?? "queued")) return;
+    if (item && isTerminalStatus(item.status) && !isTerminalStatus(status)) {
+      throw new Error(
+        "Use reopenItem with a reason to reopen a done or cancelled item",
+      );
+    }
     patch.status = status;
     if (status === "done") patch.completed_at = mutation.now.toISOString();
     else if (item?.status === "done") patch.completed_at = null;
