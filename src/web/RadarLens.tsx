@@ -1,11 +1,7 @@
-import { select as d3Select } from "d3-selection";
-import { zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom";
 import {
   useCallback,
-  useEffect,
   useId,
   useMemo,
-  useRef,
   useState,
   type PointerEvent,
 } from "react";
@@ -49,6 +45,8 @@ import {
   type Cell,
   type Point,
 } from "./radar-geometry";
+import { useCanvasDrag } from "./use-canvas-drag";
+import { useCanvasZoom } from "./use-canvas-zoom";
 import "./radar.css";
 
 const colors = [
@@ -64,13 +62,10 @@ const translate = ({ x, y }: Point) => `translate(${x},${y})`;
 
 type Gesture = {
   id: string;
-  pointer: number;
   kind: "move" | "resize";
   start: Point;
   origin: Point;
-  client: Point;
   radius: number;
-  moved: boolean;
 };
 type Preview = { id: string; point: Point; priority?: number };
 
@@ -232,12 +227,10 @@ export function RadarLens({
   reschedule,
   setPriority,
 }: LensProps) {
-  const svg = useRef<SVGSVGElement>(null);
-  const layer = useRef<SVGGElement>(null);
-  const behavior = useRef<ZoomBehavior<SVGSVGElement, unknown>>(null);
-  const gesture = useRef<Gesture | null>(null);
-  const preventClick = useRef(false);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const clearPreview = useCallback(() => setPreview(null), []);
+  const drag = useCanvasDrag<Gesture>(clearPreview);
+  const { cancel: cancelGesture, start: startDrag } = drag;
   const [tooltip, setTooltip] = useState<string | null>(null);
   const [dropMessage, setDropMessage] = useState<string | null>(null);
   const arrowId = useId();
@@ -389,63 +382,12 @@ export function RadarLens({
     current = parent ? rows.get(parent) : undefined;
   }
 
-  useEffect(() => {
-    const element = svg.current!;
-    const scene = layer.current!;
-    const canvas = d3Select(element);
-    const control = zoom<SVGSVGElement, unknown>()
-      .extent([
-        [0, 0],
-        [WIDTH, HEIGHT],
-      ])
-      .translateExtent([
-        [-WIDTH / 2, -HEIGHT / 2],
-        [WIDTH * 1.5, HEIGHT * 1.5],
-      ])
-      .scaleExtent([0.65, 6])
-      .filter((event: MouseEvent | TouchEvent) => {
-        if (event.type === "touchstart") return true;
-        if (event.type === "wheel") return true;
-        const target = event.target as Element;
-        return (
-          !(event as MouseEvent).button &&
-          !event.ctrlKey &&
-          !target.closest("[data-radar-bubble], [data-radar-resize]")
-        );
-      })
-      .on("zoom", ({ transform }) => {
-        scene.setAttribute("transform", String(transform));
-        element.classList.toggle("radar-magnified", transform.k >= 1.8);
-      });
-    behavior.current = control;
-    canvas.call(control);
-
-    function singleFingerDrag(event: TouchEvent) {
-      // Let d3 see both touch starts and all pinch moves. During a one-finger
-      // bubble drag, only the pointer gesture should move the chart's contents.
-      if (!gesture.current || event.touches.length !== 1) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-    }
-    element.addEventListener("touchmove", singleFingerDrag, {
-      capture: true,
-      passive: false,
-    });
-    return () => {
-      element.removeEventListener("touchmove", singleFingerDrag, true);
-      canvas.on(".zoom", null);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (behavior.current)
-      d3Select(svg.current!).call(behavior.current.transform, zoomIdentity);
-  }, [goal?.item.id]);
-
-  function zoomBy(factor: number) {
-    if (behavior.current)
-      d3Select(svg.current!).call(behavior.current.scaleBy, factor);
-  }
+  const { svg, layer, zoomBy, resetZoom } = useCanvasZoom(
+    WIDTH,
+    HEIGHT,
+    goal?.item.id ?? null,
+    drag.dragging,
+  );
 
   function scenePoint(event: PointerEvent): Point {
     const matrix = layer.current?.getScreenCTM();
@@ -462,41 +404,22 @@ export function RadarLens({
       bubble: Bubble,
       kind: Gesture["kind"],
     ) => {
-      if (event.button !== 0 || !event.isPrimary) return;
       setDropMessage(null);
-      const point = scenePoint(event);
-      gesture.current = {
+      startDrag(event, {
         id: bubble.item.id,
-        pointer: event.pointerId,
         kind,
-        start: point,
+        start: scenePoint(event),
         origin: bubble.point,
-        client: { x: event.clientX, y: event.clientY },
         radius: bubble.radius,
-        moved: false,
-      };
-      event.currentTarget.setPointerCapture?.(event.pointerId);
+      });
     },
-    [],
+    [startDrag, layer],
   );
 
-  const cancelGesture = useCallback(() => {
-    if (gesture.current?.moved) preventClick.current = true;
-    gesture.current = null;
-    setPreview(null);
-  }, []);
-
-  function dragPreview(event: PointerEvent<SVGSVGElement>) {
-    const active = gesture.current;
-    if (!active || active.pointer !== event.pointerId) return;
+  function dragPreview(event: PointerEvent<SVGSVGElement>, active?: Gesture) {
+    if (!active) return;
     const bubble = bubbles.find(({ item }) => item.id === active.id);
     if (!bubble) return;
-    if (
-      !active.moved &&
-      distance(active.client, { x: event.clientX, y: event.clientY }) < 4
-    )
-      return;
-    active.moved = true;
     const cursor = scenePoint(event);
     const point = {
       x: active.origin.x + cursor.x - active.start.x,
@@ -549,11 +472,9 @@ export function RadarLens({
   }
 
   function release(event: PointerEvent<SVGSVGElement>) {
-    if (gesture.current?.pointer !== event.pointerId) return;
-    const drag = dragPreview(event);
-    cancelGesture();
-    if (!drag || !live) return;
-    const { next, bubble } = drag;
+    const result = dragPreview(event, drag.finish(event));
+    if (!result || !live) return;
+    const { next, bubble } = result;
     const { item } = bubble;
     const dropTime = Math.max(now, Date.now());
     if (next.priority !== undefined) {
@@ -685,13 +606,7 @@ export function RadarLens({
             className="subtle"
             type="button"
             aria-label="Reset zoom"
-            onClick={() => {
-              if (behavior.current)
-                d3Select(svg.current!).call(
-                  behavior.current.transform,
-                  zoomIdentity,
-                );
-            }}
+            onClick={resetZoom}
           >
             Fit
           </button>
@@ -716,26 +631,12 @@ export function RadarLens({
               ? `Items in ${goal.item.title}`
               : "Items by time ring and project"
           }
-          onPointerDownCapture={(event) => {
-            preventClick.current = false;
-            if (event.pointerType === "touch" && !event.isPrimary)
-              cancelGesture();
-          }}
+          {...drag.handlers}
           onPointerMove={(event) => {
-            const result = dragPreview(event);
+            const result = dragPreview(event, drag.movement(event));
             if (result) setPreview(result.next);
           }}
           onPointerUp={release}
-          onPointerCancel={cancelGesture}
-          onLostPointerCapture={(event) => {
-            if (gesture.current?.pointer === event.pointerId) cancelGesture();
-          }}
-          onClickCapture={(event) => {
-            if (preventClick.current && event.detail !== 0) {
-              preventClick.current = false;
-              event.stopPropagation();
-            }
-          }}
           onClick={() => select(null)}
         >
           <defs>

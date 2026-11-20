@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LockableFieldSchema } from "../shared/item-operations";
 import type { LockableField, UpdateItemInput } from "../shared/item-operations";
 import { effectiveSchedule, streamOrder } from "../shared/derived-state";
@@ -135,6 +135,7 @@ function safeLink(value: string) {
 }
 
 export function Inspector({
+  drawer,
   item,
   projects,
   items,
@@ -146,6 +147,7 @@ export function Inspector({
   addChild,
   selectChild,
 }: {
+  drawer: boolean;
   item: Item;
   projects: readonly Project[];
   items: ReadonlyMap<string, Item>;
@@ -157,6 +159,10 @@ export function Inspector({
   addChild: () => void;
   selectChild?: (id: string) => void;
 }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (drawer) dialog.current?.showModal();
+  }, [drawer]);
   const [title, setTitle] = useState<string>();
   const [note, setNote] = useState<string>();
   const [details, setDetails] = useState<Partial<DetailDraft>>({});
@@ -277,8 +283,8 @@ export function Inspector({
     });
   }
 
-  return (
-    <aside className="inspector" aria-labelledby="inspector-heading">
+  const content = (
+    <>
       <header className="panel-heading inspector-heading">
         <h2 id="inspector-heading">Inspector</h2>
         <button type="button" className="subtle" onClick={close}>
@@ -388,6 +394,11 @@ export function Inspector({
           >
             {item.handoff ? "Edit handoff" : "Flag handoff"}
           </button>
+          {drawer && link && (
+            <a className="subtle" href={link} target="_blank" rel="noreferrer">
+              Open link ↗
+            </a>
+          )}
           {item.parent_id === null && (
             <button
               type="button"
@@ -598,14 +609,14 @@ export function Inspector({
                   onChange={(event) => edit("link", event.target.value)}
                 />
               </label>
-              {(dirty || link) && (
+              {(dirty || (!drawer && link)) && (
                 <div className="inline-actions">
                   {dirty && (
                     <button className="subtle" disabled={tagConflict}>
                       Save details
                     </button>
                   )}
-                  {link && (
+                  {!drawer && link && (
                     <a href={link} target="_blank" rel="noreferrer">
                       Open link ↗
                     </a>
@@ -764,6 +775,26 @@ export function Inspector({
         </section>
         <Activity item={item} timezone={timezone} />
       </div>
+    </>
+  );
+  return drawer ? (
+    <dialog
+      ref={dialog}
+      className="inspector inspector-drawer"
+      onClose={close}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          const bounds = event.currentTarget.getBoundingClientRect();
+          if (event.clientY < bounds.top) close();
+        }
+      }}
+      aria-labelledby="inspector-heading"
+    >
+      {content}
+    </dialog>
+  ) : (
+    <aside className="inspector" aria-labelledby="inspector-heading">
+      {content}
     </aside>
   );
 }

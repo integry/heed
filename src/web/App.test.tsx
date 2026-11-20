@@ -1,6 +1,7 @@
 import {
   act,
   cleanup,
+  createEvent,
   fireEvent,
   render,
   screen,
@@ -1432,6 +1433,19 @@ it("writes a fractional key on pointer drop and reschedules or clears a date wit
   try {
     fireEvent.pointerDown(handle, { ...pointer, clientY: 100 });
     fireEvent.pointerMove(handle, { ...pointer, clientY: 45 });
+    fireEvent.pointerUp(handle, { ...pointer, clientY: 45 });
+    expect(socket.send).not.toHaveBeenCalled();
+
+    const press = createEvent.pointerDown(handle, { ...pointer, clientY: 100 });
+    const movement = createEvent.pointerMove(handle, {
+      ...pointer,
+      clientY: 45,
+    });
+    Object.defineProperty(movement, "timeStamp", {
+      value: press.timeStamp + 500,
+    });
+    fireEvent(handle, press);
+    fireEvent(handle, movement);
     expect(socket.send).not.toHaveBeenCalled();
     fireEvent.pointerUp(handle, { ...pointer, clientY: 45 });
   } finally {
@@ -1878,8 +1892,16 @@ it("commits Board pointer drops through the workspace socket", async () => {
       clientX: 50,
     };
     const sentBefore = socket.send.mock.calls.length;
-    fireEvent.pointerDown(handle, { ...pointer, clientY: 100 });
-    fireEvent.pointerMove(handle, { ...pointer, clientY: 45 });
+    const press = createEvent.pointerDown(handle, { ...pointer, clientY: 100 });
+    const movement = createEvent.pointerMove(handle, {
+      ...pointer,
+      clientY: 45,
+    });
+    Object.defineProperty(movement, "timeStamp", {
+      value: press.timeStamp + 500,
+    });
+    fireEvent(handle, press);
+    fireEvent(handle, movement);
     expect(socket.send).toHaveBeenCalledTimes(sentBefore);
     fireEvent.pointerUp(handle, { ...pointer, clientY: 45 });
   }
@@ -1919,10 +1941,13 @@ it("commits Board pointer drops through the workspace socket", async () => {
   }
 });
 
-it("condenses the desktop Stream on Board and restores its bands on mobile or lens switch", async () => {
+it("switches the Board stream between desktop and mobile sheet stops at 768px", async () => {
   let desktop = true;
   const media = new EventTarget();
-  vi.stubGlobal("matchMedia", () => Object.assign(media, { matches: desktop }));
+  vi.stubGlobal("matchMedia", (query: string) => {
+    expect(query).toBe("(min-width: 768px)");
+    return Object.assign(media, { matches: desktop });
+  });
   localStorage.setItem("heed.lens", "board");
   const completed = {
     ...goal,
@@ -1945,8 +1970,31 @@ it("condenses the desktop Stream on Board and restores its bands on mobile or le
 
   desktop = false;
   act(() => media.dispatchEvent(new Event("change")));
+  const dock = within(
+    screen.getByRole("navigation", { name: "Workspace shortcuts" }),
+  );
+  expect(stream.queryByRole("heading", { name: "Today" })).toBeNull();
+  expect(stream.getAllByRole("button")).toHaveLength(3);
+  const handle = stream.getByRole("button", { name: /size: Peek/ });
+  fireEvent.keyDown(handle, { key: "ArrowUp" });
   expect(stream.getByRole("heading", { name: "Today" })).toBeTruthy();
-  expect(stream.queryByRole("heading", { name: "Needs me" })).toBeNull();
+  expect(stream.queryByRole("heading", { name: "Tomorrow" })).toBeNull();
+  fireEvent.click(dock.getByRole("button", { name: "List" }));
+  expect(stream.getByRole("heading", { name: "Tomorrow" })).toBeTruthy();
+  expect(stream.getByRole("heading", { name: "Backlog" })).toBeTruthy();
+  fireEvent.click(dock.getByRole("button", { name: "Lens" }));
+  expect(stream.queryByRole("heading", { name: "Tomorrow" })).toBeNull();
+
+  fireEvent.click(dock.getByRole("button", { name: "Open quick add" }));
+  const quickAdd = screen.getByRole("dialog", { name: "Add a goal" });
+  fireEvent.click(within(quickAdd).getByRole("button", { name: "Close" }));
+
+  fireEvent.click(stream.getByRole("button", { name: goal.title }));
+  const drawer = screen.getByRole("dialog", { name: "Inspector" });
+  expect(
+    within(drawer).getByRole("button", { name: "Mark done" }),
+  ).toBeTruthy();
+  fireEvent.click(within(drawer).getByRole("button", { name: "Close" }));
 
   desktop = true;
   act(() => media.dispatchEvent(new Event("change")));

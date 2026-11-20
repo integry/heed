@@ -1,0 +1,85 @@
+.treemap-toolbar,
+.treemap-toolbar .radar-zoom-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.treemap-toolbar {
+  margin-bottom: 8px;
+}
+
+.treemap-chart {
+  border-radius: 16px;
+  overflow: hidden;
+  background: #111f20;
+}
+
+.treemap-svg {
+  display: block;
+  width: 100%;
+  aspect-ratio: 800 / 760;
+  max-height: min(76vh, 820px);
+  touch-action: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  cursor: grab;
+}
+
+.treemap-tile > rect {
+  fill: #2c514c;
+  stroke: #769690;
+}
+
+.treemap-tile[data-project="true"] > rect {
+  fill: #192f2d;
+}
+
+.treemap-tile[role="button"] {
+  cursor: pointer;
+}
+
+.treemap-tile[data-status="Live"] > rect {
+  fill: #326146;
+  stroke: #ade4ae;
+}
+
+.treemap-tile[data-status="Needs input"] > rect,
+.treemap-tile[data-status="Stale"] > rect {
+  fill: #674830;
+  stroke: #e6b984;
+}
+
+.treemap-tile[data-status="Blocked"] > rect {
+  fill: #633d50;
+  stroke: #d3a2b9;
+}
+
+.treemap-tile[data-status="Done"] {
+  opacity: 0.56;
+}
+
+.treemap-tile[aria-pressed="true"] > rect,
+.treemap-tile:focus-visible > rect,
+.treemap-tile[data-target="true"] > rect {
+  stroke: #e5f6df;
+  stroke-width: 3;
+}
+
+.treemap-tile > text {
+  fill: #edf2e8;
+  font-size: 19px;
+  font-weight: 650;
+  pointer-events: none;
+}
+
+@media (width < 768px) {
+  .treemap-toolbar {
+    pointer-events: none;
+  }
+
+  .treemap-toolbar button {
+    pointer-events: auto;
+  }
+}

@@ -99,6 +99,7 @@ export const RadarBubble = memo(function RadarBubble({
   return (
     <g className="radar-node" transform={`translate(${point.x},${point.y})`}>
       <g
+        data-canvas-drag
         data-radar-bubble={item.id}
         className="radar-bubble"
         data-ghost={ghost}
@@ -206,6 +207,7 @@ export const RadarBubble = memo(function RadarBubble({
       {showResize && (
         <g
           className="radar-resize"
+          data-canvas-drag
           data-radar-resize
           role="slider"
           tabIndex={0}
