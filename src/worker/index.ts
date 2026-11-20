@@ -4,6 +4,7 @@ import type { AgentAuthEnv } from "./agent-auth";
 import { handleAuth } from "./auth";
 import type { AuthEnv } from "./auth";
 import { handleHumanApi } from "./human-api";
+import { handleMcp } from "./mcp";
 import { requireSession } from "./session";
 import { handleTokenBootstrap } from "./token-admin";
 import type { TokenAdminEnv } from "./token-admin";
@@ -56,10 +57,18 @@ export default {
     }
 
     if (pathname === "/mcp") {
-      return requireAgent(
-        request,
-        env,
-        () => new Response("Not found", { status: 404 }),
+      const origin = request.headers.get("Origin");
+      if (origin !== null && origin !== url.origin) {
+        return new Response("Invalid Origin", { status: 403 });
+      }
+      if (request.method !== "POST") {
+        return new Response("Method not allowed", {
+          status: 405,
+          headers: { Allow: "POST" },
+        });
+      }
+      return requireAgent(request, env, (actor, workspace) =>
+        handleMcp(request, actor, workspace),
       );
     }
 

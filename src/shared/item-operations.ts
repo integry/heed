@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { ScopeSchema, StatusSchema, TimeTypeSchema } from "./workspace";
+import {
+  GuidanceTextSchema,
+  ScopeSchema,
+  StatusSchema,
+  TimeTypeSchema,
+} from "./workspace";
 import type { Dependency, Item } from "./workspace";
 
 const id = z.string().min(1);
@@ -19,6 +24,17 @@ const note = z
       value.length <= 280 || (value.length <= 560 && [...value].length <= 280),
     "Notes must be at most 280 characters",
   );
+
+export const MAX_CANVAS_ITEMS = 200;
+export const CanvasQuerySchema = z.strictObject({
+  project: z.string().optional(),
+  parent_id: id.nullable().optional(),
+  query: z.string().optional(),
+  include_done: z.boolean().default(false),
+  limit: z.int().positive().default(50),
+});
+
+export const SetGuidanceSchema = z.strictObject({ text: GuidanceTextSchema });
 
 export const ActorSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("human") }),

@@ -220,9 +220,9 @@ it("returns a compact canvas with bands inherited from ancestors outside the que
     sql.exec(`
       INSERT INTO items (id, project_id, title, scheduled_on)
       VALUES ('goal', 'inbox', 'Billing', '2000-01-01');
-      INSERT INTO items (id, project_id, title, parent_id, depth, ref_url)
-      VALUES ('task', 'inbox', 'Payment flow', 'goal', 2, NULL),
-             ('child', 'inbox', 'Repair retries', 'task', 3, 'https://example.com/pull/1');
+      INSERT INTO items (id, project_id, title, parent_id, depth, ref_url, agent_name)
+      VALUES ('task', 'inbox', 'Payment flow', 'goal', 2, NULL, NULL),
+             ('child', 'inbox', 'Repair retries', 'task', 3, 'https://example.com/pull/1', 'Builder');
       INSERT INTO items (id, project_id, title, status, completed_at)
       VALUES ('archive', 'inbox', 'Retry tests', 'done', '2000-01-01 00:00:00');
     `);
@@ -244,6 +244,7 @@ it("returns a compact canvas with bands inherited from ancestors outside the que
         status: "queued",
         parent_id: "task",
         ref_url: "https://example.com/pull/1",
+        agent_name: "Builder",
         band: "today",
       },
     ],
@@ -258,16 +259,25 @@ it("returns a compact canvas with bands inherited from ancestors outside the que
   expect((await stub.getCanvas({ project: "Missing" })).items).toEqual([]);
 });
 
-it("caps the canvas response at 50 items", async () => {
+it("defaults to 50 canvas items and caps larger requests at 200 with open items first", async () => {
   const stub = newWorkspace();
   await runInDurableObject(stub, (_, { storage: { sql } }) => {
     sql.exec(`
       WITH RECURSIVE numbers(n) AS (
-        VALUES (1) UNION ALL SELECT n + 1 FROM numbers WHERE n < 51
+        VALUES (1) UNION ALL SELECT n + 1 FROM numbers WHERE n < 201
       )
       INSERT INTO items (id, project_id, title) SELECT n, 'inbox', 'Task ' || n FROM numbers
     `);
+    sql.exec(`
+      UPDATE items SET status = 'done', updated_at = '2099-01-01' WHERE id = '1';
+      UPDATE items SET status = 'cancelled', updated_at = '2099-01-01' WHERE id = '2';
+    `);
   });
   expect((await stub.getCanvas()).items).toHaveLength(50);
-  expect((await stub.getCanvas({ limit: 500 })).items).toHaveLength(50);
+  const { items } = await stub.getCanvas({ limit: 500, include_done: true });
+  expect(items).toHaveLength(200);
+  expect(items.slice(0, 199).every(({ status }) => status === "queued")).toBe(
+    true,
+  );
+  expect(items[199].status).toBe("done");
 });

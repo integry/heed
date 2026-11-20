@@ -12,9 +12,11 @@ import type {
 import {
   ActorSchema,
   AddItemSchema,
+  CanvasQuerySchema,
   FlagHandoffSchema,
   ItemIdSchema,
   LockableFieldSchema,
+  MAX_CANVAS_ITEMS,
   ReopenItemSchema,
   ReportProgressSchema,
   SetDependencySchema,
@@ -63,17 +65,6 @@ import {
 } from "./token-secrets";
 import { migrateWorkspace } from "./workspace-migrations";
 
-const MAX_CANVAS_ITEMS = 50;
-const canvasQuerySchema = z
-  .object({
-    project: z.string().optional(),
-    parent_id: z.string().nullable().optional(),
-    query: z.string().optional(),
-    include_done: z.boolean().default(false),
-    limit: z.int().positive().default(MAX_CANVAS_ITEMS),
-  })
-  .strict();
-
 type CanvasRow = Pick<
   Item,
   | "id"
@@ -81,6 +72,7 @@ type CanvasRow = Pick<
   | "status"
   | "parent_id"
   | "ref_url"
+  | "agent_name"
   | "scheduled_on"
   | "time_at"
   | "completed_at"
@@ -332,22 +324,22 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       .toArray();
   }
 
-  getCanvas(input: z.input<typeof canvasQuerySchema> = {}) {
+  getCanvas(input: z.input<typeof CanvasQuerySchema> = {}) {
     const { project, parent_id, query, include_done, limit } = parseInput(
-      canvasQuerySchema,
+      CanvasQuerySchema,
       input,
     );
     const { timezone, guidance, guidance_updated_at } = this.getSettings();
     const items = this.#sql
       .exec<CanvasRow>(
         `SELECT i.id, i.title, i.status, i.parent_id, i.ref_url, i.scheduled_on,
-              i.time_at, i.completed_at, p.name AS project
+              i.time_at, i.completed_at, i.agent_name, p.name AS project
        FROM items i JOIN projects p ON p.id = i.project_id
        WHERE (?1 IS NULL OR p.id = ?1 OR p.name = ?1)
          AND (?2 OR i.parent_id IS ?3)
          AND (?4 IS NULL OR instr(lower(i.title), lower(?4)) > 0)
          AND (?5 OR i.status NOT IN ('done', 'cancelled'))
-       ORDER BY i.updated_at DESC, i.id
+       ORDER BY i.status IN ('done', 'cancelled'), i.updated_at DESC, i.id
        LIMIT ?6`,
         project ?? null,
         Number(parent_id === undefined),
@@ -389,13 +381,14 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       guidance,
       guidance_updated_at,
       items: items.map(
-        ({ id, title, project, status, parent_id, ref_url }) => ({
+        ({ id, title, project, status, parent_id, ref_url, agent_name }) => ({
           id,
           title,
           project,
           status,
           parent_id,
           ref_url,
+          agent_name,
           band: bands.get(id) ?? null,
         }),
       ),
