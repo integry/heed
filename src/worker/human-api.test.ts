@@ -74,8 +74,13 @@ async function addItem(title: string, fields: object = {}) {
 }
 
 it("requires a signed session and a same-origin mutation before looking up the workspace", async () => {
+  const sessionResponse = await request("/api/me", "GET", undefined, {});
+  expect(sessionResponse.status).toBe(401);
+  expect(await sessionResponse.json()).toMatchObject({
+    error: { code: "unauthorized", message: expect.any(String) },
+    devLoginEnabled: false,
+  });
   for (const path of [
-    "/api/me",
     "/api/settings",
     "/api/projects",
     "/api/tokens",

@@ -81,7 +81,8 @@ const migrations = [
       );
 
       CREATE INDEX idx_events_item ON events(item_id, at);
-      INSERT INTO settings (key, value) VALUES ('timezone', 'UTC'), ('guidance', '');
+      -- UTC is the read fallback until the first signed-in browser sets a timezone.
+      INSERT INTO settings (key, value) VALUES ('guidance', '');
     `);
     sql.exec(
       "INSERT INTO projects (id, name) VALUES (?, 'Inbox')",

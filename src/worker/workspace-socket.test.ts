@@ -452,3 +452,77 @@ it("broadcasts project, settings and dependency updates including cascades on de
     item_id: child,
   });
 });
+
+it("shares project and guidance edits across sockets and initializes the timezone only once", async () => {
+  const first = await connect();
+  const second = await connect();
+  for (const client of [first, second]) {
+    expect(await client.next()).toMatchObject({
+      type: "SNAPSHOT",
+      timezoneConfigured: false,
+      settings: { timezone: "UTC" },
+    });
+  }
+
+  first.send({
+    type: "INITIALIZE_TIMEZONE",
+    requestId: "first-zone",
+    input: { timezone: "UTC" },
+  });
+  for (const client of [first, second]) {
+    expect(await client.next()).toMatchObject({
+      type: "SETTINGS_UPDATE",
+      settings: { timezone: "UTC" },
+    });
+  }
+  expect(await first.next()).toMatchObject({
+    type: "ACK",
+    requestId: "first-zone",
+  });
+
+  second.send({
+    type: "INITIALIZE_TIMEZONE",
+    requestId: "second-zone",
+    input: { timezone: "Europe/Tallinn" },
+  });
+  expect(await second.next()).toMatchObject({
+    type: "ACK",
+    requestId: "second-zone",
+  });
+  second.send({ type: "GET_SNAPSHOT" });
+  expect(await second.next()).toMatchObject({
+    type: "SNAPSHOT",
+    timezoneConfigured: true,
+    settings: { timezone: "UTC" },
+  });
+
+  first.send({
+    type: "UPDATE_PROJECT",
+    requestId: "hide",
+    project_id: "inbox",
+    input: { hidden: 1 },
+  });
+  for (const client of [first, second]) {
+    expect(await client.next()).toMatchObject({
+      type: "PROJECT_UPSERT",
+      project: { id: "inbox", hidden: 1 },
+    });
+  }
+  expect(await first.next()).toMatchObject({ type: "ACK", requestId: "hide" });
+
+  second.send({
+    type: "SET_GUIDANCE",
+    requestId: "guidance",
+    input: { text: "Focus on billing." },
+  });
+  for (const client of [first, second]) {
+    expect(await client.next()).toMatchObject({
+      type: "SETTINGS_UPDATE",
+      settings: { guidance: "Focus on billing." },
+    });
+  }
+  expect(await second.next()).toMatchObject({
+    type: "ACK",
+    requestId: "guidance",
+  });
+});
