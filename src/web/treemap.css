@@ -1,9 +1,26 @@
+.treemap-toolbar,
+.treemap-toolbar .radar-zoom-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.treemap-toolbar {
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.treemap-toolbar .radar-zoom-controls[hidden] {
+  display: none;
+}
+
 .treemap-breadcrumb {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 9px;
-  margin-bottom: 10px;
+  min-width: 0;
   min-height: 32px;
   font-size: 0.88rem;
   overflow-wrap: anywhere;
@@ -30,6 +47,16 @@
   border-radius: 14px;
   background: #111f20;
   color: #f0f6f1;
+  /* Pinch, pan and long-press drags are handled by the lens. */
+  touch-action: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.treemap-layer {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
 }
 
 .treemap-tile,
@@ -104,6 +131,15 @@
     > .treemap-tile-button:is(:hover, [aria-pressed="true"])
   )::before {
   background: color-mix(in srgb, var(--tile-color) 27%, #172b29);
+}
+
+.treemap-tile[data-canvas-drag] > .treemap-tile-button {
+  cursor: grab;
+}
+
+.treemap-tile[data-target="true"]::before {
+  border-color: #e5f6df;
+  border-width: 3px;
 }
 
 .treemap-tile-button:focus-visible,
@@ -215,5 +251,25 @@
 @media (max-width: 767px) {
   .treemap-chart {
     height: clamp(360px, 57dvh, 540px);
+  }
+}
+
+@media (width < 768px) {
+  /* The full-screen mobile lens overlays the toolbar on the chart. */
+  .treemap {
+    flex-direction: column;
+  }
+
+  .treemap-chart {
+    height: auto;
+    margin-top: 56px;
+  }
+
+  .treemap-toolbar {
+    pointer-events: none;
+  }
+
+  .treemap-toolbar button {
+    pointer-events: auto;
   }
 }

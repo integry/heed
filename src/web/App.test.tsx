@@ -1,6 +1,7 @@
 import {
   act,
   cleanup,
+  createEvent,
   fireEvent,
   render,
   screen,
@@ -1816,6 +1817,19 @@ it("writes a fractional key on pointer drop and reschedules or clears a date wit
   try {
     fireEvent.pointerDown(handle, { ...pointer, clientY: 100 });
     fireEvent.pointerMove(handle, { ...pointer, clientY: 45 });
+    fireEvent.pointerUp(handle, { ...pointer, clientY: 45 });
+    expect(socket.send).not.toHaveBeenCalled();
+
+    const press = createEvent.pointerDown(handle, { ...pointer, clientY: 100 });
+    const movement = createEvent.pointerMove(handle, {
+      ...pointer,
+      clientY: 45,
+    });
+    Object.defineProperty(movement, "timeStamp", {
+      value: press.timeStamp + 500,
+    });
+    fireEvent(handle, press);
+    fireEvent(handle, movement);
     expect(socket.send).not.toHaveBeenCalled();
     fireEvent.pointerUp(handle, { ...pointer, clientY: 45 });
   } finally {
@@ -2341,8 +2355,16 @@ it("commits Board pointer drops through the workspace socket", async () => {
       clientX: 50,
     };
     const sentBefore = socket.send.mock.calls.length;
-    fireEvent.pointerDown(handle, { ...pointer, clientY: 100 });
-    fireEvent.pointerMove(handle, { ...pointer, clientY: 45 });
+    const press = createEvent.pointerDown(handle, { ...pointer, clientY: 100 });
+    const movement = createEvent.pointerMove(handle, {
+      ...pointer,
+      clientY: 45,
+    });
+    Object.defineProperty(movement, "timeStamp", {
+      value: press.timeStamp + 500,
+    });
+    fireEvent(handle, press);
+    fireEvent(handle, movement);
     expect(socket.send).toHaveBeenCalledTimes(sentBefore);
     fireEvent.pointerUp(handle, { ...pointer, clientY: 45 });
   }
@@ -2382,10 +2404,204 @@ it("commits Board pointer drops through the workspace socket", async () => {
   }
 });
 
-it("condenses the desktop Stream on Board and restores its bands on mobile or lens switch", async () => {
-  let desktop = true;
-  const media = new EventTarget();
-  vi.stubGlobal("matchMedia", () => Object.assign(media, { matches: desktop }));
+function mockViewport(desktop: boolean) {
+  const media = Object.assign(new EventTarget(), { matches: desktop });
+  vi.stubGlobal("matchMedia", (query: string) => {
+    expect(query).toBe("(min-width: 768px)");
+    return media;
+  });
+  return (desktop: boolean) => {
+    media.matches = desktop;
+    act(() => media.dispatchEvent(new Event("change")));
+  };
+}
+
+it.each(["desktop", "mobile"])(
+  "lists each lens once in the %s selector",
+  async (layout) => {
+    if (layout === "mobile") mockViewport(false);
+    await openWorkspace();
+    const selector = within(screen.getByRole("combobox", { name: "Lens" }));
+    expect(
+      selector.getAllByRole("option").map((option) => option.textContent),
+    ).toEqual(["Radar", "Board", "Treemap", "List"]);
+  },
+);
+
+it.each([
+  ["Half", "ArrowUp", "Half"],
+  ["Full", "End", "Peek"],
+])(
+  "reveals an interactive graph from the mobile inspector at %s",
+  async (start, key, end) => {
+    mockViewport(false);
+    await openWorkspace();
+    const stream = within(
+      screen.getByRole("region", { name: "Horizon Stream" }),
+    );
+    const handle = stream.getByRole("button", { name: /size: Peek/ });
+    fireEvent.keyDown(handle, { key });
+    expect(
+      stream.getByRole("button", { name: new RegExp(`size: ${start}`) }),
+    ).toBe(handle);
+    const today = within(screen.getByRole("region", { name: "Today" }));
+    fireEvent.click(
+      today.getByRole("button", { name: `Expand ${goal.title}` }),
+    );
+    fireEvent.click(today.getByRole("button", { name: child.title }));
+    const drawer = within(screen.getByRole("dialog", { name: "Inspector" }));
+
+    fireEvent.click(
+      drawer.getByRole("button", { name: "Open dependency graph" }),
+    );
+
+    expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+    expect(
+      stream.getByRole("button", { name: new RegExp(`size: ${end}`) }),
+    ).toBe(handle);
+    const lens = screen.getByRole("region", { name: "Dependencies" });
+    expect(lens.hasAttribute("inert")).toBe(false);
+    const graph = within(
+      within(lens).getByRole("region", {
+        name: `Dependency graph for ${goal.title}`,
+      }),
+    );
+    expect(
+      graph.getByRole("button", {
+        name: /^Review retry policy/,
+        pressed: true,
+      }),
+    ).toBeTruthy();
+    fireEvent.click(graph.getByRole("button", { name: /^Run failover drill/ }));
+    expect(
+      within(
+        screen.getByRole("dialog", { name: "Inspector" }),
+      ).getByDisplayValue(tomorrow.title),
+    ).toBeTruthy();
+  },
+);
+
+it("reveals Dependencies when chosen from the mobile selector with the Full stream open", async () => {
+  mockViewport(false);
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  const handle = screen.getByRole("button", { name: /size: Peek/ });
+  fireEvent.keyDown(handle, { key: "End" });
+
+  fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
+    target: { value: "dependencies" },
+  });
+
+  expect(screen.getByRole("button", { name: /size: Peek/ })).toBe(handle);
+  const graph = screen.getByRole("region", {
+    name: `Dependency graph for ${goal.title}`,
+  });
+  expect(graph.closest("[inert]")).toBeNull();
+});
+
+it("keeps the mobile Radar priority handle usable before and after inspecting", async () => {
+  mockViewport(false);
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  const bubble = radar.getByRole("button", { name: tomorrow.title });
+  fireEvent.click(bubble);
+  expect(bubble.getAttribute("aria-pressed")).toBe("true");
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+
+  const priorityHandle = () =>
+    radar.getByRole("slider", { name: `Priority for ${tomorrow.title}` });
+  const handle = priorityHandle();
+  const node = handle.parentElement!;
+  Object.defineProperty(node.parentElement, "getScreenCTM", {
+    value: () => null,
+  });
+  const translate = (element: Element) =>
+    element.getAttribute("transform")!.slice(10, -1).split(",").map(Number);
+  const [x, y] = translate(node);
+  const [dx, dy] = translate(handle);
+  const press = {
+    pointerId: 1,
+    pointerType: "touch",
+    isPrimary: true,
+    button: 0,
+    clientX: x + dx,
+    clientY: y + dy,
+  };
+  const drag = { ...press, clientX: press.clientX + 30 };
+  vi.useFakeTimers();
+  try {
+    fireEvent.pointerDown(handle, press);
+    act(() => vi.advanceTimersByTime(450));
+    fireEvent.pointerMove(handle, drag);
+    fireEvent.pointerUp(handle, drag);
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(TestSocket.current.latestRequest()).toMatchObject({
+    type: "UPDATE_ITEM",
+    input: { item_id: tomorrow.id, priority: 10 },
+  });
+
+  fireEvent.click(
+    screen.getByRole("button", { name: `Inspect ${tomorrow.title}` }),
+  );
+  const drawer = within(screen.getByRole("dialog", { name: "Inspector" }));
+  expect(drawer.getByDisplayValue(tomorrow.title)).toBeTruthy();
+  fireEvent.click(drawer.getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  expect(bubble.getAttribute("aria-pressed")).toBe("true");
+  expect(priorityHandle()).toBeTruthy();
+});
+
+it("lets a second mobile Treemap tap zoom into the selected parent", async () => {
+  mockViewport(false);
+  localStorage.setItem("heed.lens", "treemap");
+  await openWorkspace();
+  const treemap = within(screen.getByRole("region", { name: "Treemap" }));
+  const tile = treemap.getByRole("button", { name: goal.title });
+  const breadcrumb = treemap.getByRole("navigation", {
+    name: "Treemap breadcrumb",
+  });
+  function tap(timeStamp: number) {
+    const event = new PointerEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      pointerType: "touch",
+      detail: 1,
+    });
+    Object.defineProperty(event, "timeStamp", { value: timeStamp });
+    fireEvent(tile, event);
+  }
+
+  tap(100);
+  expect(tile.getAttribute("aria-pressed")).toBe("true");
+  expect(breadcrumb.querySelector("[aria-current]")?.textContent).toBe(
+    "All projects",
+  );
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+
+  tap(250);
+  expect(breadcrumb.querySelector("[aria-current]")?.textContent).toBe(
+    goal.title,
+  );
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  fireEvent.click(
+    screen.getByRole("button", { name: `Inspect ${goal.title}` }),
+  );
+  const drawer = screen.getByRole("dialog", { name: "Inspector" });
+  expect(within(drawer).getByDisplayValue(goal.title)).toBeTruthy();
+  fireEvent(drawer, new Event("cancel", { cancelable: true }));
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  expect(
+    screen.getByRole("button", { name: `Inspect ${goal.title}` }),
+  ).toBeTruthy();
+});
+
+it("switches the Board stream between desktop and mobile sheet stops at 768px", async () => {
+  const resize = mockViewport(true);
   localStorage.setItem("heed.lens", "board");
   const completed = {
     ...goal,
@@ -2406,16 +2622,161 @@ it("condenses the desktop Stream on Board and restores its bands on mobile or le
   for (const name of ["Today", "Tomorrow", "This week", "Later", "Backlog"])
     expect(stream.queryByRole("heading", { name })).toBeNull();
 
-  desktop = false;
-  act(() => media.dispatchEvent(new Event("change")));
+  resize(false);
+  const dock = within(
+    screen.getByRole("navigation", { name: "Workspace shortcuts" }),
+  );
+  expect(stream.queryByRole("heading", { name: "Today" })).toBeNull();
+  expect(stream.getAllByRole("button")).toHaveLength(3);
+  const handle = stream.getByRole("button", { name: /size: Peek/ });
+  fireEvent.keyDown(handle, { key: "ArrowUp" });
   expect(stream.getByRole("heading", { name: "Today" })).toBeTruthy();
-  expect(stream.queryByRole("heading", { name: "Needs me" })).toBeNull();
+  expect(stream.queryByRole("heading", { name: "Tomorrow" })).toBeNull();
+  fireEvent.click(dock.getByRole("button", { name: "List" }));
+  expect(stream.getByRole("heading", { name: "Tomorrow" })).toBeTruthy();
+  expect(stream.getByRole("heading", { name: "Backlog" })).toBeTruthy();
+  fireEvent.click(dock.getByRole("button", { name: "Lens" }));
+  expect(stream.queryByRole("heading", { name: "Tomorrow" })).toBeNull();
 
-  desktop = true;
-  act(() => media.dispatchEvent(new Event("change")));
+  fireEvent.click(dock.getByRole("button", { name: "Open quick add" }));
+  const quickAdd = screen.getByRole("dialog", { name: "Add a goal" });
+  fireEvent.click(within(quickAdd).getByRole("button", { name: "Close" }));
+
+  fireEvent.click(stream.getByRole("button", { name: goal.title }));
+  const drawer = screen.getByRole("dialog", { name: "Inspector" });
+  expect(
+    within(drawer).getByRole("button", { name: "Mark done" }),
+  ).toBeTruthy();
+  fireEvent.click(within(drawer).getByRole("button", { name: "Close" }));
+
+  resize(true);
   fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
     target: { value: "list" },
   });
   expect(stream.getByRole("heading", { name: "Today" })).toBeTruthy();
   expect(stream.queryByRole("heading", { name: "Needs me" })).toBeNull();
+});
+
+it("keeps stream inspector drafts and pending saves across both breakpoint directions", async () => {
+  const resize = mockViewport(false);
+  await openWorkspace();
+  fireEvent.keyDown(screen.getByRole("button", { name: /size: Peek/ }), {
+    key: "End",
+  });
+  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+  fireEvent.click(stream.getByRole("button", { name: goal.title }));
+
+  let inspector = within(screen.getByRole("dialog", { name: "Inspector" }));
+  const title = "Draft payment reliability plan";
+  const note = "Confirm the retry budget with the team.";
+  fireEvent.change(inspector.getByLabelText("Title"), {
+    target: { value: title },
+  });
+  fireEvent.change(inspector.getByLabelText("Note"), {
+    target: { value: note },
+  });
+  fireEvent.change(inspector.getByLabelText("Priority"), {
+    target: { value: "8" },
+  });
+  fireEvent.change(inspector.getByLabelText("New tag"), {
+    target: { value: "payments" },
+  });
+  fireEvent.click(inspector.getByRole("button", { name: "Add tag" }));
+  fireEvent.change(inspector.getByLabelText("New tag"), {
+    target: { value: "review" },
+  });
+
+  function expectDrafts(expectedNote: string) {
+    expect(inspector.getByLabelText<HTMLInputElement>("Title").value).toBe(
+      title,
+    );
+    expect(inspector.getByLabelText<HTMLTextAreaElement>("Note").value).toBe(
+      expectedNote,
+    );
+    expect(inspector.getByLabelText<HTMLSelectElement>("Priority").value).toBe(
+      "8",
+    );
+    expect(
+      inspector.getByRole("button", { name: "Remove tag payments" }),
+    ).toBeTruthy();
+    expect(inspector.getByLabelText<HTMLInputElement>("New tag").value).toBe(
+      "review",
+    );
+  }
+
+  resize(true);
+  inspector = within(screen.getByRole("complementary", { name: "Inspector" }));
+  expectDrafts(note);
+
+  const revisedNote = `${note} Review the alert thresholds.`;
+  fireEvent.change(inspector.getByLabelText("Note"), {
+    target: { value: revisedNote },
+  });
+  resize(false);
+  inspector = within(screen.getByRole("dialog", { name: "Inspector" }));
+  expectDrafts(revisedNote);
+
+  const socket = TestSocket.current;
+  expect(socket.send).not.toHaveBeenCalled();
+  fireEvent.click(inspector.getByRole("button", { name: "Save note" }));
+  const request = socket.latestRequest();
+  expect(request).toMatchObject({
+    type: "SET_NOTE",
+    input: { item_id: goal.id, note: revisedNote },
+  });
+  resize(true);
+  inspector = within(screen.getByRole("complementary", { name: "Inspector" }));
+  expect(
+    inspector.getByRole<HTMLButtonElement>("button", { name: "Save note" })
+      .disabled,
+  ).toBe(true);
+  await act(async () =>
+    socket.receive({
+      type: "ERROR",
+      requestId: request.requestId,
+      seq: 2,
+      error: { code: "invalid_input", message: "Couldn’t save the note." },
+    }),
+  );
+  expect(inspector.getByRole("alert").textContent).toBe(
+    "Couldn’t save the note.",
+  );
+  expect(
+    inspector.getByRole<HTMLButtonElement>("button", { name: "Save note" })
+      .disabled,
+  ).toBe(false);
+  expectDrafts(revisedNote);
+});
+
+it("keeps a canvas inspector open with its draft after resizing to mobile", async () => {
+  const resize = mockViewport(false);
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+
+  resize(true);
+  const inspector = within(
+    screen.getByRole("complementary", { name: "Inspector" }),
+  );
+  fireEvent.change(inspector.getByLabelText("Title"), {
+    target: { value: "Draft payment reliability plan" },
+  });
+
+  resize(false);
+  const drawer = within(screen.getByRole("dialog", { name: "Inspector" }));
+  expect(
+    drawer.getByDisplayValue("Draft payment reliability plan"),
+  ).toBeTruthy();
+  fireEvent.click(drawer.getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+
+  fireEvent.click(
+    screen.getByRole("button", { name: `Inspect ${goal.title}` }),
+  );
+  expect(
+    within(screen.getByRole("dialog", { name: "Inspector" })).getByDisplayValue(
+      goal.title,
+    ),
+  ).toBeTruthy();
 });

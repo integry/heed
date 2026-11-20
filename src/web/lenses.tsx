@@ -106,8 +106,8 @@ function ListLens({
 export const lensRegistry: readonly [Lens, ...Lens[]] = [
   { id: "radar", label: "Radar", component: RadarLens },
   { id: "board", label: "Board", component: BoardLens },
-  { id: "list", label: "List", component: ListLens },
   { id: "treemap", label: "Treemap", component: TreemapLens },
+  { id: "list", label: "List", component: ListLens },
   { id: "dependencies", label: "Dependencies", component: DependenciesLens },
 ];
 

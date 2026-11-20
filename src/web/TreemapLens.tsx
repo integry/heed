@@ -1,12 +1,15 @@
 import {
+  useCallback,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type MouseEvent,
+  type PointerEvent,
 } from "react";
 import { rollUpRing } from "../shared/derived-state";
+import type { CanvasItem } from "../shared/workspace-socket";
 import type { LensProps } from "./lenses";
 import {
   buildTreemap,
@@ -15,6 +18,8 @@ import {
   treemapHeaderHeight,
   type TreemapRect,
 } from "./treemap-layout";
+import { useCanvasDrag } from "./use-canvas-drag";
+import { useCanvasZoom } from "./use-canvas-zoom";
 import { itemRing, ringLabels } from "./workspace-view";
 import "./treemap.css";
 
@@ -25,6 +30,9 @@ type TileControls = Pick<
   allItems: ReadonlyArray<LensProps["tree"][number]["item"]>;
   zoom: (key: string) => void;
   tap: (event: MouseEvent, key: string | null) => void;
+  canDrag: (item: CanvasItem) => boolean;
+  startDrag: (event: PointerEvent<Element>, item: CanvasItem) => void;
+  target: string | null;
 };
 
 function Tile({
@@ -35,9 +43,23 @@ function Tile({
   controls: TileControls;
 }) {
   const { data, parent, children } = rect;
-  const { items, allItems, dependencies, now, selectedId, select, zoom, tap } =
-    controls;
+  const {
+    items,
+    allItems,
+    dependencies,
+    now,
+    selectedId,
+    select,
+    zoom,
+    tap,
+    canDrag,
+    startDrag,
+    target,
+  } = controls;
   const item = data.kind === "item" ? data.item : null;
+  const draggable = item !== null && canDrag(item);
+  const projectId =
+    data.kind === "project" ? data.project.id : item?.project_id;
   const ghost = item?.status === "done";
   const { done, total } = item?.progress ?? { done: 0, total: 0 };
   const ring = item && itemRing(item, now, items, dependencies);
@@ -76,6 +98,9 @@ function Tile({
       data-parent={Boolean(children)}
       data-ring={ring ?? undefined}
       data-ghost={ghost}
+      data-treemap-project={projectId}
+      data-target={data.kind === "project" && projectId === target}
+      data-canvas-drag={draggable || undefined}
       style={style}
     >
       <button
@@ -85,6 +110,9 @@ function Tile({
         aria-description={detail || undefined}
         aria-pressed={item ? selectedId === item.id : undefined}
         title={[data.title, detail].filter(Boolean).join(" · ")}
+        onPointerDown={
+          draggable ? (event) => startDrag(event, item) : undefined
+        }
         onClick={(event) => {
           if (item) select(item.id);
           if (!item && event.detail === 0) zoom(data.key);
@@ -140,10 +168,11 @@ export function TreemapLens({
   items,
   dependencies,
   now,
+  live,
   selectedId,
   select,
+  moveProject,
 }: LensProps) {
-  const chart = useRef<HTMLDivElement>(null);
   const breadcrumb = useRef<HTMLSpanElement>(null);
   const focusBreadcrumb = useRef(false);
   const lastTap = useRef<{ key: string; time: number } | null>(null);
@@ -162,6 +191,31 @@ export function TreemapLens({
     [focused, width, height],
   );
   const allItems = useMemo(() => [...items.values()], [items]);
+  const [target, setTarget] = useState<string | null>(null);
+  const clearTarget = useCallback(() => setTarget(null), []);
+  const drag = useCanvasDrag<CanvasItem>(clearTarget);
+  const {
+    svg: chart,
+    layer,
+    zoomBy,
+    resetZoom,
+  } = useCanvasZoom<HTMLDivElement, HTMLDivElement>(
+    width,
+    height,
+    focused.data.key,
+    drag.dragging,
+    // Double-click and double-tap already zoom into a parent tile.
+    { doubleTapZoom: false },
+  );
+
+  function dropProject(event: PointerEvent<Element>) {
+    const tile = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-treemap-project]");
+    return tile && chart.current?.contains(tile)
+      ? tile.dataset.treemapProject
+      : undefined;
+  }
 
   useLayoutEffect(() => {
     if (!chart.current || typeof ResizeObserver === "undefined") return;
@@ -229,34 +283,71 @@ export function TreemapLens({
     select,
     zoom,
     tap,
+    canDrag: (item: CanvasItem) =>
+      live && item.parent_id === null && item.status !== "done",
+    startDrag: drag.start,
+    target,
   };
   const project = trail[1]?.data;
 
   return (
     <div className="treemap">
-      <nav className="treemap-breadcrumb" aria-label="Treemap breadcrumb">
-        {trail.map(({ data }, index) =>
-          index === trail.length - 1 ? (
-            <span
-              key={data.key}
-              ref={breadcrumb}
-              aria-current="location"
-              tabIndex={-1}
-            >
-              {data.title}
-            </span>
-          ) : (
-            <button
-              key={data.key}
-              type="button"
-              className="subtle"
-              onClick={() => navigate(path.slice(0, index))}
-            >
-              {data.title}
-            </button>
-          ),
-        )}
-      </nav>
+      <div className="treemap-toolbar">
+        <nav className="treemap-breadcrumb" aria-label="Treemap breadcrumb">
+          {trail.map(({ data }, index) =>
+            index === trail.length - 1 ? (
+              <span
+                key={data.key}
+                ref={breadcrumb}
+                aria-current="location"
+                tabIndex={-1}
+              >
+                {data.title}
+              </span>
+            ) : (
+              <button
+                key={data.key}
+                type="button"
+                className="subtle"
+                onClick={() => navigate(path.slice(0, index))}
+              >
+                {data.title}
+              </button>
+            ),
+          )}
+        </nav>
+        <div
+          className="radar-zoom-controls"
+          role="group"
+          aria-label="Treemap zoom"
+          hidden={!layout.children}
+        >
+          <button
+            type="button"
+            className="subtle"
+            aria-label="Zoom out"
+            onClick={() => zoomBy(1 / 1.35)}
+          >
+            −
+          </button>
+          <button
+            type="button"
+            className="subtle"
+            aria-label="Reset zoom"
+            onClick={resetZoom}
+          >
+            Fit
+          </button>
+          <button
+            type="button"
+            className="subtle"
+            aria-label="Zoom in"
+            onClick={() => zoomBy(1.35)}
+          >
+            +
+          </button>
+        </div>
+      </div>
       <div
         className="treemap-chart"
         ref={chart}
@@ -266,10 +357,26 @@ export function TreemapLens({
             ? ({ "--tile-project": project.project.color } as CSSProperties)
             : undefined
         }
+        {...drag.handlers}
+        onPointerMove={(event) => {
+          const item = drag.movement(event);
+          if (!item) return;
+          const project = dropProject(event);
+          setTarget(project && project !== item.project_id ? project : null);
+        }}
+        onPointerUp={(event) => {
+          const item = drag.finish(event);
+          if (!item || !live) return;
+          const project = dropProject(event);
+          if (project && project !== item.project_id)
+            moveProject(item.id, project);
+        }}
       >
-        {layout.children?.map((rect) => (
-          <Tile key={rect.data.key} rect={rect} controls={controls} />
-        ))}
+        <div className="treemap-layer" ref={layer}>
+          {layout.children?.map((rect) => (
+            <Tile key={rect.data.key} rect={rect} controls={controls} />
+          ))}
+        </div>
       </div>
       {!layout.children && <p className="empty">No items in this view.</p>}
     </div>

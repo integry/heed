@@ -53,6 +53,7 @@ interface Props extends Pick<
   now: number;
   attentionOnly: boolean;
   condensed: boolean;
+  todayOnly: boolean;
   toggleAttention: () => void;
   /** Extra stream filters rendered beside Needs me. */
   actions?: ReactNode;
@@ -109,6 +110,7 @@ export function HorizonStream({
   timezone,
   attentionOnly,
   condensed,
+  todayOnly,
   toggleAttention,
   actions,
   selectedId,
@@ -527,7 +529,7 @@ export function HorizonStream({
                 )}
               </section>
             )}
-            {bands["done-today"].length > 0 && (
+            {!todayOnly && bands["done-today"].length > 0 && (
               <section className="stream-band stream-completed">
                 <h3>
                   <button
@@ -570,91 +572,103 @@ export function HorizonStream({
                   </p>
                 )}
                 {renderBand("today", "Today", bands.today)}
-                <section
-                  className="stream-upcoming"
-                  aria-labelledby="upcoming-heading"
-                >
-                  <h3 id="upcoming-heading">Tomorrow &amp; this week</h3>
-                  {renderBand("tomorrow", "Tomorrow", bands.tomorrow)}
-                  {movableBands.includes("this-week") &&
-                    renderBand("this-week", "This week", bands["this-week"])}
-                </section>
-                {renderBand("later", "Later", bands.later)}
-                <section
-                  className="stream-band stream-backlog"
-                  data-stream-band="backlog"
-                  data-drop-active={
-                    drag?.slot?.band === "backlog" &&
-                    allRows.get(drag.id)?.band !== "backlog"
-                  }
-                >
-                  <div className="backlog-heading">
-                    <h3>Backlog</h3>
-                    {(tag || backlogTags.length > 0) && (
-                      <select
-                        aria-label="Filter backlog by tag"
-                        value={tag}
-                        onChange={(event) => setTag(event.target.value)}
-                      >
-                        <option value="">All tags</option>
-                        {tag && !backlogTags.includes(tag) && (
-                          <option value={tag}>#{tag}</option>
+                {!todayOnly && (
+                  <>
+                    <section
+                      className="stream-upcoming"
+                      aria-labelledby="upcoming-heading"
+                    >
+                      <h3 id="upcoming-heading">Tomorrow &amp; this week</h3>
+                      {renderBand("tomorrow", "Tomorrow", bands.tomorrow)}
+                      {movableBands.includes("this-week") &&
+                        renderBand(
+                          "this-week",
+                          "This week",
+                          bands["this-week"],
                         )}
-                        {backlogTags.map((value) => (
-                          <option key={value} value={value}>
-                            #{value}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                  {backlog.length === 0 && (
-                    <p className="stream-empty">
-                      {tag
-                        ? "No backlog items match this tag."
-                        : "No items in the backlog."}
-                    </p>
-                  )}
-                  {projects.map(({ id, name }) => {
-                    const rows = backlog.filter(
-                      ({ item }) => item.project_id === id,
-                    );
-                    if (!rows.length) return null;
-                    const key = `project:${id}`;
-                    const open =
-                      expanded.get(key) ?? (attentionOnly || tag !== "");
-                    return (
-                      <div className="backlog-group" key={id}>
-                        <button
-                          type="button"
-                          className="stream-disclosure"
-                          aria-expanded={open}
-                          onClick={() => toggle(key, open)}
-                        >
-                          <span aria-hidden="true">{open ? "▾" : "▸"}</span>{" "}
-                          {name}{" "}
-                          <span className="stream-count">{rows.length}</span>
-                        </button>
-                        {open && renderRows(rows, "backlog")}
+                    </section>
+                    {renderBand("later", "Later", bands.later)}
+                    <section
+                      className="stream-band stream-backlog"
+                      data-stream-band="backlog"
+                      data-drop-active={
+                        drag?.slot?.band === "backlog" &&
+                        allRows.get(drag.id)?.band !== "backlog"
+                      }
+                    >
+                      <div className="backlog-heading">
+                        <h3>Backlog</h3>
+                        {(tag || backlogTags.length > 0) && (
+                          <select
+                            aria-label="Filter backlog by tag"
+                            value={tag}
+                            onChange={(event) => setTag(event.target.value)}
+                          >
+                            <option value="">All tags</option>
+                            {tag && !backlogTags.includes(tag) && (
+                              <option value={tag}>#{tag}</option>
+                            )}
+                            {backlogTags.map((value) => (
+                              <option key={value} value={value}>
+                                #{value}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                       </div>
-                    );
-                  })}
-                </section>
+                      {backlog.length === 0 && (
+                        <p className="stream-empty">
+                          {tag
+                            ? "No backlog items match this tag."
+                            : "No items in the backlog."}
+                        </p>
+                      )}
+                      {projects.map(({ id, name }) => {
+                        const rows = backlog.filter(
+                          ({ item }) => item.project_id === id,
+                        );
+                        if (!rows.length) return null;
+                        const key = `project:${id}`;
+                        const open =
+                          expanded.get(key) ?? (attentionOnly || tag !== "");
+                        return (
+                          <div className="backlog-group" key={id}>
+                            <button
+                              type="button"
+                              className="stream-disclosure"
+                              aria-expanded={open}
+                              onClick={() => toggle(key, open)}
+                            >
+                              <span aria-hidden="true">{open ? "▾" : "▸"}</span>{" "}
+                              {name}{" "}
+                              <span className="stream-count">
+                                {rows.length}
+                              </span>
+                            </button>
+                            {open && renderRows(rows, "backlog")}
+                          </div>
+                        );
+                      })}
+                    </section>
+                  </>
+                )}
               </>
             )}
           </>
         )}
-        <footer className="stream-footer">
-          <a
-            href="#history"
-            onClick={(event) => {
-              event.preventDefault();
-              showHistory();
-            }}
-          >
-            View history <span aria-hidden="true">→</span>
-          </a>
-        </footer>
+        {!todayOnly && (
+          <footer className="stream-footer">
+            <a
+              href="#history"
+              onClick={(event) => {
+                event.preventDefault();
+                showHistory();
+              }}
+            >
+              View history <span aria-hidden="true">→</span>
+            </a>
+          </footer>
+        )}
       </div>
     </>
   );

@@ -77,6 +77,7 @@
   max-height: min(76vh, 820px);
   aspect-ratio: 800 / 760;
   touch-action: none;
+  -webkit-touch-callout: none;
   cursor: grab;
   user-select: none;
 }
@@ -177,7 +178,7 @@
   font-weight: 650;
 }
 
-.radar-svg:not(.radar-magnified)
+.radar-svg:not(.canvas-magnified)
   .radar-bubble:not(:is(:hover, :focus-visible, [aria-pressed="true"]))
   .radar-bubble-title[data-small="true"] {
   visibility: hidden;

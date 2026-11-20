@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+} from "react";
 import type { StreamRow } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
 import type { Dependency } from "../shared/workspace";
@@ -14,6 +20,8 @@ import {
   resolveLens,
   type Lens,
 } from "./lenses";
+import { useMobileSheet } from "./mobile-sheet";
+import { StreamPeek } from "./StreamPeek";
 import { HorizonStream, type LensSelection } from "./horizon-stream";
 import { isRadarRowVisible } from "./RadarLens";
 import { StreamHistory } from "./stream-history";
@@ -142,7 +150,11 @@ function Workspace({
     connection.getSnapshot,
   );
   const [lensId, setLensId] = useState(readLensId);
-  const [selectedId, select] = useState<string | null>(null);
+  const [selectedItem, setSelectedItem] = useState<{
+    id: string;
+    inspectorOpen: boolean;
+  } | null>(null);
+  const selectedId = selectedItem?.id ?? null;
   const [goalId, focusGoal] = useState<string | null>(null);
   // Dependency saves can outlive the graph that submitted them.
   const [dependencyEditGoal, setDependencyEditGoal] = useState<string | null>(
@@ -161,6 +173,13 @@ function Workspace({
   } | null>(null);
   const clock = useMinuteClock();
   const desktop = useSyncExternalStore(subscribeDesktop, isDesktop);
+  const sheet = useMobileSheet(desktop, (next) => {
+    if (next !== "full") {
+      setHistory(false);
+      setHiddenOnly(false);
+    }
+  });
+  const peek = !desktop && sheet.stop === "peek";
   const view = useMemo(() => workspaceView(state), [state]);
   const derived = useMemo(() => {
     // A broadcast can carry a heartbeat newer than the last clock tick.
@@ -171,6 +190,7 @@ function Workspace({
   const focusedGoal = goalId && filtered.has(goalId) ? goalId : null;
   const lens = resolveLens(registry, lensId);
   const LensComponent = lens.component;
+  const canvasLens = lens.id === "radar" || lens.id === "treemap";
   const live = state.connection === "live";
   const dependencyError = dependencyEditGoal ? dependencyEdit.error : "";
   const showDependencyErrorInline =
@@ -183,6 +203,11 @@ function Workspace({
     (hiddenOnly || view.projects.get(selected.project_id)?.hidden === 0)
       ? selected
       : undefined;
+  // Desktop opens the inspector for a selection made on the mobile canvas.
+  // Carry that open state back to mobile if the viewport narrows again.
+  if (desktop && inspected && selectedItem && !selectedItem.inspectorOpen) {
+    setSelectedItem({ ...selectedItem, inspectorOpen: true });
+  }
   const dependencies = useMemo(
     () => [...view.dependencies.values()],
     [view.dependencies],
@@ -226,6 +251,7 @@ function Workspace({
       onClick={() => {
         setAttentionOnly(false);
         setHiddenOnly((value) => !value);
+        if (!desktop) sheet.changeStop("full");
       }}
     >
       Hidden
@@ -250,6 +276,9 @@ function Workspace({
   function switchLens(id: string) {
     setLensId(id);
     rememberLens(id);
+    if (id === "dependencies" && !desktop && sheet.stop === "full") {
+      sheet.changeStop("peek");
+    }
   }
 
   function changeDependency(edge: Dependency, action: "add" | "remove") {
@@ -274,8 +303,12 @@ function Workspace({
     return root && filtered.has(root.id) ? root.id : null;
   }
 
+  function inspectItem(id: string) {
+    setSelectedItem({ id, inspectorOpen: true });
+  }
+
   function selectStreamItem(id: string) {
-    select(id);
+    inspectItem(id);
     if (lens.id === "dependencies") {
       if (!focusedGoal) focusGoal(dependencyGoal(id));
       return;
@@ -309,46 +342,124 @@ function Workspace({
     });
   }
 
+  const projectToggles = (
+    <div className="project-toggles" role="group" aria-label="Visible projects">
+      {projects.map((project) => (
+        <button
+          type="button"
+          key={project.id}
+          className="project-chip"
+          aria-pressed={!project.hidden}
+          disabled={!live}
+          onClick={() => {
+            const latest = workspaceView(connection.getSnapshot()).projects.get(
+              project.id,
+            );
+            if (latest)
+              connection.mutate({
+                type: "UPDATE_PROJECT",
+                project_id: project.id,
+                input: { hidden: latest.hidden ? 0 : 1 },
+              });
+          }}
+        >
+          <span
+            className="project-dot"
+            style={{ backgroundColor: project.color ?? undefined }}
+            aria-hidden="true"
+          />
+          {project.name}
+        </button>
+      ))}
+    </div>
+  );
+  const settingsActions = (
+    <>
+      <button
+        type="button"
+        className="subtle"
+        disabled={!state.settings}
+        onClick={() => setPanel({ kind: "guidance" })}
+      >
+        Guidance
+      </button>
+      <button
+        type="button"
+        className="subtle"
+        onClick={() => setPanel({ kind: "settings" })}
+      >
+        Settings
+      </button>
+    </>
+  );
+  const ghostsToggle = (lens.id === "radar" ||
+    lens.id === "board" ||
+    lens.id === "treemap") &&
+    state.settings && (
+      <label>
+        <input
+          type="checkbox"
+          checked={showGhosts}
+          onChange={(event) => setShowGhosts(event.target.checked)}
+        />
+        Show completed ghosts
+      </label>
+    );
+
+  const inspector = inspected && selectedItem?.inspectorOpen && (
+    <Inspector
+      key={inspected.id}
+      drawer={!desktop}
+      item={inspected}
+      projects={projects}
+      items={state.items}
+      dependencies={dependencies}
+      timezone={timezone}
+      live={live}
+      save={connection.save}
+      close={() => {
+        // A delete can finish after this inspection has been dismissed.
+        setSelectedItem((current) =>
+          current !== selectedItem
+            ? current
+            : !desktop && canvasLens
+              ? { id: inspected.id, inspectorOpen: false }
+              : null,
+        );
+      }}
+      addChild={() => setPanel({ kind: "child" })}
+      openDependencies={
+        dependenciesLens &&
+        inspectedGoal &&
+        (lens.id !== dependenciesLens.id || focusedGoal !== inspectedGoal)
+          ? () => {
+              if (!desktop) {
+                setSelectedItem({ id: inspected.id, inspectorOpen: false });
+              }
+              focusGoal(inspectedGoal);
+              switchLens(dependenciesLens.id);
+            }
+          : undefined
+      }
+      selectChild={lens.id === "board" ? selectStreamItem : undefined}
+    />
+  );
+
   return (
-    <div className="workspace">
+    <div className="workspace" data-layout={desktop ? "desktop" : "mobile"}>
       <header className="workspace-header">
         <Wordmark />
-        <div
-          className="project-toggles"
-          role="group"
-          aria-label="Visible projects"
-        >
-          {projects.map((project) => (
-            <button
-              type="button"
-              key={project.id}
-              className="project-chip"
-              aria-pressed={!project.hidden}
-              disabled={!live}
-              onClick={() => {
-                const latest = workspaceView(
-                  connection.getSnapshot(),
-                ).projects.get(project.id);
-                if (latest)
-                  connection.mutate({
-                    type: "UPDATE_PROJECT",
-                    project_id: project.id,
-                    input: { hidden: latest.hidden ? 0 : 1 },
-                  });
-              }}
-            >
-              <span
-                className="project-dot"
-                style={{ backgroundColor: project.color ?? undefined }}
-                aria-hidden="true"
-              />
-              {project.name}
-            </button>
-          ))}
-        </div>
+        {desktop ? (
+          projectToggles
+        ) : (
+          <details className="header-menu project-menu" name="workspace-menu">
+            <summary className="subtle">Projects</summary>
+            {projectToggles}
+          </details>
+        )}
         <div className="header-tools">
           <label className="lens-select">
-            Lens
+            {!desktop ? <span className="sr-only">Lens</span> : "Lens"}
             <select
               value={lens.id}
               onChange={(event) => switchLens(event.target.value)}
@@ -368,24 +479,26 @@ function Workspace({
           {state.settings && (
             <span className="live-indicator">
               <span data-live={live && liveCount > 0} aria-hidden="true" />
-              {liveCount} {liveCount === 1 ? "agent" : "agents"} live
+              {liveCount} {desktop && (liveCount === 1 ? "agent " : "agents ")}
+              live
             </span>
           )}
-          <button
-            type="button"
-            className="subtle"
-            disabled={!state.settings}
-            onClick={() => setPanel({ kind: "guidance" })}
-          >
-            Guidance
-          </button>
-          <button
-            type="button"
-            className="subtle"
-            onClick={() => setPanel({ kind: "settings" })}
-          >
-            Settings
-          </button>
+          {desktop ? (
+            settingsActions
+          ) : (
+            <details
+              className="header-menu workspace-menu"
+              name="workspace-menu"
+            >
+              <summary className="subtle" aria-label="Workspace menu">
+                ⋯
+              </summary>
+              <div className="workspace-menu-actions">
+                {ghostsToggle}
+                {settingsActions}
+              </div>
+            </details>
+          )}
         </div>
       </header>
 
@@ -404,38 +517,41 @@ function Workspace({
         />
       )}
 
-      <main className="split-layout">
+      <main
+        className="split-layout"
+        ref={sheet.layout}
+        data-sheet-stop={desktop ? undefined : sheet.stop}
+        data-sheet-dragging={!desktop && sheet.height !== undefined}
+        style={
+          !desktop && sheet.height !== undefined
+            ? ({ "--sheet-drag-height": `${sheet.height}px` } as CSSProperties)
+            : undefined
+        }
+      >
         <section
           className="lens-pane"
           data-lens={lens.id}
           aria-labelledby="lens-heading"
+          inert={!desktop && sheet.stop === "full"}
         >
           <div className="section-heading">
             <h1 id="lens-heading">{lens.label}</h1>
-            {(lens.id === "radar" ||
-              lens.id === "treemap" ||
-              lens.id === "board") &&
-              state.settings && (
-                <details className="lens-menu">
-                  <summary className="subtle">Lens options</summary>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={showGhosts}
-                      onChange={(event) => setShowGhosts(event.target.checked)}
-                    />
-                    Show completed ghosts
-                  </label>
-                </details>
-              )}
-            <button
-              type="button"
-              className="primary"
-              disabled={!live}
-              onClick={() => setPanel({ kind: "goal" })}
-            >
-              + Goal
-            </button>
+            {desktop && ghostsToggle && (
+              <details className="lens-menu">
+                <summary className="subtle">Lens options</summary>
+                {ghostsToggle}
+              </details>
+            )}
+            {desktop && (
+              <button
+                type="button"
+                className="primary"
+                disabled={!live}
+                onClick={() => setPanel({ kind: "goal" })}
+              >
+                + Goal
+              </button>
+            )}
           </div>
           {state.settings && (
             <LensComponent
@@ -460,7 +576,10 @@ function Workspace({
               }
               select={(id) => {
                 if (lens.id === "list" && id) selectStreamItem(id);
-                else select(id);
+                else
+                  setSelectedItem(
+                    id ? { id, inspectorOpen: desktop || !canvasLens } : null,
+                  );
                 setLensSelection(
                   id ? { id, scrollStreamOnly: lens.id === "treemap" } : null,
                 );
@@ -481,109 +600,156 @@ function Workspace({
               {dependencyError}
             </p>
           )}
-          {inspected && (
-            <Inspector
-              key={inspected.id}
-              item={inspected}
-              projects={projects}
-              items={state.items}
-              dependencies={dependencies}
-              timezone={timezone}
-              live={live}
-              save={connection.save}
-              close={() =>
-                select((current) => (current === inspected.id ? null : current))
-              }
-              addChild={() => setPanel({ kind: "child" })}
-              openDependencies={
-                dependenciesLens &&
-                inspectedGoal &&
-                (lens.id !== dependenciesLens.id ||
-                  focusedGoal !== inspectedGoal)
-                  ? () => {
-                      focusGoal(inspectedGoal);
-                      switchLens(dependenciesLens.id);
-                    }
-                  : undefined
-              }
-              selectChild={lens.id === "board" ? selectStreamItem : undefined}
-            />
-          )}
+          {inspector}
         </section>
-        <section className="stream-pane" aria-labelledby="stream-heading">
-          <div className="sheet-handle" aria-hidden="true" />
-          {history ? (
-            <StreamHistory
-              projects={projects}
-              timezone={timezone}
-              live={live}
-              openIds={openHistoryIds}
-              pendingIds={pendingReopens}
-              close={() => setHistory(false)}
-              reopen={(item_id, reason) =>
-                connection.mutate({
-                  type: "REOPEN_ITEM",
-                  input: { item_id, reason },
-                })
-              }
-            />
-          ) : hiddenOnly ? (
-            <>
-              <div className="section-heading stream-heading">
-                <h2 id="stream-heading">Horizon Stream</h2>
-                <div className="inline-actions">
-                  <button
-                    type="button"
-                    className="attention-button"
-                    aria-pressed={false}
-                    onClick={() => {
-                      setHiddenOnly(false);
-                      setAttentionOnly(true);
-                    }}
-                  >
-                    Needs me <span>{derived.attentionCount}</span>
-                  </button>
-                  {hiddenToggle}
-                </div>
-              </div>
-              <div className="stream-content">
-                {hiddenRows.length ? (
-                  <StreamItems
-                    rows={hiddenRows}
-                    selectedId={selectedId}
-                    select={(id) => {
-                      setLensSelection(null);
-                      select(id);
-                    }}
-                  />
-                ) : (
-                  <p className="empty">No hidden items.</p>
-                )}
-              </div>
-            </>
-          ) : (
-            <HorizonStream
+        <section
+          className="stream-pane"
+          id="mobile-stream"
+          ref={sheet.pane}
+          aria-label={peek ? "Horizon Stream" : undefined}
+          aria-labelledby={peek ? undefined : "stream-heading"}
+        >
+          {!desktop && sheet.handle}
+          {peek && (
+            <StreamPeek
               {...derived}
               items={view.items}
-              dependencies={view.dependencies}
               ready={state.settings !== null}
-              live={live}
-              attentionOnly={attentionOnly}
-              condensed={lens.id === "board" && desktop}
-              toggleAttention={() => setAttentionOnly((value) => !value)}
-              actions={hiddenToggle}
               selectedId={selectedId}
-              lensSelection={lensSelection}
               select={(id) => {
                 setLensSelection(null);
                 selectStreamItem(id);
               }}
-              move={connection.mutate}
-              showHistory={() => setHistory(true)}
             />
           )}
+          <div className="stream-panel" hidden={peek}>
+            {history && (desktop || sheet.stop === "full") ? (
+              <StreamHistory
+                projects={projects}
+                timezone={timezone}
+                live={live}
+                openIds={openHistoryIds}
+                pendingIds={pendingReopens}
+                close={() => setHistory(false)}
+                reopen={(item_id, reason) =>
+                  connection.mutate({
+                    type: "REOPEN_ITEM",
+                    input: { item_id, reason },
+                  })
+                }
+              />
+            ) : hiddenOnly && (desktop || sheet.stop === "full") ? (
+              <>
+                <div className="section-heading stream-heading">
+                  <h2 id="stream-heading">Horizon Stream</h2>
+                  <div className="inline-actions">
+                    <button
+                      type="button"
+                      className="attention-button"
+                      aria-pressed={false}
+                      onClick={() => {
+                        setHiddenOnly(false);
+                        setAttentionOnly(true);
+                      }}
+                    >
+                      Needs me <span>{derived.attentionCount}</span>
+                    </button>
+                    {hiddenToggle}
+                  </div>
+                </div>
+                <div className="stream-content">
+                  {hiddenRows.length ? (
+                    <StreamItems
+                      rows={hiddenRows}
+                      selectedId={selectedId}
+                      select={(id) => {
+                        setLensSelection(null);
+                        inspectItem(id);
+                      }}
+                    />
+                  ) : (
+                    <p className="empty">No hidden items.</p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <HorizonStream
+                {...derived}
+                items={view.items}
+                dependencies={view.dependencies}
+                ready={state.settings !== null}
+                live={live}
+                attentionOnly={attentionOnly}
+                condensed={lens.id === "board" && desktop}
+                todayOnly={!desktop && sheet.stop === "half"}
+                toggleAttention={() => setAttentionOnly((value) => !value)}
+                actions={hiddenToggle}
+                selectedId={selectedId}
+                lensSelection={lensSelection}
+                select={(id) => {
+                  setLensSelection(null);
+                  selectStreamItem(id);
+                }}
+                move={connection.mutate}
+                showHistory={() => {
+                  setHistory(true);
+                  if (!desktop) sheet.changeStop("full");
+                }}
+              />
+            )}
+          </div>
         </section>
       </main>
+      {!desktop && (
+        <nav className="mobile-dock" aria-label="Workspace shortcuts">
+          <button
+            type="button"
+            className="subtle"
+            disabled={!live}
+            onClick={() => setPanel({ kind: "goal" })}
+          >
+            + Goal
+          </button>
+          <button
+            type="button"
+            className="primary command-button"
+            aria-label="Open quick add"
+            disabled={!live}
+            onClick={() => setPanel({ kind: "goal" })}
+          >
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+            >
+              <rect x="9" y="3" width="6" height="12" rx="3" />
+              <path d="M5 11v1a7 7 0 0 0 14 0v-1m-7 8v3m-3 0h6" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="subtle"
+            aria-controls="mobile-stream"
+            onClick={sheet.toggleList}
+          >
+            {sheet.stop === "full" ? "Lens" : "List"}
+          </button>
+          {canvasLens && inspected && selection && sheet.stop !== "full" && (
+            <button
+              type="button"
+              className="subtle inspect-selection"
+              aria-label={`Inspect ${inspected.title}`}
+              aria-haspopup="dialog"
+              onClick={() => inspectItem(inspected.id)}
+            >
+              Inspect
+            </button>
+          )}
+        </nav>
+      )}
       {panel?.kind === "guidance" && state.settings && (
         <Guidance
           settings={state.settings}

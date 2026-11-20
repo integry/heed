@@ -45,6 +45,7 @@ export function useItemDrag<Slot extends DropSlot & { project?: string }>(
     x: number;
     y: number;
     moving: boolean;
+    holdUntil: number;
   } | null>(null);
   const frame = useRef(0);
 
@@ -62,6 +63,7 @@ export function useItemDrag<Slot extends DropSlot & { project?: string }>(
       x,
       y,
       moving: false,
+      holdUntil: event.pointerType === "touch" ? event.timeStamp + 420 : 0,
     };
     onStart();
   }
@@ -104,6 +106,10 @@ export function useItemDrag<Slot extends DropSlot & { project?: string }>(
       !current.moving &&
       Math.hypot(current.x - current.startX, current.y - current.startY) >= 5
     ) {
+      if (event.timeStamp < current.holdUntil) {
+        pointer.current = null;
+        return;
+      }
       current.moving = true;
       animateDrag();
     }
