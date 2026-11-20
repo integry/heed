@@ -144,6 +144,7 @@ export function Inspector({
   save,
   close,
   addChild,
+  openDependencies,
   selectChild,
 }: {
   item: Item;
@@ -155,6 +156,7 @@ export function Inspector({
   save: SaveMutation;
   close: () => void;
   addChild: () => void;
+  openDependencies?: () => void;
   selectChild?: (id: string) => void;
 }) {
   const [title, setTitle] = useState<string>();
@@ -668,6 +670,11 @@ export function Inspector({
         </section>
         <section className="inspector-section">
           <h3>Dependencies</h3>
+          {openDependencies && (
+            <button type="button" className="subtle" onClick={openDependencies}>
+              Open dependency graph
+            </button>
+          )}
           {blockers.length ? (
             <ul className="compact-list">
               {blockers.map(({ blocked_by_id }) => (
