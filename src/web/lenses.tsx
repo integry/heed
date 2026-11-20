@@ -3,14 +3,18 @@ import type { StreamRow } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
 import type { Dependency, Project } from "../shared/workspace";
 import { itemStatus } from "./workspace-view";
+import { DependenciesLens } from "./DependenciesLens";
 import { RadarLens } from "./RadarLens";
 import type { RadarPlacement } from "./radar-geometry";
+import type { SaveMutation } from "./workspace-controls";
 
 export interface LensProps {
   tree: readonly StreamRow<CanvasItem>[];
   projects: readonly Project[];
   items: ReadonlyMap<string, CanvasItem>;
   dependencies: readonly Dependency[];
+  filtered: ReadonlyMap<string, CanvasItem>;
+  save: SaveMutation;
   selectedId: string | null;
   now: number;
   timezone: string;
@@ -98,6 +102,7 @@ function ListLens({
 export const lensRegistry: readonly [Lens, ...Lens[]] = [
   { id: "radar", label: "Radar", component: RadarLens },
   { id: "list", label: "List", component: ListLens },
+  { id: "dependencies", label: "Dependencies", component: DependenciesLens },
 ];
 
 const storageKey = "heed.lens";

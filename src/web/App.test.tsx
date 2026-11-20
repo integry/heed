@@ -754,6 +754,156 @@ it("offers a registered Dependencies lens for the focused goal", async () => {
   expect(screen.getByText("Dependencies for goal")).toBeTruthy();
 });
 
+it("opens the goal graph from the inspector and highlights the leading blocker", async () => {
+  const upstream = {
+    ...goal,
+    id: "vendor",
+    title: "Confirm vendor capacity",
+    status: "active" as const,
+    agent_name: "Vendor agent",
+    last_heartbeat_at: "2024-04-03T11:55:00Z",
+  };
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: [...snapshot.items, upstream],
+    dependencies: [
+      { item_id: child.id, blocked_by_id: upstream.id },
+      { item_id: tomorrow.id, blocked_by_id: child.id },
+    ],
+  });
+  const inspector = inspect(goal.title);
+  fireEvent.click(
+    inspector.getByRole("button", { name: "Open dependency graph" }),
+  );
+  const graph = within(
+    screen.getByRole("region", { name: `Dependency graph for ${goal.title}` }),
+  );
+  const vendor = graph.getByRole("button", {
+    name: /Confirm vendor capacity.*Live.*Vendor agent.*External.*Blocks 2 items/,
+  });
+  expect(vendor.parentElement?.dataset.blocker).toBe("true");
+  expect(vendor.parentElement?.dataset.external).toBe("true");
+  expect(
+    graph.getByRole("button", { name: /Review retry policy.*Needs input/ })
+      .parentElement?.dataset.blocker,
+  ).toBe("false");
+  fireEvent.click(vendor);
+  expect(vendor.getAttribute("aria-pressed")).toBe("true");
+  expect(localStorage.getItem("heed.lens")).toBe("dependencies");
+
+  fireEvent.click(screen.getByRole("button", { name: "Change goal" }));
+  expect(screen.getByText("Pick a goal to see its dependencies.")).toBeTruthy();
+  fireEvent.change(screen.getByRole("combobox", { name: "Goal" }), {
+    target: { value: goal.id },
+  });
+  expect(
+    screen.getByRole("region", { name: `Dependency graph for ${goal.title}` }),
+  ).toBeTruthy();
+});
+
+it("saves node drags, removes selected edges, and shows server cycle errors inline", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  fireEvent.click(radar.getByRole("button", { name: "Dependencies" }));
+  const lens = within(screen.getByRole("region", { name: "Dependencies" }));
+  const graph = within(
+    lens.getByRole("region", { name: `Dependency graph for ${goal.title}` }),
+  );
+  const socket = TestSocket.current;
+  const handle = graph.getByRole("button", {
+    name: `Connect ${child.title} as a blocker`,
+  });
+  const target = graph.getByRole("button", {
+    name: new RegExp(`^${tomorrow.title}\\s*Queued$`),
+  });
+  const hitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+  Object.defineProperty(document, "elementFromPoint", {
+    configurable: true,
+    value: () => target,
+  });
+  const pointer = {
+    pointerId: 1,
+    pointerType: "mouse",
+    button: 0,
+    clientY: 100,
+  };
+  try {
+    fireEvent.pointerDown(handle, { ...pointer, clientX: 50 });
+    fireEvent.pointerMove(handle, { ...pointer, clientX: 200 });
+    expect(socket.send).not.toHaveBeenCalled();
+    fireEvent.pointerUp(handle, { ...pointer, clientX: 200 });
+  } finally {
+    if (hitTest) Object.defineProperty(document, "elementFromPoint", hitTest);
+    else Reflect.deleteProperty(document, "elementFromPoint");
+  }
+
+  const dependency = { item_id: tomorrow.id, blocked_by_id: child.id };
+  expect(socket.latestRequest()).toMatchObject({
+    type: "SET_DEPENDENCY",
+    input: { ...dependency, action: "add" },
+  });
+  socket.receive({ type: "DEPENDENCY_ADD", seq: 2, dependency });
+  socket.receive({
+    type: "ACK",
+    seq: 3,
+    requestId: socket.latestRequest().requestId,
+  });
+  const connection = graph.getByRole("button", {
+    name: `${child.title} blocks ${tomorrow.title}`,
+  });
+  await waitFor(() => expect(handle).toHaveProperty("disabled", false));
+
+  fireEvent.click(
+    graph.getByRole("button", {
+      name: `Connect ${tomorrow.title} as a blocker`,
+    }),
+  );
+  fireEvent.click(
+    graph.getByRole("button", {
+      name: new RegExp(`^${child.title}\\s*Needs input`),
+    }),
+  );
+  expect(socket.latestRequest()).toMatchObject({
+    type: "SET_DEPENDENCY",
+    input: { item_id: child.id, blocked_by_id: tomorrow.id, action: "add" },
+  });
+  socket.receive({
+    type: "ERROR",
+    seq: 4,
+    requestId: socket.latestRequest().requestId,
+    error: {
+      code: "invalid_input",
+      message: "Dependency would create a cycle.",
+    },
+  });
+  expect((await lens.findByRole("alert")).textContent).toBe(
+    "Dependency would create a cycle.",
+  );
+  expect(screen.getAllByRole("alert")).toHaveLength(1);
+
+  fireEvent.click(connection);
+  fireEvent.click(lens.getByRole("button", { name: "Remove dependency" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "SET_DEPENDENCY",
+    input: { ...dependency, action: "remove" },
+  });
+  socket.receive({ type: "DEPENDENCY_REMOVE", seq: 5, dependency });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 6,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  expect(
+    graph.queryByRole("button", {
+      name: `${child.title} blocks ${tomorrow.title}`,
+    }),
+  ).toBeNull();
+  expect(lens.queryByRole("alert")).toBeNull();
+});
+
 it("opens the selected child's goal when switching from List to Radar", async () => {
   localStorage.setItem("heed.lens", "list");
   await openWorkspace();

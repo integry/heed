@@ -17,6 +17,7 @@ export function createWorkspaceConnection() {
     {
       resolve: (ack: Ack) => void;
       reject: (error: Error) => void;
+      inlineError?: boolean;
     }
   >();
 
@@ -55,10 +56,13 @@ export function createWorkspaceConnection() {
     return send(mutation, crypto.randomUUID());
   }
 
-  function save(mutation: MutationInput): Promise<Ack> {
+  function save(
+    mutation: MutationInput,
+    options?: { inlineError: boolean },
+  ): Promise<Ack> {
     return new Promise((resolve, reject) => {
       const requestId = crypto.randomUUID();
-      replies.set(requestId, { resolve, reject });
+      replies.set(requestId, { resolve, reject, ...options });
       if (!send(mutation, requestId)) {
         replies.delete(requestId);
         reject(
@@ -138,7 +142,17 @@ export function createWorkspaceConnection() {
         }
 
         const previous = state;
-        publish(receiveMessage(state, message));
+        const next = receiveMessage(state, message);
+        const inlineError =
+          message.type === "ERROR" &&
+          message.requestId &&
+          next.connection === "live" &&
+          replies.get(message.requestId)?.inlineError;
+        publish(
+          inlineError && next !== previous
+            ? { ...next, error: previous.error }
+            : next,
+        );
         if (state === previous) return;
         if (
           (message.type === "ACK" || message.type === "ERROR") &&

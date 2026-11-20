@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { StreamRow } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
+import { isDescendant } from "./dependency-graph";
 import { Guidance } from "./Guidance";
 import { Inspector } from "./Inspector";
 import { QuickAdd } from "./QuickAdd";
@@ -131,10 +132,7 @@ function Workspace({
   }, [view, clock, attentionOnly]);
   const { projects, tree, filtered, liveCount, timezone, now } = derived;
   const focusedGoal = goalId && filtered.has(goalId) ? goalId : null;
-  const lens = resolveLens(
-    registry,
-    lensId === "dependencies" && !focusedGoal ? null : lensId,
-  );
+  const lens = resolveLens(registry, lensId);
   const LensComponent = lens.component;
   const live = state.connection === "live";
   const selection = selectedId && filtered.has(selectedId) ? selectedId : null;
@@ -145,7 +143,11 @@ function Workspace({
     (hiddenOnly || view.projects.get(selected.project_id)?.hidden === 0)
       ? selected
       : undefined;
-  const dependencies = [...view.dependencies.values()];
+  const dependencies = useMemo(
+    () => [...view.dependencies.values()],
+    [view.dependencies],
+  );
+  const inspectedGoal = inspected ? dependencyGoal(inspected.id) : null;
   const hiddenRows = hiddenOnly
     ? [...view.items.values()]
         .filter((item) => item.parent_id === null && item.hidden === 1)
@@ -207,11 +209,26 @@ function Workspace({
 
   function switchLens(id: string) {
     setLensId(id);
-    if (id !== "dependencies") rememberLens(id);
+    rememberLens(id);
+  }
+
+  function dependencyGoal(id: string) {
+    if (
+      focusedGoal &&
+      (id === focusedGoal || isDescendant(id, focusedGoal, view.items))
+    )
+      return focusedGoal;
+    let root = view.items.get(id);
+    while (root?.parent_id) root = view.items.get(root.parent_id);
+    return root && filtered.has(root.id) ? root.id : null;
   }
 
   function selectStreamItem(id: string) {
     select(id);
+    if (lens.id === "dependencies") {
+      if (!focusedGoal) focusGoal(dependencyGoal(id));
+      return;
+    }
     if (id === focusedGoal) return;
     const focusForRadar = lens.id === "radar" || lens.id === "list";
     let parent = view.items.get(id)?.parent_id ?? null;
@@ -286,7 +303,10 @@ function Workspace({
               onChange={(event) => switchLens(event.target.value)}
             >
               {registry
-                .filter(({ id }) => id !== "dependencies" || focusedGoal)
+                .filter(
+                  ({ id }) =>
+                    id !== "dependencies" || focusedGoal || lens.id === id,
+                )
                 .map(({ id, label }) => (
                   <option key={id} value={id}>
                     {label}
@@ -337,7 +357,11 @@ function Workspace({
       )}
 
       <main className="split-layout">
-        <section className="lens-pane" aria-labelledby="lens-heading">
+        <section
+          className="lens-pane"
+          data-lens={lens.id}
+          aria-labelledby="lens-heading"
+        >
           <div className="section-heading">
             <h1 id="lens-heading">{lens.label}</h1>
             {lens.id === "radar" && state.settings && (
@@ -367,6 +391,8 @@ function Workspace({
               tree={tree}
               projects={projects}
               items={view.items}
+              filtered={filtered}
+              save={connection.save}
               dependencies={dependencies}
               selectedId={selection}
               now={now}
@@ -409,6 +435,17 @@ function Workspace({
                 select((current) => (current === inspected.id ? null : current))
               }
               addChild={() => setPanel({ kind: "child" })}
+              openDependencies={
+                dependenciesLens &&
+                inspectedGoal &&
+                (lens.id !== dependenciesLens.id ||
+                  focusedGoal !== inspectedGoal)
+                  ? () => {
+                      focusGoal(inspectedGoal);
+                      switchLens(dependenciesLens.id);
+                    }
+                  : undefined
+              }
             />
           )}
         </section>
