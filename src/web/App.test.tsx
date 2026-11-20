@@ -1797,3 +1797,241 @@ it("selects Treemap tiles, zooms into parents and returns through their breadcru
     );
   expect(Number.parseFloat(fill?.style.width ?? "")).toBeCloseTo(100 / 3);
 });
+
+it("places top-level Board cards by project and Radar band with Stream ordering and markers", async () => {
+  localStorage.setItem("heed.lens", "board");
+  const product = { ...project, id: "product", name: "Product", sort: 1 };
+  const hidden = {
+    ...project,
+    id: "hidden",
+    name: "Hidden project",
+    hidden: 1,
+  } as const;
+  const fixed = {
+    ...goal,
+    id: "fixed",
+    title: "Architecture review",
+    time_type: "fixed",
+    time_at: "2024-04-03T14:00:00Z",
+    priority: 1,
+    progress: { done: 0, total: 0 },
+  } as const;
+  const marked = {
+    ...goal,
+    status: "active",
+    scheduled_on: "2024-04-01",
+    agent_name: "Build agent",
+    last_heartbeat_at: "2024-04-03T11:58:00Z",
+    handoff: 1,
+    reopen_count: 1,
+  } as const;
+  const upcoming = {
+    ...goal,
+    id: "upcoming",
+    title: "Publish release notes",
+    project_id: product.id,
+    scheduled_on: "2024-04-04",
+  };
+  const ghost = {
+    ...goal,
+    id: "completed",
+    title: "Build export",
+    status: "done",
+    completed_band: "later",
+    completed_at: "2024-04-03T11:00:00Z",
+  } as const;
+  const backlog = {
+    ...goal,
+    id: "backlog",
+    title: "Review templates",
+    scheduled_on: null,
+  };
+  await openWorkspace(undefined, {
+    ...snapshot,
+    projects: [project, product, hidden],
+    items: [marked, child, tomorrow, fixed, upcoming, ghost, backlog],
+  });
+
+  const board = within(
+    screen.getByRole("table", { name: "Projects by time band" }),
+  );
+  expect(
+    board.getAllByRole("columnheader").map((header) => header.textContent),
+  ).toEqual(["Project", "Today", "This week", "Later", "Backlog"]);
+  expect(
+    board.getAllByRole("rowheader").map((header) => header.textContent),
+  ).toEqual(["Inbox", "Product"]);
+  const todayCell = within(
+    board
+      .getByRole("rowheader", { name: "Inbox" })
+      .parentElement!.querySelector('[data-board-band="today"]')!,
+  );
+  expect(
+    todayCell
+      .getAllByRole("button")
+      .filter((button) => button.hasAttribute("aria-pressed"))
+      .map((button) => button.getAttribute("aria-label")),
+  ).toEqual([fixed.title, goal.title]);
+  for (const text of [
+    "FIXED",
+    "Build agent",
+    "0/2 complete",
+    "Handoff",
+    "Reopened",
+    "from Mon",
+  ])
+    expect(todayCell.getByText(text)).toBeTruthy();
+  expect(todayCell.getByRole("img", { name: "Live" })).toBeTruthy();
+  for (const [title, projectId, band] of [
+    [upcoming.title, product.id, "this-week"],
+    [ghost.title, project.id, "later"],
+    [backlog.title, project.id, "backlog"],
+  ]) {
+    expect(
+      board.getByRole("button", { name: title }).closest("td")?.dataset,
+    ).toMatchObject({ boardProject: projectId, boardBand: band });
+  }
+  expect(board.queryByRole("button", { name: child.title })).toBeNull();
+  expect(board.queryByRole("button", { name: tomorrow.title })).toBeNull();
+  fireEvent.click(todayCell.getByRole("button", { name: goal.title }));
+  expect(
+    todayCell
+      .getByRole("button", { name: goal.title })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  const inspector = within(
+    screen.getByRole("complementary", { name: "Inspector" }),
+  );
+  fireEvent.click(inspector.getByRole("button", { name: tomorrow.title }));
+  expect(
+    (screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value,
+  ).toBe(tomorrow.title);
+  fireEvent.click(
+    screen.getByRole("checkbox", { name: "Show completed ghosts" }),
+  );
+  expect(board.queryByRole("button", { name: ghost.title })).toBeNull();
+});
+
+it("commits Board pointer drops through the workspace socket", async () => {
+  localStorage.setItem("heed.lens", "board");
+  const product = { ...project, id: "product", name: "Product", sort: 1 };
+  const first = { ...goal, id: "first", title: "First", sort_key: 10 };
+  const second = { ...goal, id: "second", title: "Second", sort_key: 20 };
+  const moved = { ...goal, id: "moved", title: "Moved", sort_key: 30 };
+  const active = {
+    ...goal,
+    id: "active",
+    title: "Active",
+    status: "active",
+  } as const;
+  await openWorkspace(undefined, {
+    ...snapshot,
+    projects: [project, product],
+    items: [first, second, moved, active],
+  });
+  const board = screen.getByRole("table", { name: "Projects by time band" });
+  const cell = (projectId: string, band: string) =>
+    board.querySelector(
+      `[data-board-project="${projectId}"][data-board-band="${band}"]`,
+    )!;
+  const hitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+  const socket = TestSocket.current;
+
+  function drag(title: string, target: Element) {
+    const handle = within(board).getByRole("button", { name: `Move ${title}` });
+    Object.defineProperty(handle, "setPointerCapture", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => target,
+    });
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 40, 100, 40),
+    );
+    const pointer = {
+      pointerId: 1,
+      pointerType: "touch",
+      button: 0,
+      clientX: 50,
+    };
+    const sentBefore = socket.send.mock.calls.length;
+    fireEvent.pointerDown(handle, { ...pointer, clientY: 100 });
+    fireEvent.pointerMove(handle, { ...pointer, clientY: 45 });
+    expect(socket.send).toHaveBeenCalledTimes(sentBefore);
+    fireEvent.pointerUp(handle, { ...pointer, clientY: 45 });
+  }
+
+  try {
+    drag(moved.title, board.querySelector('[data-board-card="second"]')!);
+    expect(socket.latestRequest()).toMatchObject({
+      type: "UPDATE_ITEM",
+      input: { item_id: moved.id, sort_key: 15 },
+    });
+    drag(moved.title, cell(product.id, "today"));
+    expect(socket.latestRequest()).toMatchObject({
+      type: "UPDATE_ITEM",
+      input: { item_id: moved.id, project: product.id },
+    });
+    drag(moved.title, cell(product.id, "this-week"));
+    expect(socket.latestRequest()).toMatchObject({
+      type: "UPDATE_ITEM",
+      input: { item_id: moved.id, scheduled_on: "2024-04-04" },
+    });
+    drag(moved.title, cell(project.id, "backlog"));
+    expect(socket.latestRequest()).toMatchObject({
+      type: "UPDATE_ITEM",
+      input: { item_id: moved.id, project: project.id, scheduled_on: null },
+    });
+    expect(
+      cell(project.id, "backlog").contains(
+        within(board).getByRole("button", { name: moved.title }),
+      ),
+    ).toBe(true);
+    drag(active.title, cell(product.id, "later"));
+    expect(socket.send).toHaveBeenCalledTimes(4);
+    expect(screen.getByText(/Active can’t move to Later/)).toBeTruthy();
+  } finally {
+    if (hitTest) Object.defineProperty(document, "elementFromPoint", hitTest);
+    else Reflect.deleteProperty(document, "elementFromPoint");
+  }
+});
+
+it("condenses the desktop Stream on Board and restores its bands on mobile or lens switch", async () => {
+  let desktop = true;
+  const media = new EventTarget();
+  vi.stubGlobal("matchMedia", () => Object.assign(media, { matches: desktop }));
+  localStorage.setItem("heed.lens", "board");
+  const completed = {
+    ...goal,
+    id: "completed",
+    title: "Close out review",
+    status: "done",
+    completed_at: "2024-04-03T11:00:00Z",
+  } as const;
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: [...snapshot.items, completed],
+  });
+
+  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+  expect(stream.getByRole("heading", { name: "Needs me" })).toBeTruthy();
+  expect(stream.getByRole("button", { name: child.title })).toBeTruthy();
+  expect(stream.getByRole("button", { name: completed.title })).toBeTruthy();
+  for (const name of ["Today", "Tomorrow", "This week", "Later", "Backlog"])
+    expect(stream.queryByRole("heading", { name })).toBeNull();
+
+  desktop = false;
+  act(() => media.dispatchEvent(new Event("change")));
+  expect(stream.getByRole("heading", { name: "Today" })).toBeTruthy();
+  expect(stream.queryByRole("heading", { name: "Needs me" })).toBeNull();
+
+  desktop = true;
+  act(() => media.dispatchEvent(new Event("change")));
+  fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
+    target: { value: "list" },
+  });
+  expect(stream.getByRole("heading", { name: "Today" })).toBeTruthy();
+  expect(stream.queryByRole("heading", { name: "Needs me" })).toBeNull();
+});
