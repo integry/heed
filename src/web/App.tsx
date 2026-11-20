@@ -34,6 +34,18 @@ function Wordmark() {
   );
 }
 
+const desktopQuery = "(min-width: 768px)";
+
+function subscribeDesktop(listener: () => void) {
+  const media = window.matchMedia?.(desktopQuery);
+  media?.addEventListener("change", listener);
+  return () => media?.removeEventListener("change", listener);
+}
+
+function isDesktop() {
+  return window.matchMedia?.(desktopQuery).matches ?? true;
+}
+
 function useMinuteClock() {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -124,6 +136,7 @@ function Workspace({
     kind: "guidance" | "settings" | "goal" | "child";
   } | null>(null);
   const clock = useMinuteClock();
+  const desktop = useSyncExternalStore(subscribeDesktop, isDesktop);
   const view = useMemo(() => workspaceView(state), [state]);
   const derived = useMemo(() => {
     // A broadcast can carry a heartbeat newer than the last clock tick.
@@ -364,7 +377,7 @@ function Workspace({
         >
           <div className="section-heading">
             <h1 id="lens-heading">{lens.label}</h1>
-            {lens.id === "radar" && state.settings && (
+            {(lens.id === "radar" || lens.id === "board") && state.settings && (
               <details className="lens-menu">
                 <summary className="subtle">Lens options</summary>
                 <label>
@@ -412,6 +425,7 @@ function Workspace({
                 setLensSelection(id ? { id } : null);
                 if (id) setHistory(false);
               }}
+              move={connection.mutate}
               reschedule={(id, date) => updateItem(id, { scheduled_on: date })}
               moveProject={(id, project) => updateItem(id, { project })}
               setPriority={(id, priority) => updateItem(id, { priority })}
@@ -446,6 +460,7 @@ function Workspace({
                     }
                   : undefined
               }
+              selectChild={lens.id === "board" ? selectStreamItem : undefined}
             />
           )}
         </section>
@@ -508,6 +523,7 @@ function Workspace({
               ready={state.settings !== null}
               live={live}
               attentionOnly={attentionOnly}
+              condensed={lens.id === "board" && desktop}
               toggleAttention={() => setAttentionOnly((value) => !value)}
               actions={hiddenToggle}
               selectedId={selectedId}

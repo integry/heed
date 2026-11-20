@@ -7,7 +7,11 @@ export type DropSlot = {
   side: "before" | "after";
 };
 
-function dropSlot(x: number, y: number, pane: HTMLElement): DropSlot | null {
+export function streamDropSlot(
+  x: number,
+  y: number,
+  pane: HTMLElement,
+): DropSlot | null {
   const element = document.elementFromPoint(x, y);
   const section = element?.closest<HTMLElement>("[data-stream-band]");
   if (!section || !pane.contains(section)) return null;
@@ -21,14 +25,16 @@ function dropSlot(x: number, y: number, pane: HTMLElement): DropSlot | null {
   };
 }
 
-export function useStreamDrag(
+export function useItemDrag<Slot extends DropSlot & { project?: string }>(
   live: boolean,
-  onDrop: (id: string, slot: DropSlot | null) => void,
+  onDrop: (id: string, slot: Slot | null) => void,
+  resolveSlot: (x: number, y: number, pane: HTMLElement) => Slot | null,
   onStart: () => void,
+  horizontal = false,
 ) {
   const [drag, setDrag] = useState<{
     id: string;
-    slot: DropSlot | null;
+    slot: Slot | null;
   } | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const pointer = useRef<{
@@ -71,11 +77,16 @@ export function useStreamDrag(
       if (y < top + edge) pane.scrollTop -= Math.ceil((top + edge - y) / 3);
       if (y > bottom - edge)
         pane.scrollTop += Math.ceil((y - bottom + edge) / 3);
+      if (horizontal && x < left + edge)
+        pane.scrollLeft -= Math.ceil((left + edge - x) / 3);
+      if (horizontal && x > right - edge)
+        pane.scrollLeft += Math.ceil((x - right + edge) / 3);
     }
-    const slot = dropSlot(x, y, pane);
+    const slot = resolveSlot(x, y, pane);
     setDrag((previous) =>
       previous?.id === id &&
       previous.slot?.band === slot?.band &&
+      previous.slot?.project === slot?.project &&
       previous.slot?.anchor === slot?.anchor &&
       previous.slot?.side === slot?.side
         ? previous
@@ -105,7 +116,10 @@ export function useStreamDrag(
     cancelAnimationFrame(frame.current);
     setDrag(null);
     if (current.moving && root.current && event.type === "pointerup") {
-      onDrop(current.id, dropSlot(event.clientX, event.clientY, root.current));
+      onDrop(
+        current.id,
+        resolveSlot(event.clientX, event.clientY, root.current),
+      );
     }
   }
 
