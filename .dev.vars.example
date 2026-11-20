@@ -1,0 +1,2 @@
+# Copy to .dev.vars when you need local Worker secrets.
+# The scaffold requires no secrets.
