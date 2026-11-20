@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import {
   carriedOverFrom,
@@ -57,6 +58,8 @@ interface Props extends Pick<
   now: number;
   attentionOnly: boolean;
   toggleAttention: () => void;
+  /** Extra stream filters rendered beside Needs me. */
+  actions?: ReactNode;
   selectedId: string | null;
   lensSelection: { id: string } | null;
   select: (id: string) => void;
@@ -124,6 +127,7 @@ export function HorizonStream({
   timezone,
   attentionOnly,
   toggleAttention,
+  actions,
   selectedId,
   lensSelection,
   select,
@@ -547,14 +551,17 @@ export function HorizonStream({
     <>
       <div className="section-heading stream-heading">
         <h2 id="stream-heading">Horizon Stream</h2>
-        <button
-          type="button"
-          className="attention-button"
-          aria-pressed={attentionOnly}
-          onClick={toggleAttention}
-        >
-          Needs me <span>{attentionCount}</span>
-        </button>
+        <div className="inline-actions">
+          <button
+            type="button"
+            className="attention-button"
+            aria-pressed={attentionOnly}
+            onClick={toggleAttention}
+          >
+            Needs me <span>{attentionCount}</span>
+          </button>
+          {actions}
+        </div>
       </div>
       <p
         className={message?.problem ? "stream-move-notice" : "sr-only"}

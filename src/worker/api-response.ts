@@ -14,7 +14,9 @@ export function workspaceOperationError(error: unknown) {
     };
   }
   const message = error instanceof Error ? error.message : "";
-  if (message === "Item not found" || message === "Project not found") {
+  if (
+    ["Item not found", "Project not found", "Token not found"].includes(message)
+  ) {
     return { status: 404, code: "not_found", message };
   }
   if (message.includes("UNIQUE constraint failed: projects.name")) {

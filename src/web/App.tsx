@@ -1,11 +1,10 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
-import { GuidanceTextSchema, MAX_GUIDANCE_LENGTH } from "../shared/workspace";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import type { StreamRow } from "../shared/derived-state";
+import type { CanvasItem } from "../shared/workspace-socket";
+import { Guidance } from "./Guidance";
+import { Inspector } from "./Inspector";
+import { QuickAdd } from "./QuickAdd";
+import { Settings } from "./Settings";
 import {
   lensRegistry,
   readLensId,
@@ -54,80 +53,38 @@ function useMinuteClock() {
   return now;
 }
 
-function WorkspaceDialog({
-  panel,
-  close,
-  guidance,
-  timezone,
-  email,
-  save,
-  live,
+function StreamItems({
+  rows,
+  selectedId,
+  select,
 }: {
-  panel: "guidance" | "settings";
-  close: () => void;
-  guidance: string;
-  timezone: string;
-  email: string;
-  save: (text: string) => boolean;
-  live: boolean;
+  rows: StreamRow<CanvasItem>[];
+  selectedId: string | null;
+  select: (id: string) => void;
 }) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  const [draft, setDraft] = useState(guidance);
-  const valid = GuidanceTextSchema.safeParse(draft).success;
-  useEffect(() => {
-    dialog.current?.showModal();
-  }, []);
   return (
-    <dialog ref={dialog} onClose={close} aria-labelledby="panel-title">
-      <div className="panel-heading">
-        <h2 id="panel-title">
-          {panel === "guidance" ? "Guidance" : "Settings"}
-        </h2>
-        <button
-          type="button"
-          className="subtle"
-          onClick={() => dialog.current?.close()}
-        >
-          Close
-        </button>
-      </div>
-      {panel === "guidance" ? (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (valid && save(draft)) dialog.current?.close();
-          }}
-        >
-          <label htmlFor="guidance-text">Instructions for your agents</label>
-          <textarea
-            id="guidance-text"
-            rows={6}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-          />
-          <div className="dialog-actions">
-            <small>
-              {[...draft].length} / {MAX_GUIDANCE_LENGTH}
-            </small>
-            <button className="primary" disabled={!live || !valid}>
-              Save guidance
-            </button>
-          </div>
-        </form>
-      ) : (
-        <>
-          <dl className="settings-details">
-            <dt>Signed in as</dt>
-            <dd>{email}</dd>
-            <dt>Workspace timezone</dt>
-            <dd>{timezone}</dd>
-          </dl>
-          <form action="/auth/logout" method="post">
-            <button className="subtle">Sign out</button>
-          </form>
-        </>
-      )}
-    </dialog>
+    <ul className="item-list">
+      {rows.map(({ item, children }) => (
+        <li key={item.id}>
+          <button
+            type="button"
+            className="item-row stream-row"
+            aria-pressed={selectedId === item.id}
+            onClick={() => select(item.id)}
+          >
+            <span className="stream-marker" aria-hidden="true" />
+            <span className="item-title">{item.title}</span>
+          </button>
+          {children.length > 0 && (
+            <StreamItems
+              rows={children}
+              selectedId={selectedId}
+              select={select}
+            />
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -158,7 +115,10 @@ function Workspace({
   );
   const [history, setHistory] = useState(false);
   const [attentionOnly, setAttentionOnly] = useState(false);
-  const [panel, setPanel] = useState<"guidance" | "settings" | null>(null);
+  const [hiddenOnly, setHiddenOnly] = useState(false);
+  const [panel, setPanel] = useState<{
+    kind: "guidance" | "settings" | "goal" | "child";
+  } | null>(null);
   const clock = useMinuteClock();
   const view = useMemo(() => workspaceView(state), [state]);
   const derived = useMemo(() => {
@@ -171,6 +131,22 @@ function Workspace({
   const LensComponent = lens.component;
   const live = state.connection === "live";
   const selection = selectedId && filtered.has(selectedId) ? selectedId : null;
+  const selected = selectedId ? state.items.get(selectedId) : undefined;
+  const inspected =
+    selected &&
+    (hiddenOnly || view.projects.get(selected.project_id)?.hidden === 0)
+      ? selected
+      : undefined;
+  const dependencies = [...view.dependencies.values()];
+  const hiddenRows = hiddenOnly
+    ? [...view.items.values()]
+        .filter((item) => item.parent_id === null && item.hidden === 1)
+        .sort((a, b) => a.title.localeCompare(b.title))
+        .map((item) => ({ item, children: [] }))
+    : [];
+  // A save can finish after the same kind of panel has been reopened.
+  const closePanel = () =>
+    setPanel((current) => (current === panel ? null : current));
   const openHistoryIds = useMemo(
     () =>
       new Set(
@@ -184,10 +160,26 @@ function Workspace({
     () =>
       new Set(
         [...state.pending.values()].flatMap((mutation) =>
-          mutation.type === "REOPEN_ITEM" ? [mutation.input.item_id] : [],
+          mutation.type === "REOPEN_ITEM" && mutation.input.item_id
+            ? [mutation.input.item_id]
+            : [],
         ),
       ),
     [state.pending],
+  );
+
+  const hiddenToggle = (
+    <button
+      type="button"
+      className="project-chip"
+      aria-pressed={hiddenOnly}
+      onClick={() => {
+        setAttentionOnly(false);
+        setHiddenOnly((value) => !value);
+      }}
+    >
+      Hidden
+    </button>
   );
 
   useEffect(
@@ -269,14 +261,14 @@ function Workspace({
             type="button"
             className="subtle"
             disabled={!state.settings}
-            onClick={() => setPanel("guidance")}
+            onClick={() => setPanel({ kind: "guidance" })}
           >
             Guidance
           </button>
           <button
             type="button"
             className="subtle"
-            onClick={() => setPanel("settings")}
+            onClick={() => setPanel({ kind: "settings" })}
           >
             Settings
           </button>
@@ -305,13 +297,21 @@ function Workspace({
         <section className="lens-pane" aria-labelledby="lens-heading">
           <div className="section-heading">
             <h1 id="lens-heading">{lens.label}</h1>
+            <button
+              type="button"
+              className="primary"
+              disabled={!live}
+              onClick={() => setPanel({ kind: "goal" })}
+            >
+              + Goal
+            </button>
           </div>
           {state.settings && (
             <LensComponent
               tree={tree}
               projects={projects}
               items={view.items}
-              dependencies={[...view.dependencies.values()]}
+              dependencies={dependencies}
               selectedId={selection}
               now={now}
               select={(id) => {
@@ -337,6 +337,22 @@ function Workspace({
               }}
             />
           )}
+          {inspected && (
+            <Inspector
+              key={inspected.id}
+              item={inspected}
+              projects={projects}
+              items={state.items}
+              dependencies={dependencies}
+              timezone={timezone}
+              live={live}
+              save={connection.save}
+              close={() =>
+                select((current) => (current === inspected.id ? null : current))
+              }
+              addChild={() => setPanel({ kind: "child" })}
+            />
+          )}
         </section>
         <section className="stream-pane" aria-labelledby="stream-heading">
           <div className="sheet-handle" aria-hidden="true" />
@@ -355,6 +371,40 @@ function Workspace({
                 })
               }
             />
+          ) : hiddenOnly ? (
+            <>
+              <div className="section-heading stream-heading">
+                <h2 id="stream-heading">Horizon Stream</h2>
+                <div className="inline-actions">
+                  <button
+                    type="button"
+                    className="attention-button"
+                    aria-pressed={false}
+                    onClick={() => {
+                      setHiddenOnly(false);
+                      setAttentionOnly(true);
+                    }}
+                  >
+                    Needs me <span>{derived.attentionCount}</span>
+                  </button>
+                  {hiddenToggle}
+                </div>
+              </div>
+              <div className="stream-content">
+                {hiddenRows.length ? (
+                  <StreamItems
+                    rows={hiddenRows}
+                    selectedId={selectedId}
+                    select={(id) => {
+                      setLensSelection(null);
+                      select(id);
+                    }}
+                  />
+                ) : (
+                  <p className="empty">No hidden items.</p>
+                )}
+              </div>
+            </>
           ) : (
             <HorizonStream
               {...derived}
@@ -364,6 +414,7 @@ function Workspace({
               live={live}
               attentionOnly={attentionOnly}
               toggleAttention={() => setAttentionOnly((value) => !value)}
+              actions={hiddenToggle}
               selectedId={selectedId}
               lensSelection={lensSelection}
               select={(id) => {
@@ -376,18 +427,34 @@ function Workspace({
           )}
         </section>
       </main>
-      {panel && (
-        <WorkspaceDialog
-          key={panel}
-          panel={panel}
-          close={() => setPanel(null)}
-          guidance={view.settings?.guidance ?? ""}
+      {panel?.kind === "guidance" && state.settings && (
+        <Guidance
+          settings={state.settings}
+          live={live}
+          save={connection.save}
+          close={closePanel}
+        />
+      )}
+      {panel?.kind === "settings" && (
+        <Settings
+          projects={projects}
+          items={state.items}
           timezone={timezone}
           email={email}
           live={live}
-          save={(text) =>
-            connection.mutate({ type: "SET_GUIDANCE", input: { text } })
-          }
+          save={connection.save}
+          close={closePanel}
+        />
+      )}
+      {(panel?.kind === "goal" || panel?.kind === "child") && (
+        <QuickAdd
+          parent={panel.kind === "child" ? inspected : undefined}
+          parentMissing={panel.kind === "child" && !inspected}
+          projects={projects}
+          timezone={timezone}
+          live={live}
+          save={connection.save}
+          close={closePanel}
         />
       )}
     </div>

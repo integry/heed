@@ -45,10 +45,15 @@ import {
   UpdateProjectSchema,
 } from "../shared/workspace";
 import {
+  MoveProjectSchema,
   SocketRequestIdSchema,
   SocketRequestSchema,
 } from "../shared/workspace-socket";
-import type { ChildCounts, WorkspaceMessage } from "../shared/workspace-socket";
+import type {
+  ChildCounts,
+  CreatedToken,
+  WorkspaceMessage,
+} from "../shared/workspace-socket";
 import { workspaceOperationError } from "./api-response";
 import type {
   Dependency,
@@ -193,7 +198,10 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): void {
+  async webSocketMessage(
+    socket: WebSocket,
+    message: string | ArrayBuffer,
+  ): Promise<void> {
     let data: unknown;
     if (typeof message === "string") {
       try {
@@ -226,17 +234,36 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
 
     const actor = { kind: "human" } as const;
     const { requestId } = request.data;
+    let createdToken: CreatedToken | undefined;
     try {
       const mutation = request.data;
       switch (mutation.type) {
+        case "ADD_ITEM":
+          this.addItem(actor, mutation.input);
+          break;
+        case "DELETE_ITEM":
+          this.deleteItem(actor, mutation.input);
+          break;
+        case "REOPEN_ITEM":
+          this.reopenItem(actor, mutation.input);
+          break;
+        case "FLAG_HANDOFF":
+          await this.flagHandoff(actor, mutation.input);
+          break;
+        case "CLEAR_HANDOFF":
+          this.clearHandoff(actor, mutation.input);
+          break;
+        case "SET_DEPENDENCY":
+          this.setDependency(actor, mutation.input);
+          break;
+        case "SET_NOTE":
+          this.reportProgress(actor, mutation.input);
+          break;
         case "UPDATE_ITEM":
           this.updateItem(actor, mutation.input);
           break;
         case "SET_STATUS":
           this.reportProgress(actor, mutation.input);
-          break;
-        case "REOPEN_ITEM":
-          this.reopenItem(actor, mutation.input);
           break;
         case "REORDER_ITEMS":
           this.#mutateItems(actor, (transaction) => {
@@ -249,11 +276,36 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         case "UPDATE_PROJECT":
           this.updateProject(mutation.project_id, mutation.input);
           break;
+        case "CREATE_PROJECT":
+          this.createProject(mutation.input);
+          break;
+        case "MOVE_PROJECT":
+          this.moveProject(mutation.input);
+          break;
+        case "DELETE_PROJECT":
+          this.deleteProject(mutation.input.project_id);
+          break;
         case "INITIALIZE_TIMEZONE":
           this.setTimezone(mutation.input.timezone, true);
           break;
+        case "SET_TIMEZONE":
+          this.setTimezone(mutation.input.timezone);
+          break;
         case "SET_GUIDANCE":
           this.setGuidance(actor, mutation.input.text);
+          break;
+        case "CREATE_TOKEN": {
+          const { label, scope, default_project_id } = mutation.input;
+          createdToken = await this.createToken(
+            label,
+            scope,
+            default_project_id,
+          );
+          break;
+        }
+        case "REVOKE_TOKEN":
+          if (!this.revokeToken(mutation.input.token_id))
+            throw new Error("Token not found");
           break;
       }
     } catch (cause) {
@@ -265,7 +317,8 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       });
       return;
     }
-    this.#send(socket, { type: "ACK", requestId });
+    // Plaintext is returned only to the socket that created the token.
+    this.#send(socket, { type: "ACK", requestId, createdToken });
   }
 
   #send(socket: WebSocket, message: WorkspaceMessage): void {
@@ -692,6 +745,48 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     this.#broadcast({ type: "PROJECT_REMOVE", project_id: id });
   }
 
+  moveProject(input: z.input<typeof MoveProjectSchema>): void {
+    const { project_id, direction } = parseInput(MoveProjectSchema, input);
+    if (project_id === INBOX_PROJECT_ID)
+      throw new Error("Inbox cannot be reordered");
+    const projects = this.listProjects().sort(
+      (a, b) => a.sort - b.sort || a.name.localeCompare(b.name),
+    );
+    const index = projects.findIndex(({ id }) => id === project_id);
+    if (index < 0) throw new Error("Project not found");
+    const step = direction === "up" ? -1 : 1;
+    let destination = index + step;
+    if (projects[destination]?.id === INBOX_PROJECT_ID) destination += step;
+    if (!projects[destination]) return;
+
+    const previousOrder = projects.map(({ sort }) => sort);
+    const uniqueOrder = new Set(previousOrder).size === projects.length;
+    [projects[index], projects[destination]] = [
+      projects[destination],
+      projects[index],
+    ];
+    const inbox = projects.findIndex(({ id }) => id === INBOX_PROJECT_ID);
+    const inboxSort = projects[inbox].sort;
+    const changed = this.ctx.storage.transactionSync(() =>
+      projects.flatMap((project, position) => {
+        // Older projects can share a sort value. Give those positions distinct
+        // values while keeping Inbox in its existing slot.
+        const sort = uniqueOrder
+          ? previousOrder[position]
+          : inboxSort + position - inbox;
+        if (sort === project.sort) return [];
+        this.#sql.exec(
+          "UPDATE projects SET sort = ? WHERE id = ?",
+          sort,
+          project.id,
+        );
+        return [{ ...project, sort }];
+      }),
+    );
+    for (const project of changed)
+      this.#broadcast({ type: "PROJECT_UPSERT", project });
+  }
+
   addItem(actor: Actor, input: AddItemInput): ItemOperationResult {
     const data = parseInput(AddItemSchema, input);
     return this.#mutateItems(actor, (mutation) => {
@@ -769,7 +864,9 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       const item = this.#requireItem(data);
       const patch = this.#editPatch(mutation, data, item);
       this.#applyStatus(mutation, patch, data.status, item);
-      this.#saveItem(mutation, item, patch, { heartbeat: true });
+      this.#saveItem(mutation, item, patch, {
+        heartbeat: actor.kind === "agent",
+      });
       return item.id;
     });
   }

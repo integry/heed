@@ -11,6 +11,19 @@ export function createWorkspaceConnection() {
   let state = initialWorkspaceState();
   let activeSocket: WebSocket | undefined;
   const listeners = new Set<() => void>();
+  type Ack = Extract<SocketMessage, { type: "ACK" }>;
+  const replies = new Map<
+    string,
+    {
+      resolve: (ack: Ack) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+
+  function rejectReplies(message: string) {
+    for (const reply of replies.values()) reply.reject(new Error(message));
+    replies.clear();
+  }
 
   function publish(next: WorkspaceState) {
     if (state === next) return;
@@ -18,7 +31,7 @@ export function createWorkspaceConnection() {
     for (const listener of listeners) listener();
   }
 
-  function mutate(mutation: MutationInput) {
+  function send(mutation: MutationInput, requestId: string) {
     const socket = activeSocket;
     if (
       !socket ||
@@ -26,7 +39,6 @@ export function createWorkspaceConnection() {
       state.connection !== "live"
     )
       return false;
-    const requestId = crypto.randomUUID();
     try {
       socket.send(
         JSON.stringify({ ...mutation, requestId } satisfies SocketRequest),
@@ -37,6 +49,23 @@ export function createWorkspaceConnection() {
       socket.close();
       return false;
     }
+  }
+
+  function mutate(mutation: MutationInput) {
+    return send(mutation, crypto.randomUUID());
+  }
+
+  function save(mutation: MutationInput): Promise<Ack> {
+    return new Promise((resolve, reject) => {
+      const requestId = crypto.randomUUID();
+      replies.set(requestId, { resolve, reject });
+      if (!send(mutation, requestId)) {
+        replies.delete(requestId);
+        reject(
+          new Error("Changes can be saved when the workspace reconnects."),
+        );
+      }
+    });
   }
 
   function start(onSessionExpired: () => void) {
@@ -63,6 +92,9 @@ export function createWorkspaceConnection() {
       if (controller.signal.aborted) return;
       clearTimeout(watchdog);
       activeSocket = undefined;
+      rejectReplies(
+        "Connection lost while saving. Check the workspace after reconnecting.",
+      );
       publish({
         ...state,
         seq: 0,
@@ -108,7 +140,19 @@ export function createWorkspaceConnection() {
         const previous = state;
         publish(receiveMessage(state, message));
         if (state === previous) return;
+        if (
+          (message.type === "ACK" || message.type === "ERROR") &&
+          message.requestId
+        ) {
+          const reply = replies.get(message.requestId);
+          replies.delete(message.requestId);
+          if (message.type === "ACK") reply?.resolve(message);
+          else reply?.reject(new Error(message.error.message));
+        }
         if (message.type === "SNAPSHOT") {
+          rejectReplies(
+            "The workspace resynchronized while saving. Check whether your change was saved.",
+          );
           clearTimeout(watchdog);
           delay = 1000;
           const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -142,6 +186,7 @@ export function createWorkspaceConnection() {
       const socket = activeSocket;
       activeSocket = undefined;
       socket?.close();
+      rejectReplies("The workspace connection closed.");
       state = initialWorkspaceState();
     };
   }
@@ -149,6 +194,7 @@ export function createWorkspaceConnection() {
   return {
     start,
     mutate,
+    save,
     getSnapshot: () => state,
     clearError: () => publish({ ...state, error: null }),
     subscribe(listener: () => void) {
