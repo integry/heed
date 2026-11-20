@@ -70,7 +70,7 @@ export function compactCanvas(
         status,
         parent_id,
         band,
-        ...(includeLinks && ref_url && { ref_url: ref_url.slice(0, 240) }),
+        ...(includeLinks && ref_url && { ref_url }),
       })),
     may_have_more: items.length > limit,
   };

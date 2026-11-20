@@ -272,6 +272,76 @@ it("looks up items, applies multiple steer operations, and undoes them over the 
   }
 });
 
+it("copies the complete reference URL from a canvas search to another item", async () => {
+  const ref_url = `https://docs.example.test/document?share=${"a".repeat(280)}&view=review#notes`;
+  await workspace.addItem(human, { title: "Source document", ref_url });
+  const { item_id } = await workspace.addItem(human, {
+    title: "Destination document",
+  });
+  run
+    .mockResolvedValueOnce({
+      tool_calls: [{ name: "get_canvas", arguments: { query: "document" } }],
+    })
+    .mockImplementationOnce(async (_model, { messages }) => {
+      const { items } = JSON.parse(messages.at(-1).content);
+      const source = items.find(
+        ({ title }: { title: string }) => title === "Source document",
+      );
+      const destination = items.find(
+        ({ title }: { title: string }) => title === "Destination document",
+      );
+      return {
+        tool_calls: [
+          {
+            name: "update_item",
+            arguments: { item_id: destination.id, ref_url: source.ref_url },
+          },
+        ],
+      };
+    })
+    .mockResolvedValueOnce({ response: "Copied the source reference link." });
+
+  const response = await command(
+    "Copy the source document's reference link to the destination document.",
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    changes: [{ type: "item", id: item_id }],
+  });
+  expect(
+    (await workspace.getCanvas({ query: "Destination document" })).items,
+  ).toMatchObject([{ ref_url }]);
+});
+
+it("returns a tool error without partial links when the canvas result exceeds its size limit", async () => {
+  const firstUrl = `https://docs.example.test/first?share=${"a".repeat(10_000)}&view=review`;
+  const secondUrl = `https://docs.example.test/second?share=${"b".repeat(10_000)}&view=review`;
+  await workspace.addItem(human, {
+    title: "First document",
+    ref_url: firstUrl,
+  });
+  await workspace.addItem(human, {
+    title: "Second document",
+    ref_url: secondUrl,
+  });
+
+  const broad = await workspace.executeCommandTool("get_canvas", {
+    query: "document",
+  });
+  expect(broad).toMatchObject({ isError: true, effects: [] });
+  expect(JSON.parse(broad.content)).toEqual({
+    error: "Result too large. Narrow your search.",
+  });
+
+  const narrow = await workspace.executeCommandTool("get_canvas", {
+    query: "First document",
+  });
+  expect(narrow).toMatchObject({ isError: false, effects: [] });
+  expect(JSON.parse(narrow.content).items).toMatchObject([
+    { ref_url: firstUrl },
+  ]);
+});
+
 it("returns a one-line clarification after finding ambiguous matches", async () => {
   const clients = await workspace.createProject({ name: "Clients" });
   await workspace.addItem(human, { title: "Rate limiter" });
