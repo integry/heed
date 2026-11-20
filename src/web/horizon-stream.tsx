@@ -623,13 +623,16 @@ export function HorizonStream({
             >
               <div className="backlog-heading">
                 <h3>Backlog</h3>
-                {backlogTags.length > 0 && (
+                {(tag || backlogTags.length > 0) && (
                   <select
                     aria-label="Filter backlog by tag"
                     value={tag}
                     onChange={(event) => setTag(event.target.value)}
                   >
                     <option value="">All tags</option>
+                    {tag && !backlogTags.includes(tag) && (
+                      <option value={tag}>#{tag}</option>
+                    )}
                     {backlogTags.map((value) => (
                       <option key={value} value={value}>
                         #{value}

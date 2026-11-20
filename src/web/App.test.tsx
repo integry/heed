@@ -555,6 +555,82 @@ it("filters collapsible backlog project groups by tag", async () => {
   expect(stream.getByRole("button", { name: unplanned.title })).toBeTruthy();
 });
 
+const taggedProject = { ...project, id: "engineering", name: "Engineering" };
+const taggedBacklogItem = {
+  ...goal,
+  project_id: taggedProject.id,
+  scheduled_on: null,
+  tags: '["platform"]',
+};
+const untaggedBacklogItem = {
+  ...goal,
+  id: "untagged",
+  title: "Triage feedback",
+  scheduled_on: null,
+};
+
+async function openFilteredBacklog() {
+  await openWorkspace();
+  TestSocket.current.receive({
+    ...snapshot,
+    seq: 2,
+    projects: [project, taggedProject],
+    items: [taggedBacklogItem, untaggedBacklogItem],
+  });
+  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+  fireEvent.click(stream.getByRole("button", { name: "Inbox 1" }));
+  const filter = () =>
+    stream.getByRole<HTMLSelectElement>("combobox", {
+      name: "Filter backlog by tag",
+    });
+  fireEvent.change(filter(), { target: { value: "platform" } });
+  expect(
+    stream.queryByRole("button", { name: untaggedBacklogItem.title }),
+  ).toBeNull();
+  return { stream, filter };
+}
+
+it("can clear the last backlog tag while a keyboard move is saving", async () => {
+  const { stream, filter } = await openFilteredBacklog();
+  fireEvent.keyDown(
+    stream.getByRole("button", { name: `Move ${taggedBacklogItem.title}` }),
+    { key: "ArrowLeft" },
+  );
+  const later = stream.getByRole("region", { name: "Later" });
+  expect(
+    within(later).getByRole("button", { name: taggedBacklogItem.title }),
+  ).toBeTruthy();
+  expect(filter().value).toBe("platform");
+  fireEvent.change(filter(), { target: { value: "" } });
+  expect(
+    stream.getByRole("button", { name: untaggedBacklogItem.title }),
+  ).toBeTruthy();
+});
+
+it.each([
+  ["removes the tagged item", { type: "ITEM_REMOVE", item_id: goal.id }],
+  [
+    "replaces the selected tag",
+    { type: "ITEM_UPSERT", item: { ...taggedBacklogItem, tags: '["urgent"]' } },
+  ],
+  [
+    "hides the tagged project",
+    { type: "PROJECT_UPSERT", project: { ...taggedProject, hidden: 1 } },
+  ],
+] as const)(
+  "can clear the backlog filter when a live update %s",
+  async (_, update) => {
+    const { stream, filter } = await openFilteredBacklog();
+    TestSocket.current.receive({ ...update, seq: 3 });
+    expect(filter().value).toBe("platform");
+    expect(stream.getByText("No backlog items match this tag.")).toBeTruthy();
+    fireEvent.change(filter(), { target: { value: "" } });
+    expect(
+      stream.getByRole("button", { name: untaggedBacklogItem.title }),
+    ).toBeTruthy();
+  },
+);
+
 it("searches and pages through history, then reopens an item with a reason", async () => {
   await openWorkspace();
   const history_at = "2024-04-02T12:00:00.000Z";
