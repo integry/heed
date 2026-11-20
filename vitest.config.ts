@@ -19,9 +19,9 @@ export default defineConfig({
               bindings: {
                 // Test-only P-256 key pair for signing requests to mocked endpoints.
                 VAPID_SUBJECT: "mailto:push@example.test",
-                VAPID_SERVER_PUBLIC_KEY:
+                VAPID_PUBLIC_KEY:
                   "BPZgAepABXAFmhGrRJbv94iqTN8LjQtAzS5aQKPQ7l9h7G2C4IJvsMM9KbFxLxCnC5mgkAfPzKhC1lJ7R6I27U8",
-                VAPID_SERVER_PRIVATE_KEY:
+                VAPID_PRIVATE_KEY:
                   "Vz_5Zt2i1QxMn423Vyn4SMmeyUrmeVxtI51zBbv9Gqw",
               },
             },

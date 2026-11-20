@@ -99,6 +99,15 @@ const migrations = [
   (sql: SqlStorage) => {
     sql.exec("ALTER TABLE items ADD COLUMN completed_band TEXT");
   },
+  // Version 4
+  (sql: SqlStorage) => {
+    sql.exec(`
+      CREATE TABLE push_rate_limits (
+        token_id TEXT PRIMARY KEY REFERENCES tokens(id) ON DELETE CASCADE,
+        attempts TEXT NOT NULL
+      );
+    `);
+  },
 ];
 
 export function migrateWorkspace(storage: DurableObjectStorage): void {

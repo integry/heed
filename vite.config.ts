@@ -31,12 +31,13 @@ export default defineConfig({
           }
           for (const name of Object.keys(bundle).sort()) {
             const entry = bundle[name]!;
-            paths.push(`/${name}`);
+            // Cloudflare serves index.html at the canonical root URL.
+            paths.push(name === "index.html" ? "/" : `/${name}`);
             hash
               .update(name)
               .update(entry.type === "chunk" ? entry.code : entry.source);
           }
-          if (!paths.includes("/index.html"))
+          if (!paths.includes("/"))
             this.error("The Heed app shell is missing index.html.");
           const shell = { version: hash.digest("hex").slice(0, 24), paths };
           this.emitFile({

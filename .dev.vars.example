@@ -32,3 +32,14 @@ ALLOWED_EMAILS=
 # Daily per-workspace limits, reset at midnight UTC.
 # COMMAND_DAILY_LIMIT=100
 # TRANSCRIBE_DAILY_LIMIT=100
+
+# Generate a separate key pair for each environment with npm run vapid:generate.
+# Keep these three values in Wrangler secrets in deployed environments.
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=
+# Set to a contact URL or a mailto: address, such as mailto:admin@example.com.
+VAPID_SUBJECT=
+
+# Maximum agent handoff notifications per token per rolling hour (default 6).
+# Each handoff counts once and is delivered to all subscribed devices. Set 0 to disable.
+# PUSH_RATE_LIMIT_PER_HOUR=6

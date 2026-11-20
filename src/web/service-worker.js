@@ -1,4 +1,4 @@
-/* global self, caches, fetch, URL, Request */
+/* global self, caches, fetch, URL, URLSearchParams, Request */
 
 const CACHE_PREFIX = "heed-app-shell-";
 // The build inserts content-versioned shell assets.
@@ -51,16 +51,72 @@ self.addEventListener("fetch", (event) => {
   )
     return;
 
-  const path =
-    request.mode === "navigate" && url.pathname === "/"
-      ? "/index.html"
-      : url.pathname;
-  if (!shell.has(path) || (url.search && request.mode !== "navigate")) return;
+  const path = url.pathname;
+  if (
+    !shell.has(path) ||
+    (request.mode !== "navigate" && (url.search || path === "/"))
+  )
+    return;
 
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
       return (await cache.match(path)) ?? fetch(request);
+    })(),
+  );
+});
+
+self.addEventListener("push", (event) => {
+  let data;
+  try {
+    data = event.data?.json();
+  } catch {
+    return;
+  }
+  if (
+    typeof data?.title !== "string" ||
+    typeof data.body !== "string" ||
+    typeof data.url !== "string"
+  )
+    return;
+
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: "/icons/heed-192.png",
+      data: { url: data.url },
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = new URL("/", self.location.origin);
+  const link = event.notification.data?.url;
+  if (typeof link === "string" && link.startsWith("/?")) {
+    const item = new URLSearchParams(link.slice(2)).get("item");
+    if (item) url.searchParams.set("item", item);
+  }
+  event.waitUntil(
+    (async () => {
+      const clients = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+      const app = clients.find(
+        (client) => new URL(client.url).pathname === "/",
+      );
+      if (app) {
+        // A fresh navigation selects the item even if it was previously closed.
+        const window = url.search
+          ? await app.navigate(url.href).catch(() => null)
+          : app;
+        if (window) {
+          await window.focus();
+          return;
+        }
+      }
+      await self.clients.openWindow(url.href);
     })(),
   );
 });

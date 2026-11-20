@@ -48,8 +48,8 @@ function getCookie(response: Response, name: string) {
   return cookie!;
 }
 
-async function beginLogin() {
-  const response = await request("/auth/login");
+async function beginLogin(query = "") {
+  const response = await request("/auth/login" + query);
   expect(response.status).toBe(303);
   const authorization = new URL(response.headers.get("Location")!);
   const cookie = getCookie(response, oauthCookie);
@@ -324,4 +324,21 @@ it("requires a same-origin POST to clear the session cookie", async () => {
   expect(getCookie(response, SESSION_COOKIE)).toBe(
     `${SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`,
   );
+});
+
+it("returns to the notified item after sign-in", async () => {
+  const item = "7be25709bbbb41bc";
+  const login = await beginLogin(`?item=${item}`);
+  await mockGoogle();
+  const response = await callback(login);
+  expect(response.status).toBe(303);
+  expect(response.headers.get("Location")).toBe(`/?item=${item}`);
+});
+
+it("restricts development sign-in links to local item destinations", async () => {
+  const response = await request(
+    `${localOrigin}/auth/dev-login?item=//outside.example`,
+  );
+  expect(response.status).toBe(303);
+  expect(response.headers.get("Location")).toBe("/");
 });

@@ -14,7 +14,8 @@
     "lint": "eslint . && prettier --check .",
     "test": "vitest run",
     "check": "npm run typecheck && npm run lint && npm test && npm run build",
-    "seed:radar": "node scripts/seed-radar.mjs"
+    "seed:radar": "node scripts/seed-radar.mjs",
+    "vapid:generate": "node scripts/generate-vapid.mjs"
   },
   "dependencies": {
     "@block65/webcrypto-web-push": "^2.0.0",

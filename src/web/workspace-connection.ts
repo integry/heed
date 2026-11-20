@@ -7,8 +7,8 @@ import {
   type WorkspaceState,
 } from "./workspace-state";
 
-export function createWorkspaceConnection() {
-  let state = initialWorkspaceState();
+export function createWorkspaceConnection(notificationItemId: string | null) {
+  let state = { ...initialWorkspaceState(), notificationItemVersion: 0 };
   let activeSocket: WebSocket | undefined;
   const listeners = new Set<() => void>();
   type Ack = Extract<SocketMessage, { type: "ACK" }>;
@@ -26,9 +26,13 @@ export function createWorkspaceConnection() {
     replies.clear();
   }
 
-  function publish(next: WorkspaceState) {
+  function publish(next: WorkspaceState, invalidateNotificationItem = false) {
     if (state === next) return;
-    state = next;
+    state = {
+      ...next,
+      notificationItemVersion:
+        state.notificationItemVersion + Number(invalidateNotificationItem),
+    };
     for (const listener of listeners) listener();
   }
 
@@ -146,6 +150,16 @@ export function createWorkspaceConnection() {
 
         const previous = state;
         const next = receiveMessage(state, message);
+        // A replacement snapshot can omit an item whose removal we missed.
+        const invalidateNotificationItem =
+          notificationItemId !== null &&
+          next !== previous &&
+          next.connection === "live" &&
+          (message.type === "SNAPSHOT" ||
+            (message.type === "ITEM_UPSERT" &&
+              message.item.id === notificationItemId) ||
+            (message.type === "ITEM_REMOVE" &&
+              message.item_id === notificationItemId));
         const callerReportsError =
           message.type === "ERROR" &&
           message.requestId &&
@@ -154,6 +168,7 @@ export function createWorkspaceConnection() {
           callerReportsError && next !== previous
             ? { ...next, error: previous.error }
             : next,
+          invalidateNotificationItem,
         );
         if (state === previous) return;
         if (
@@ -203,7 +218,10 @@ export function createWorkspaceConnection() {
       activeSocket = undefined;
       socket?.close();
       rejectReplies("The workspace connection closed.");
-      state = initialWorkspaceState();
+      state = {
+        ...initialWorkspaceState(),
+        notificationItemVersion: state.notificationItemVersion + 1,
+      };
     };
   }
 

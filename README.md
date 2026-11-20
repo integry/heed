@@ -24,6 +24,20 @@ Save the printed token when you create it. Send it as `Authorization: Bearer <to
 
 The Worker allows approximately 60 agent requests per minute per token at each Cloudflare location. Set the Worker variable `TOKEN_RATE_LIMIT_PER_MINUTE` to an integer from 1 to 1000 to adjust the limit.
 
+## Web Push
+
+Run `npm run vapid:generate` and put the two generated keys in `.dev.vars`
+for local development. Set `VAPID_SUBJECT` to a contact URL or `mailto:`
+address. For a deployed Worker, store `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`,
+and `VAPID_SUBJECT` as Wrangler secrets. Set the Worker variable
+`PUSH_RATE_LIMIT_PER_HOUR` to adjust the default of six handoff notifications
+per token per rolling hour. Each handoff uses one slot and fans out to all
+subscribed devices.
+
+Enable notifications in Heed’s Settings on each device. On iOS, add Heed to
+the Home Screen and open it from there first. **Send test notification**
+shows a local notification to check that the device displays it.
+
 ## Radar demo
 
 With local development sign-in configured in `.dev.vars` and Wrangler running,

@@ -43,6 +43,7 @@ export const ActorSchema = z.discriminatedUnion("kind", [
     kind: z.literal("agent"),
     scope: ScopeSchema,
     name: agentName,
+    token_id: id.optional(),
     default_project_id: id.nullish(),
   }),
 ]);
@@ -153,4 +154,8 @@ export interface ItemOperationResult {
 
 export interface DependencyOperationResult extends ItemOperationResult {
   dependency: (Dependency & { action: SetDependencyInput["action"] }) | null;
+}
+
+export interface HandoffOperationResult extends ItemOperationResult {
+  notification?: "queued" | "rate_limited" | "unavailable";
 }
