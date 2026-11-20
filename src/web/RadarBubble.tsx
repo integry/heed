@@ -2,6 +2,7 @@ import { memo, type PointerEvent } from "react";
 import { workspaceInstant, type Ring } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
 import { truncateLabel, type Point } from "./radar-geometry";
+import { ringLabels } from "./workspace-view";
 
 export interface Bubble {
   item: CanvasItem;
@@ -13,14 +14,6 @@ export interface Bubble {
   rollup: Ring | null;
   opensGoal: boolean;
 }
-
-const statusLabels: Record<Ring, string> = {
-  handoff: "Needs input",
-  stale: "Stale",
-  reopened: "Reopened",
-  blocked: "Blocked",
-  live: "Live",
-};
 
 export function lastSeen(timestamp: string | null, now: number) {
   const minutes = Math.floor((now - workspaceInstant(timestamp)) / 60_000);
@@ -82,10 +75,10 @@ export const RadarBubble = memo(function RadarBubble({
   const stampWidth = stamp ? Math.max(64, stamp.length * 4.3 + 12) : 0;
   const detail = [
     item.title,
-    ghost ? "Completed" : ring && statusLabels[ring],
+    ghost ? "Completed" : ring && ringLabels[ring],
     stale,
     badge,
-    rollup && `Descendants: ${statusLabels[rollup]}`,
+    rollup && `Descendants: ${ringLabels[rollup]}`,
     total > 0 && `${done} of ${total} complete`,
   ]
     .filter(Boolean)

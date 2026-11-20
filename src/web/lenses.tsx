@@ -4,6 +4,7 @@ import type { CanvasItem } from "../shared/workspace-socket";
 import type { Dependency, Project } from "../shared/workspace";
 import { itemStatus } from "./workspace-view";
 import { RadarLens } from "./RadarLens";
+import { TreemapLens } from "./TreemapLens";
 import type { RadarPlacement } from "./radar-geometry";
 
 export interface LensProps {
@@ -98,6 +99,7 @@ function ListLens({
 export const lensRegistry: readonly [Lens, ...Lens[]] = [
   { id: "radar", label: "Radar", component: RadarLens },
   { id: "list", label: "List", component: ListLens },
+  { id: "treemap", label: "Treemap", component: TreemapLens },
 ];
 
 const storageKey = "heed.lens";
