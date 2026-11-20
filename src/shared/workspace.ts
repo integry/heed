@@ -19,6 +19,7 @@ export const EventKindSchema = z.enum([
   "notified",
 ]);
 
+export const DEFAULT_WORKSPACE_ID = "default";
 export const INBOX_PROJECT_ID = "inbox";
 export const MAX_GUIDANCE_LENGTH = 2_000;
 
@@ -130,6 +131,12 @@ export const TokenSchema = z.object({
   created_at: z.string(),
 });
 
+export const CreateTokenSchema = z.strictObject({
+  label: z.string().trim().min(1).max(200),
+  scope: ScopeSchema.default("report"),
+  default_project_id: z.string().min(1).nullish(),
+});
+
 export type Status = z.infer<typeof StatusSchema>;
 export type TimeType = z.infer<typeof TimeTypeSchema>;
 export type Scope = z.infer<typeof ScopeSchema>;
@@ -142,3 +149,4 @@ export type Item = z.infer<typeof ItemSchema>;
 export type Dependency = z.infer<typeof DependencySchema>;
 export type Event = z.infer<typeof EventSchema>;
 export type Token = z.infer<typeof TokenSchema>;
+export type TokenMetadata = Omit<Token, "secret_hash">;

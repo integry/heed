@@ -7,6 +7,13 @@ GOOGLE_CLIENT_SECRET=
 # Generate a separate secret for each environment with: openssl rand -hex 32
 SESSION_SECRET=
 
+# Set a separate secret (openssl rand -hex 32) to enable the token bootstrap.
+# With Wrangler running, use npm run token:create -- "Build agent" report
+ADMIN_SECRET=
+
+# Approximate per-token request limit per minute (1–1000, defaults to 60).
+# TOKEN_RATE_LIMIT_PER_MINUTE=60
+
 # Comma-separated Google account emails. An empty list denies Google sign-ins.
 ALLOWED_EMAILS=
 

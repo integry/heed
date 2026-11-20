@@ -28,6 +28,8 @@ import type {
   UpdateItemInput,
 } from "../shared/item-operations";
 import {
+  CreateTokenSchema,
+  DEFAULT_WORKSPACE_ID,
   GuidanceTextSchema,
   INBOX_PROJECT_ID,
   ProjectSchema,
@@ -41,7 +43,15 @@ import type {
   Setting,
   Settings,
   Status,
+  Token,
+  TokenMetadata,
 } from "../shared/workspace";
+import {
+  equalSecretHashes,
+  hashSecret,
+  isTokenSecret,
+  newTokenSecret,
+} from "./token-secrets";
 import { migrateWorkspace } from "./workspace-migrations";
 
 const projectUpdateSchema = ProjectSchema.omit({ id: true }).partial().strict();
@@ -69,10 +79,8 @@ type CanvasRow = Pick<
   | "completed_at"
 > & { project: string };
 
-export const DEFAULT_WORKSPACE_ID = "default";
-
 export function getWorkspaceStub(env: Env, workspaceId = DEFAULT_WORKSPACE_ID) {
-  return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId));
+  return env.WORKSPACE.getByName(workspaceId);
 }
 
 function parseInput<T>(schema: ZodType<T>, input: unknown): T {
@@ -82,6 +90,9 @@ function parseInput<T>(schema: ZodType<T>, input: unknown): T {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const TOKEN_USE_INTERVAL_MS = 60 * 60 * 1000;
+const TOKEN_METADATA_COLUMNS =
+  "id, label, scope, default_project_id, last_used_at, created_at";
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const DEPTH_ERROR =
   "Items cannot exceed depth 3. Attach to the parent of the proposed parent instead.";
@@ -164,6 +175,90 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       timezone: values.timezone,
       guidance: values.guidance,
       guidance_updated_at: values.guidance_updated_at ?? null,
+    };
+  }
+
+  async createToken(
+    label: string,
+    scope?: Token["scope"],
+    default_project_id?: string | null,
+  ): Promise<TokenMetadata & { token: string }> {
+    const input = parseInput(CreateTokenSchema, {
+      label,
+      scope,
+      default_project_id,
+    });
+    const workspaceId = this.ctx.id.name;
+    if (!workspaceId) throw new Error("API tokens require a named workspace");
+    const secret = newTokenSecret();
+    const hash = await hashSecret(secret);
+    if (
+      input.default_project_id &&
+      !this.#sql
+        .exec("SELECT id FROM projects WHERE id = ?", input.default_project_id)
+        .toArray().length
+    ) {
+      throw new Error("Default project not found");
+    }
+    const metadata = this.#sql
+      .exec<TokenMetadata>(
+        `INSERT INTO tokens (id, label, scope, default_project_id, secret_hash)
+       VALUES (?, ?, ?, ?, ?) RETURNING ${TOKEN_METADATA_COLUMNS}`,
+        crypto.randomUUID(),
+        input.label,
+        input.scope,
+        input.default_project_id ?? null,
+        hash,
+      )
+      .one();
+    return { ...metadata, token: `heed_${workspaceId}_${secret}` };
+  }
+
+  listTokens(): TokenMetadata[] {
+    return this.#sql
+      .exec<TokenMetadata>(
+        `SELECT ${TOKEN_METADATA_COLUMNS} FROM tokens ORDER BY created_at, id`,
+      )
+      .toArray();
+  }
+
+  revokeToken(id: string): boolean {
+    return (
+      this.#sql.exec("DELETE FROM tokens WHERE id = ?", id).rowsWritten > 0
+    );
+  }
+
+  async verifyToken(
+    secret: string,
+  ): Promise<Extract<Actor, { kind: "agent" }> | null> {
+    if (!isTokenSecret(secret)) return null;
+    const hash = await hashSecret(secret);
+    // Use the prefix for indexed lookup and compare the full digest in constant time.
+    const token = this.#sql
+      .exec<Token>(
+        "SELECT * FROM tokens WHERE substr(secret_hash, 1, 16) = ?",
+        hash.slice(0, 16),
+      )
+      .toArray()
+      .find(({ secret_hash }) => equalSecretHashes(hash, secret_hash));
+    if (!token) return null;
+
+    const now = Date.now();
+    if (
+      token.last_used_at === null ||
+      now - timestamp(token.last_used_at) >= TOKEN_USE_INTERVAL_MS
+    ) {
+      this.#sql.exec(
+        "UPDATE tokens SET last_used_at = ? WHERE id = ?",
+        new Date(now).toISOString(),
+        token.id,
+      );
+    }
+    return {
+      kind: "agent",
+      name: token.label,
+      scope: token.scope,
+      default_project_id: token.default_project_id,
     };
   }
 
@@ -347,8 +442,14 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     ) {
       throw new Error("Project still has items");
     }
-    const deleted = this.#sql.exec("DELETE FROM projects WHERE id = ?", id);
-    if (deleted.rowsWritten === 0) throw new Error("Project not found");
+    this.ctx.storage.transactionSync(() => {
+      this.#sql.exec(
+        "UPDATE tokens SET default_project_id = NULL WHERE default_project_id = ?",
+        id,
+      );
+      const deleted = this.#sql.exec("DELETE FROM projects WHERE id = ?", id);
+      if (deleted.rowsWritten === 0) throw new Error("Project not found");
+    });
   }
 
   addItem(actor: Actor, input: AddItemInput): ItemOperationResult {

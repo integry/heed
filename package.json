@@ -7,6 +7,7 @@
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },
   "scripts": {
+    "token:create": "node scripts/create-token.mjs",
     "dev": "vite build && wrangler dev",
     "build": "vite build && wrangler deploy --dry-run --outdir dist/worker",
     "typecheck": "wrangler types && tsc -p src/worker/tsconfig.json && tsc -p src/web/tsconfig.json && tsc -p tsconfig.json",
