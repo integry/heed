@@ -71,6 +71,11 @@ export const ProjectSchema = z.object({
   hidden: sqliteFlag,
 });
 
+export const UpdateProjectSchema = ProjectSchema.omit({ id: true })
+  .partial()
+  .strict();
+export const CreateProjectSchema = UpdateProjectSchema.required({ name: true });
+
 export const ItemSchema = z.object({
   id: z.string(),
   project_id: z.string(),

@@ -1,4 +1,5 @@
 import { DEFAULT_WORKSPACE_ID } from "../shared/workspace";
+import { apiError } from "./api-response";
 import { readSignedCookie, signCookie } from "./signed-cookie";
 
 export const SESSION_COOKIE = "__Host-heed_session";
@@ -29,11 +30,13 @@ export async function requireSession(
   secret: string | undefined,
   handle: (actor: HumanActor) => Response | Promise<Response>,
 ): Promise<Response> {
+  const isApi = url.pathname.startsWith("/api/");
   const reads = ["GET", "HEAD", "OPTIONS"];
   if (
     (url.pathname === "/ws" || !reads.includes(request.method)) &&
     !hasAppOrigin(request, url)
   ) {
+    if (isApi) return apiError(403, "forbidden_origin", "Forbidden origin");
     return new Response("Forbidden origin", { status: 403 });
   }
 
@@ -46,6 +49,7 @@ export async function requireSession(
     !session.email ||
     session.workspaceId !== DEFAULT_WORKSPACE_ID
   ) {
+    if (isApi) return apiError(401, "unauthorized", "Unauthorized");
     return new Response("Unauthorized", {
       status: 401,
       headers: { "Cache-Control": "no-store" },
