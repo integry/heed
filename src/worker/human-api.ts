@@ -17,6 +17,8 @@ import {
   CreateTokenSchema,
   UpdateProjectSchema,
 } from "../shared/workspace";
+import { commandCapabilities, handleCommandApi } from "./command-api";
+import type { CommandEnv } from "./command-provider";
 import { apiError, workspaceOperationError } from "./api-response";
 import type { HumanActor } from "./session";
 import {
@@ -46,7 +48,7 @@ export async function handleHumanApi(
   request: Request,
   url: URL,
   session: HumanActor,
-  env: Env & PushEnv,
+  env: Env & CommandEnv & PushEnv,
 ): Promise<Response> {
   const { method } = request;
   const { pathname } = url;
@@ -54,8 +56,14 @@ export async function handleHumanApi(
     return Response.json({
       email: session.email,
       workspaceId: session.workspaceId,
+      capabilities: commandCapabilities(env),
     });
   }
+
+  if (method === "POST" && pathname === "/api/command")
+    return handleCommandApi(request, session, env, "command");
+  if (method === "POST" && pathname === "/api/transcribe")
+    return handleCommandApi(request, session, env, "transcribe");
 
   const actor = { kind: "human" } as const;
   try {

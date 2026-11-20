@@ -2,6 +2,8 @@ import type { VapidKeys } from "@block65/webcrypto-web-push";
 import { DurableObject } from "cloudflare:workers";
 import { z, type ZodType } from "zod";
 import { bandsFor, completionBand, isGhost } from "../shared/derived-state";
+import type { CommandChange } from "../shared/command";
+import { commandTools, compactCanvas } from "./command-tools";
 import { HistoryQuerySchema } from "../shared/human-api";
 import type {
   HistoryItem,
@@ -128,6 +130,22 @@ type WorkspaceEnv = Env & PushEnv;
 type PushRow = { endpoint: string; keys: string };
 type ItemChange =
   { before?: Item; after: Item } | { before: Item; after?: undefined };
+type CommandItemUndo = { id: string; before: ItemPatch; after: ItemPatch };
+type CommandUndo =
+  | { type: "items"; root: string; rows: CommandItemUndo[] }
+  | {
+      type: "project";
+      id: string;
+      before: Project["hidden"];
+      after: Project["hidden"];
+    }
+  | { type: "guidance"; before: string; after: string }
+  | ({ type: "dependency" } & SetDependencyInput);
+
+type CommandEffect = { changes: CommandChange[]; undo?: CommandUndo };
+const UNDO_CONFLICT =
+  "The workspace changed after this command. Undo is unavailable.";
+
 type Mutation = {
   actor: Actor;
   now: Date;
@@ -158,7 +176,7 @@ function requireSteering(actor: Actor, action: string): void {
     );
 }
 
-function today({ now, timezone }: Mutation): string {
+function today({ now, timezone }: Pick<Mutation, "now" | "timezone">): string {
   return new Intl.DateTimeFormat("sv-SE", {
     timeZone: timezone,
     year: "numeric",
@@ -175,6 +193,9 @@ function timestamp(value: string): number {
 }
 
 export class Workspace extends DurableObject<WorkspaceEnv> {
+  #commandEffects?: CommandEffect[];
+  #undoBroadcasts?: WorkspaceMessage[];
+
   readonly #sql: SqlStorage;
 
   constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
@@ -242,6 +263,9 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     try {
       const mutation = request.data;
       switch (mutation.type) {
+        case "UNDO_COMMAND":
+          this.#undoCommand(mutation.input.id);
+          break;
         case "ADD_ITEM":
           this.addItem(actor, mutation.input);
           break;
@@ -342,6 +366,10 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     message: WorkspaceMessage,
     sockets = this.ctx.getWebSockets(),
   ): void {
+    if (this.#undoBroadcasts) {
+      this.#undoBroadcasts.push(message);
+      return;
+    }
     for (const socket of sockets) this.#send(socket, message);
   }
 
@@ -382,6 +410,248 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         .toArray()
         .map(({ parent_id, done, total }) => [parent_id, { done, total }]),
     );
+  }
+
+  reserveCommandQuota(kind: "command" | "transcribe", limit: number): boolean {
+    const key = kind === "command" ? "command_daily" : "transcribe_daily";
+    const day = new Date().toISOString().slice(0, 10);
+    // One retained row per kind, shared by all sessions and Worker locations.
+    const current = this.#sql
+      .exec<Setting>("SELECT * FROM settings WHERE key = ?", key)
+      .toArray()[0]?.value;
+    const count = current?.startsWith(day + ":")
+      ? Number(current.slice(11))
+      : 0;
+    if (count >= limit) return false;
+    this.#sql.exec(
+      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+      key,
+      day + ":" + (count + 1),
+    );
+    return true;
+  }
+
+  getCommandContext() {
+    const { timezone } = this.getSettings();
+    const projects = this.listProjects();
+    return {
+      today: today({ now: new Date(), timezone }),
+      timezone,
+      projects: projects.slice(0, 100).map(({ id, name, hidden }) => ({
+        id,
+        name: name.slice(0, 120),
+        hidden,
+      })),
+      projects_may_have_more: projects.length > 100,
+      ...compactCanvas(this.getCanvas({ limit: 41 })),
+    };
+  }
+
+  async executeCommandTool(
+    name: string,
+    input: unknown,
+  ): Promise<{
+    content: string;
+    isError: boolean;
+    effects: CommandEffect[];
+  }> {
+    const tool = commandTools.find(
+      ({ definition }) => definition.name === name,
+    );
+    if (!tool)
+      return {
+        content: JSON.stringify({ error: "Unknown command tool" }),
+        isError: true,
+        effects: [],
+      };
+
+    const effects: CommandEffect[] = [];
+    let operation: unknown;
+    try {
+      this.#commandEffects = effects;
+      // Operations record their writes synchronously, including handoffs before
+      // external notification delivery. Never keep the capture open across I/O.
+      operation = tool.execute(this, input);
+    } catch (error) {
+      operation = Promise.reject(error);
+    } finally {
+      this.#commandEffects = undefined;
+    }
+    try {
+      const output = await operation;
+      const content = JSON.stringify(output);
+      if (content.length > 20_000)
+        return {
+          content: JSON.stringify({
+            error: "Result too large. Narrow your search.",
+          }),
+          isError: true,
+          effects,
+        };
+      return {
+        content,
+        isError: Boolean(
+          output && typeof output === "object" && "error" in output,
+        ),
+        effects,
+      };
+    } catch (error) {
+      return {
+        content: JSON.stringify({
+          error:
+            error instanceof Error
+              ? error.message.slice(0, 500)
+              : "Tool failed",
+        }),
+        isError: true,
+        effects,
+      };
+    }
+  }
+
+  saveCommandUndo(effects: CommandEffect[]): string | undefined {
+    if (!effects.length || effects.some(({ undo }) => !undo)) return undefined;
+    const id = crypto.randomUUID();
+    const plan = {
+      id,
+      expires: Date.now() + 15 * 60_000,
+      actions: effects.map(({ undo }) => undo!),
+    };
+    const value = JSON.stringify(plan);
+    if (value.length > 64_000) return undefined;
+    this.#sql.exec(
+      "INSERT INTO settings (key, value) VALUES ('command_undo', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+      value,
+    );
+    return id;
+  }
+
+  #undoCommand(id: string): void {
+    const messages: WorkspaceMessage[] = [];
+    try {
+      this.#undoBroadcasts = messages;
+      this.ctx.storage.transactionSync(() => {
+        const value = this.#sql
+          .exec<Setting>("SELECT * FROM settings WHERE key = 'command_undo'")
+          .toArray()[0]?.value;
+        const plan =
+          value &&
+          (JSON.parse(value) as {
+            id: string;
+            expires: number;
+            actions: CommandUndo[];
+          });
+        if (!plan || plan.id !== id || plan.expires <= Date.now()) {
+          throw new Error("This command is no longer available to undo.");
+        }
+        for (const undo of plan.actions.reverse()) this.#applyCommandUndo(undo);
+        this.#sql.exec("DELETE FROM settings WHERE key = 'command_undo'");
+      });
+    } finally {
+      this.#undoBroadcasts = undefined;
+    }
+    for (const message of messages) this.#broadcast(message);
+  }
+
+  #applyCommandUndo(undo: CommandUndo): void {
+    const actor = { kind: "human" } as const;
+    switch (undo.type) {
+      case "items":
+        this.#undoCommandItems(undo);
+        return;
+      case "project": {
+        const project = this.#sql
+          .exec<Project>("SELECT * FROM projects WHERE id = ?", undo.id)
+          .toArray()[0];
+        if (project?.hidden !== undo.after) throw new Error(UNDO_CONFLICT);
+        this.updateProject(undo.id, { hidden: undo.before });
+        return;
+      }
+      case "guidance":
+        if (this.getGuidance().guidance !== undo.after)
+          throw new Error(UNDO_CONFLICT);
+        this.setGuidance(actor, undo.before);
+        return;
+      case "dependency": {
+        const { item_id, blocked_by_id, action } = undo;
+        const present =
+          this.#sql
+            .exec(
+              "SELECT 1 FROM dependencies WHERE item_id = ? AND blocked_by_id = ?",
+              item_id,
+              blocked_by_id,
+            )
+            .toArray().length > 0;
+        if (present !== (action === "add")) throw new Error(UNDO_CONFLICT);
+        this.setDependency(actor, {
+          item_id,
+          blocked_by_id,
+          action: present ? "remove" : "add",
+        });
+      }
+    }
+  }
+
+  #undoCommandItems({
+    root,
+    rows,
+  }: Extract<CommandUndo, { type: "items" }>): void {
+    this.#mutateItems({ kind: "human" }, (mutation) => {
+      const current = rows.map(({ id, after }) => {
+        const item = this.#findItem({ item_id: id });
+        if (
+          !item ||
+          Object.entries(after).some(
+            ([key, value]) => item[key as keyof ItemPatch] !== value,
+          )
+        )
+          throw new Error(UNDO_CONFLICT);
+        return item;
+      });
+
+      const rootIndex = rows.findIndex(({ id }) => id === root);
+      const old = rows[rootIndex].before;
+      const item = current[rootIndex];
+      if (old.parent_id !== undefined || old.project_id !== undefined) {
+        const { placement, descendants } = this.#moveItem(mutation, item, {
+          parent_id: old.parent_id,
+          project: old.project_id,
+        });
+        // A newer tree edit can change the set of rows that would move back.
+        // Abort the whole undo rather than rescheduling unrelated descendants.
+        const expected = new Map(
+          rows
+            .filter(({ id }) => id !== root)
+            .map(({ id, before }) => [id, before]),
+        );
+        for (const child of descendants) {
+          const depth = child.depth + placement.depth - item.depth;
+          if (
+            child.project_id === placement.project_id &&
+            child.depth === depth
+          )
+            continue;
+          const patch = expected.get(child.id);
+          if (
+            !patch ||
+            (patch.project_id ?? child.project_id) !== placement.project_id ||
+            (patch.depth ?? child.depth) !== depth
+          )
+            throw new Error(UNDO_CONFLICT);
+          expected.delete(child.id);
+        }
+        if (
+          expected.size ||
+          placement.project_id !== (old.project_id ?? item.project_id) ||
+          placement.depth !== (old.depth ?? item.depth)
+        )
+          throw new Error(UNDO_CONFLICT);
+      }
+      for (let index = 0; index < rows.length; index++) {
+        this.#saveItem(mutation, current[index], rows[index].before);
+      }
+      return root;
+    });
   }
 
   getSettings(): Settings {
@@ -635,6 +905,9 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
   setGuidance(actor: Actor, guidance: string): Guidance {
     requireSteering(parseInput(ActorSchema, actor), "change guidance");
     const value = parseInput(GuidanceTextSchema, guidance);
+    const previousText = this.#commandEffects
+      ? this.getGuidance().guidance
+      : undefined;
     const previous = this.#sql
       .exec<{ value: string }>(
         "SELECT value FROM settings WHERE key = 'guidance_updated_at'",
@@ -652,6 +925,12 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       value,
       updatedAt,
     );
+    if (previousText !== undefined && previousText !== value) {
+      this.#commandEffects?.push({
+        changes: [{ type: "guidance" }],
+        undo: { type: "guidance", before: previousText, after: value },
+      });
+    }
     this.#broadcastSettings();
     return { guidance: value, guidance_updated_at: updatedAt };
   }
@@ -730,6 +1009,15 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         id,
       )
       .one();
+    this.#commandEffects?.push({
+      changes: [{ type: "project", id }],
+      undo: {
+        type: "project",
+        id,
+        before: current.hidden,
+        after: project.hidden,
+      },
+    });
     this.#broadcast({ type: "PROJECT_UPSERT", project });
     return project;
   }
@@ -823,7 +1111,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         id,
         title: data.title,
         external_key: data.external_key ?? null,
-        created_by: mutation.actor.kind,
+        created_by: mutation.actor.kind === "agent" ? "agent" : "human",
         last_heartbeat_at: data.status === "active" ? now : null,
         created_at: now,
         updated_at: now,
@@ -893,7 +1181,9 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     const result = this.#mutateItems(actor, (mutation) => {
       const item = this.#requireItem(data);
       const agent = mutation.actor.kind === "agent" ? mutation.actor : null;
-      const notify = data.notify === true && agent !== null;
+      // Command-bar handoffs are already bounded by the command rate limits.
+      const fromCommand = mutation.actor.kind === "command";
+      const notify = data.notify === true && (agent !== null || fromCommand);
       this.#saveItem(
         mutation,
         item,
@@ -902,20 +1192,24 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       );
 
       if (notify) {
+        const tokenId = agent?.token_id;
         const subscriptions =
-          vapid && agent.token_id
+          vapid && (tokenId || fromCommand)
             ? this.#sql
                 .exec<PushRow>("SELECT endpoint, keys FROM push_subscriptions")
                 .toArray()
             : [];
-        if (!subscriptions.length || !agent.token_id) {
+        if (!subscriptions.length || (!tokenId && !fromCommand)) {
           notification = "unavailable";
-        } else if (!this.#reservePush(agent.token_id, mutation.now.getTime())) {
+        } else if (
+          tokenId &&
+          !this.#reservePush(tokenId, mutation.now.getTime())
+        ) {
           notification = "rate_limited";
         } else {
           notification = "queued";
           delivery = {
-            actorName: agent.name,
+            actorName: agent ? agent.name : "Command bar",
             payload: {
               title: item.title,
               body: data.note,
@@ -927,6 +1221,15 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       }
       return item.id;
     });
+    if (delivery && this.#commandEffects) {
+      // A queued notification cannot be recalled, so the command loses its Undo.
+      for (const effect of this.#commandEffects) delete effect.undo;
+      if (!this.#commandEffects.length) {
+        this.#commandEffects.push({
+          changes: [{ type: "item", id: data.item_id }],
+        });
+      }
+    }
     if (delivery && vapid) {
       this.ctx.waitUntil(
         this.#notifyHandoff(
@@ -1106,6 +1409,12 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       return item_id;
     });
     if (changed) {
+      this.#commandEffects?.push({
+        changes: [
+          { type: "dependency", id: item_id, blockedById: blocked_by_id },
+        ],
+        undo: { type: "dependency", ...data },
+      });
       this.#broadcast({
         type: action === "add" ? "DEPENDENCY_ADD" : "DEPENDENCY_REMOVE",
         dependency: { item_id, blocked_by_id },
@@ -1248,6 +1557,34 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         },
       };
     });
+    if (this.#commandEffects && mutation.changes.length) {
+      const rows = mutation.changes.flatMap(({ before, after }) => {
+        if (!before || !after) return [];
+        const fields = (
+          Object.keys(after) as (keyof ItemPatch | "updated_at")[]
+        ).filter(
+          (field) => field !== "updated_at" && before[field] !== after[field],
+        );
+        return [
+          {
+            id: after.id,
+            before: Object.fromEntries(
+              fields.map((field) => [field, before[field]]),
+            ),
+            after: Object.fromEntries(
+              fields.map((field) => [field, after[field]]),
+            ),
+          },
+        ];
+      });
+      this.#commandEffects.push({
+        changes: result.items.map(({ id }) => ({ type: "item", id })),
+        undo:
+          rows.length === mutation.changes.length
+            ? { type: "items", root: result.item_id, rows }
+            : undefined,
+      });
+    }
     this.#broadcastItemChanges(mutation);
     return result;
   }
@@ -1640,7 +1977,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       "INSERT INTO events (item_id, at, actor, kind, detail) VALUES (?, ?, ?, ?, ?)",
       id,
       mutation.now.toISOString(),
-      mutation.actor.kind === "human" ? "human" : mutation.actor.name,
+      mutation.actor.kind === "agent" ? mutation.actor.name : "human",
       kind,
       JSON.stringify(detail),
     );

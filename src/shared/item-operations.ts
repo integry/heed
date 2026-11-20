@@ -38,6 +38,7 @@ export const SetGuidanceSchema = z.strictObject({ text: GuidanceTextSchema });
 
 export const ActorSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("human") }),
+  z.strictObject({ kind: z.literal("command"), scope: z.literal("steer") }),
   z.strictObject({
     kind: z.literal("agent"),
     scope: ScopeSchema,

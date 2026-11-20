@@ -91,6 +91,8 @@ it("requires a signed session and a same-origin mutation before looking up the w
     await error(await request(path, "GET", undefined, {}), 401, "unauthorized");
   }
   for (const [method, path] of [
+    ["POST", "/api/command"],
+    ["POST", "/api/transcribe"],
     ["POST", "/api/items"],
     ["PATCH", "/api/items/id"],
     ["POST", "/api/items/id/status"],

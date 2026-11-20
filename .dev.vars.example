@@ -21,6 +21,18 @@ ALLOWED_EMAILS=
 # Requires SESSION_SECRET and bypasses Google and ALLOWED_EMAILS.
 # DEV_LOGIN_EMAIL=dev@example.test
 
+# Enable the command bar with either a tool-calling Workers AI model or Anthropic.
+# If both are configured, Anthropic takes precedence. Use Wrangler secrets for deployed API keys.
+# WORKERS_AI_COMMAND_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast
+# ANTHROPIC_COMMAND_MODEL=
+# ANTHROPIC_API_KEY=
+#
+# Per-session, per-minute limit applied separately to commands and transcription.
+# COMMAND_RATE_LIMIT_PER_MINUTE=8
+# Daily per-workspace limits, reset at midnight UTC.
+# COMMAND_DAILY_LIMIT=100
+# TRANSCRIBE_DAILY_LIMIT=100
+
 # Generate a separate key pair for each environment with npm run vapid:generate.
 # Keep these three values in Wrangler secrets in deployed environments.
 VAPID_PUBLIC_KEY=
