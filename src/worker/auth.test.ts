@@ -263,7 +263,12 @@ it("requires a session with same-origin writes and upgrades, and exempts the age
   headers.set("Upgrade", "websocket");
   expect((await request(`${localOrigin}/ws`, { headers })).status).toBe(401);
   headers.set("Cookie", await devSession());
-  expect((await request(`${localOrigin}/ws`, { headers })).status).toBe(404);
+  const upgrade = await request(`${localOrigin}/ws`, { headers });
+  expect(upgrade.status).toBe(101);
+  expect(getCookie(upgrade, SESSION_COOKIE)).toBeDefined();
+  const socket = upgrade.webSocket!;
+  socket.accept();
+  socket.close(1000);
   headers.delete("Upgrade");
   expect(
     (await request(`${localOrigin}/api/items`, { method: "POST", headers }))

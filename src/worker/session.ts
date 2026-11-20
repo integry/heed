@@ -62,7 +62,7 @@ export async function requireSession(
     workspaceId: session.workspaceId,
   });
   if (response.ok || response.status === 101) {
-    // A future workspace response can have immutable headers and carry the upgraded socket.
+    // Copy the response to make its headers mutable while preserving an upgraded socket.
     response = new Response(response.body, response);
     response.headers.set("Cache-Control", "no-store");
     response.headers.append(

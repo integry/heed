@@ -8,6 +8,7 @@ import { handleMcp } from "./mcp";
 import { requireSession } from "./session";
 import { handleTokenBootstrap } from "./token-admin";
 import type { TokenAdminEnv } from "./token-admin";
+import { getWorkspaceStub } from "./workspace";
 
 export { Workspace } from "./workspace";
 
@@ -72,11 +73,24 @@ export default {
       );
     }
 
-    if (pathname === "/ws" || pathname.startsWith("/api/")) {
+    if (pathname === "/ws") {
+      return requireSession(request, url, env.SESSION_SECRET, (actor) => {
+        if (request.method !== "GET") {
+          return new Response("Method not allowed", {
+            status: 405,
+            headers: { Allow: "GET" },
+          });
+        }
+        if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+          return new Response("Expected a WebSocket upgrade", { status: 426 });
+        }
+        return getWorkspaceStub(env, actor.workspaceId).fetch(request);
+      });
+    }
+
+    if (pathname.startsWith("/api/")) {
       return requireSession(request, url, env.SESSION_SECRET, (actor) =>
-        pathname === "/ws"
-          ? new Response("Not found", { status: 404 })
-          : handleHumanApi(request, url, actor, env),
+        handleHumanApi(request, url, actor, env),
       );
     }
 
