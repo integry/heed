@@ -1,2 +1,15 @@
-# Copy to .dev.vars when you need local Worker secrets.
-# The scaffold requires no secrets.
+# Copy to .dev.vars for local development.
+# Register http://localhost:8787/auth/callback as a redirect URI for your Google
+# OAuth web client. For a deployment, register its HTTPS /auth/callback URL.
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+
+# Generate a separate secret for each environment with: openssl rand -hex 32
+SESSION_SECRET=
+
+# Comma-separated Google account emails. An empty list denies Google sign-ins.
+ALLOWED_EMAILS=
+
+# Optional local shortcut at http://localhost:8787/auth/dev-login.
+# Requires SESSION_SECRET and bypasses Google and ALLOWED_EMAILS.
+# DEV_LOGIN_EMAIL=dev@example.test
