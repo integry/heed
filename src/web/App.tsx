@@ -130,7 +130,11 @@ function Workspace({
     connection.getSnapshot,
   );
   const [lensId, setLensId] = useState(readLensId);
-  const [selectedId, select] = useState<string | null>(null);
+  const [selectedItem, setSelectedItem] = useState<{
+    id: string;
+    openDrawer: boolean;
+  } | null>(null);
+  const selectedId = selectedItem?.id ?? null;
   const [goalId, focusGoal] = useState<string | null>(null);
   const [showGhosts, setShowGhosts] = useState(true);
   const [lensSelection, setLensSelection] = useState<LensSelection | null>(
@@ -164,6 +168,7 @@ function Workspace({
     lensId === "dependencies" && !focusedGoal ? null : lensId,
   );
   const LensComponent = lens.component;
+  const canvasLens = lens.id === "radar" || lens.id === "treemap";
   const live = state.connection === "live";
   const selection = selectedId && filtered.has(selectedId) ? selectedId : null;
   const dependenciesLens = registry.find(({ id }) => id === "dependencies");
@@ -239,8 +244,12 @@ function Workspace({
     if (id !== "dependencies") rememberLens(id);
   }
 
+  function inspectItem(id: string) {
+    setSelectedItem({ id, openDrawer: true });
+  }
+
   function selectStreamItem(id: string) {
-    select(id);
+    inspectItem(id);
     if (id === focusedGoal) return;
     const focusForRadar = lens.id === "radar" || lens.id === "list";
     let parent = view.items.get(id)?.parent_id ?? null;
@@ -334,7 +343,7 @@ function Workspace({
       </label>
     );
 
-  const inspector = inspected && (
+  const inspector = inspected && (desktop || selectedItem?.openDrawer) && (
     <Inspector
       key={inspected.id}
       drawer={!desktop}
@@ -345,9 +354,16 @@ function Workspace({
       timezone={timezone}
       live={live}
       save={connection.save}
-      close={() =>
-        select((current) => (current === inspected.id ? null : current))
-      }
+      close={() => {
+        // A delete can finish after this inspection has been dismissed.
+        setSelectedItem((current) =>
+          current !== selectedItem
+            ? current
+            : !desktop && canvasLens
+              ? { id: inspected.id, openDrawer: false }
+              : null,
+        );
+      }}
       addChild={() => setPanel({ kind: "child" })}
       selectChild={lens.id === "board" ? selectStreamItem : undefined}
     />
@@ -481,7 +497,8 @@ function Workspace({
               }
               select={(id) => {
                 if (lens.id === "list" && id) selectStreamItem(id);
-                else select(id);
+                else
+                  setSelectedItem(id ? { id, openDrawer: !canvasLens } : null);
                 setLensSelection(
                   id ? { id, scrollStreamOnly: lens.id === "treemap" } : null,
                 );
@@ -561,7 +578,7 @@ function Workspace({
                       selectedId={selectedId}
                       select={(id) => {
                         setLensSelection(null);
-                        select(id);
+                        inspectItem(id);
                       }}
                     />
                   ) : (
@@ -635,6 +652,17 @@ function Workspace({
           >
             {sheet.stop === "full" ? "Lens" : "List"}
           </button>
+          {canvasLens && inspected && selection && sheet.stop !== "full" && (
+            <button
+              type="button"
+              className="subtle inspect-selection"
+              aria-label={`Inspect ${inspected.title}`}
+              aria-haspopup="dialog"
+              onClick={() => inspectItem(inspected.id)}
+            >
+              Inspect
+            </button>
+          )}
         </nav>
       )}
       {panel?.kind === "guidance" && state.settings && (

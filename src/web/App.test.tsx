@@ -2020,6 +2020,112 @@ it("commits Board pointer drops through the workspace socket", async () => {
   }
 });
 
+function mockMobileViewport() {
+  vi.stubGlobal("matchMedia", () =>
+    Object.assign(new EventTarget(), { matches: false }),
+  );
+}
+
+it("keeps the mobile Radar priority handle usable before and after inspecting", async () => {
+  mockMobileViewport();
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  const bubble = radar.getByRole("button", { name: tomorrow.title });
+  fireEvent.click(bubble);
+  expect(bubble.getAttribute("aria-pressed")).toBe("true");
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+
+  const priorityHandle = () =>
+    radar.getByRole("slider", { name: `Priority for ${tomorrow.title}` });
+  const handle = priorityHandle();
+  const node = handle.parentElement!;
+  Object.defineProperty(node.parentElement, "getScreenCTM", {
+    value: () => null,
+  });
+  const translate = (element: Element) =>
+    element.getAttribute("transform")!.slice(10, -1).split(",").map(Number);
+  const [x, y] = translate(node);
+  const [dx, dy] = translate(handle);
+  const press = {
+    pointerId: 1,
+    pointerType: "touch",
+    isPrimary: true,
+    button: 0,
+    clientX: x + dx,
+    clientY: y + dy,
+  };
+  const drag = { ...press, clientX: press.clientX + 30 };
+  vi.useFakeTimers();
+  try {
+    fireEvent.pointerDown(handle, press);
+    act(() => vi.advanceTimersByTime(450));
+    fireEvent.pointerMove(handle, drag);
+    fireEvent.pointerUp(handle, drag);
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(TestSocket.current.latestRequest()).toMatchObject({
+    type: "UPDATE_ITEM",
+    input: { item_id: tomorrow.id, priority: 10 },
+  });
+
+  fireEvent.click(
+    screen.getByRole("button", { name: `Inspect ${tomorrow.title}` }),
+  );
+  const drawer = within(screen.getByRole("dialog", { name: "Inspector" }));
+  expect(drawer.getByDisplayValue(tomorrow.title)).toBeTruthy();
+  fireEvent.click(drawer.getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  expect(bubble.getAttribute("aria-pressed")).toBe("true");
+  expect(priorityHandle()).toBeTruthy();
+});
+
+it("lets a second mobile Treemap tap zoom into the selected parent", async () => {
+  mockMobileViewport();
+  localStorage.setItem("heed.lens", "treemap");
+  await openWorkspace();
+  const treemap = within(screen.getByRole("region", { name: "Treemap" }));
+  const tile = treemap.getByRole("button", { name: goal.title });
+  const breadcrumb = treemap.getByRole("navigation", {
+    name: "Treemap breadcrumb",
+  });
+  function tap(timeStamp: number) {
+    const event = new PointerEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      pointerType: "touch",
+      detail: 1,
+    });
+    Object.defineProperty(event, "timeStamp", { value: timeStamp });
+    fireEvent(tile, event);
+  }
+
+  tap(100);
+  expect(tile.getAttribute("aria-pressed")).toBe("true");
+  expect(breadcrumb.querySelector("[aria-current]")?.textContent).toBe(
+    "All projects",
+  );
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+
+  tap(250);
+  expect(breadcrumb.querySelector("[aria-current]")?.textContent).toBe(
+    goal.title,
+  );
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  fireEvent.click(
+    screen.getByRole("button", { name: `Inspect ${goal.title}` }),
+  );
+  const drawer = screen.getByRole("dialog", { name: "Inspector" });
+  expect(within(drawer).getByDisplayValue(goal.title)).toBeTruthy();
+  fireEvent(drawer, new Event("cancel", { cancelable: true }));
+  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  expect(
+    screen.getByRole("button", { name: `Inspect ${goal.title}` }),
+  ).toBeTruthy();
+});
+
 it("switches the Board stream between desktop and mobile sheet stops at 768px", async () => {
   let desktop = true;
   const media = new EventTarget();

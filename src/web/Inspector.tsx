@@ -781,7 +781,10 @@ export function Inspector({
     <dialog
       ref={dialog}
       className="inspector inspector-drawer"
-      onClose={close}
+      onCancel={(event) => {
+        event.preventDefault();
+        close();
+      }}
       onClick={(event) => {
         if (event.target === event.currentTarget) {
           const bounds = event.currentTarget.getBoundingClientRect();
