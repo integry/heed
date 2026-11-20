@@ -227,9 +227,24 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     const actor = { kind: "human" } as const;
     const { requestId } = request.data;
     try {
-      if (request.data.type === "UPDATE_ITEM")
-        this.updateItem(actor, request.data.input);
-      else this.reportProgress(actor, request.data.input);
+      const mutation = request.data;
+      switch (mutation.type) {
+        case "UPDATE_ITEM":
+          this.updateItem(actor, mutation.input);
+          break;
+        case "SET_STATUS":
+          this.reportProgress(actor, mutation.input);
+          break;
+        case "UPDATE_PROJECT":
+          this.updateProject(mutation.project_id, mutation.input);
+          break;
+        case "INITIALIZE_TIMEZONE":
+          this.setTimezone(mutation.input.timezone, true);
+          break;
+        case "SET_GUIDANCE":
+          this.setGuidance(actor, mutation.input.text);
+          break;
+      }
     } catch (cause) {
       const { code, message } = workspaceOperationError(cause);
       this.#send(socket, {
@@ -278,9 +293,10 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         ...item,
         progress: counts.get(item.id) ?? { done: 0, total: 0 },
       }));
+    const settings = this.#readSettings();
     return {
       type: "SNAPSHOT",
-      settings: this.getSettings(),
+      ...settings,
       projects: this.listProjects(),
       items,
       dependencies: this.listDependencies(),
@@ -301,6 +317,10 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
   }
 
   getSettings(): Settings {
+    return this.#readSettings().settings;
+  }
+
+  #readSettings(): { settings: Settings; timezoneConfigured: boolean } {
     const values = Object.fromEntries(
       this.#sql
         .exec<Setting>("SELECT key, value FROM settings")
@@ -308,10 +328,13 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         .map(({ key, value }) => [key, value]),
     );
     return {
-      schema_version: Number(values.schema_version),
-      timezone: values.timezone,
-      guidance: values.guidance,
-      guidance_updated_at: values.guidance_updated_at ?? null,
+      timezoneConfigured: values.timezone !== undefined,
+      settings: {
+        schema_version: Number(values.schema_version),
+        timezone: values.timezone ?? "UTC",
+        guidance: values.guidance,
+        guidance_updated_at: values.guidance_updated_at ?? null,
+      },
     };
   }
 
@@ -399,12 +422,14 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     };
   }
 
-  setTimezone(timezone: string): void {
+  setTimezone(timezone: string, initializeOnly = false): void {
     const value = parseInput(TimezoneSchema, timezone);
     const updated = this.#sql.exec(
-      "UPDATE settings SET value = ? WHERE key = 'timezone' AND value <> ?",
+      `INSERT INTO settings (key, value) VALUES ('timezone', ?)
+       ON CONFLICT (key) DO UPDATE SET value = excluded.value
+       WHERE ? = 0 AND settings.value <> excluded.value`,
       value,
-      value,
+      Number(initializeOnly),
     );
     if (updated.rowsWritten > 0) this.#broadcastSettings();
   }

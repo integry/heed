@@ -279,6 +279,13 @@ it("requires a session with same-origin writes and upgrades, and exempts the age
 });
 
 it("only enables dev login on localhost with an explicitly configured email", async () => {
+  const signedOut = await request(`${localOrigin}/api/me`);
+  expect(signedOut.status).toBe(401);
+  expect(await signedOut.json()).toMatchObject({ devLoginEnabled: true });
+  expect(await (await request("/api/me")).json()).toMatchObject({
+    devLoginEnabled: false,
+  });
+
   const session = await devSession();
   const me = await request(`${localOrigin}/api/me`, {
     headers: { Cookie: session },

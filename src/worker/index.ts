@@ -1,7 +1,7 @@
 import { ReportProgressSchema } from "../shared/item-operations";
 import { requireAgent } from "./agent-auth";
 import type { AgentAuthEnv } from "./agent-auth";
-import { handleAuth } from "./auth";
+import { devLoginEmail, handleAuth } from "./auth";
 import type { AuthEnv } from "./auth";
 import { handleHumanApi } from "./human-api";
 import { handleMcp } from "./mcp";
@@ -89,9 +89,25 @@ export default {
     }
 
     if (pathname.startsWith("/api/")) {
-      return requireSession(request, url, env.SESSION_SECRET, (actor) =>
-        handleHumanApi(request, url, actor, env),
+      const response = requireSession(
+        request,
+        url,
+        env.SESSION_SECRET,
+        (actor) => handleHumanApi(request, url, actor, env),
       );
+      if (request.method === "GET" && pathname === "/api/me") {
+        return response.then(async (result) => {
+          if (result.status !== 401) return result;
+          return Response.json(
+            {
+              ...(await result.json<object>()),
+              devLoginEnabled: Boolean(devLoginEmail(url, env)),
+            },
+            result,
+          );
+        });
+      }
+      return response;
     }
 
     return new Response("Not found", { status: 404 });

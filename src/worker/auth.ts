@@ -237,13 +237,19 @@ async function finishLogin(
   return response;
 }
 
+export function devLoginEmail(url: URL, env: AuthEnv): string | undefined {
+  if (url.hostname === "localhost" && env.SESSION_SECRET) {
+    return env.DEV_LOGIN_EMAIL?.trim().toLowerCase() || undefined;
+  }
+}
+
 export async function handleAuth(
   request: Request,
   url: URL,
   env: AuthEnv,
 ): Promise<Response> {
   const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, SESSION_SECRET } = env;
-  const { pathname, hostname } = url;
+  const { pathname } = url;
   if (pathname === "/auth/logout" && request.method === "POST") {
     if (!hasAppOrigin(request, url)) {
       return new Response("Forbidden origin", { status: 403 });
@@ -252,8 +258,8 @@ export async function handleAuth(
   }
 
   if (pathname === "/auth/dev-login" && request.method === "GET") {
-    const email = env.DEV_LOGIN_EMAIL?.trim().toLowerCase();
-    if (hostname === "localhost" && email && SESSION_SECRET) {
+    const email = devLoginEmail(url, env);
+    if (email && SESSION_SECRET) {
       return redirect("/", await issueSession(email, SESSION_SECRET));
     }
   }

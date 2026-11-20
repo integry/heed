@@ -4,6 +4,8 @@ import {
   SetStatusBodySchema,
   UpdateItemSchema,
 } from "./item-operations";
+import { GuidanceBodySchema, TimezoneBodySchema } from "./human-api";
+import { UpdateProjectSchema } from "./workspace";
 import type { Dependency, Item, Project, Settings } from "./workspace";
 
 export const SocketRequestIdSchema = z.string().min(1).max(128);
@@ -21,6 +23,22 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
     requestId: SocketRequestIdSchema,
     input: SetStatusBodySchema.extend(ItemIdSchema.shape),
   }),
+  z.strictObject({
+    type: z.literal("UPDATE_PROJECT"),
+    requestId: SocketRequestIdSchema,
+    project_id: z.string().min(1),
+    input: UpdateProjectSchema,
+  }),
+  z.strictObject({
+    type: z.literal("INITIALIZE_TIMEZONE"),
+    requestId: SocketRequestIdSchema,
+    input: TimezoneBodySchema,
+  }),
+  z.strictObject({
+    type: z.literal("SET_GUIDANCE"),
+    requestId: SocketRequestIdSchema,
+    input: GuidanceBodySchema,
+  }),
 ]);
 
 export type SocketRequest = z.infer<typeof SocketRequestSchema>;
@@ -31,6 +49,7 @@ export type WorkspaceMessage =
   | {
       type: "SNAPSHOT";
       settings: Settings;
+      timezoneConfigured: boolean;
       projects: Project[];
       items: CanvasItem[];
       dependencies: Dependency[];
