@@ -269,8 +269,8 @@ it("requires a session with same-origin writes and upgrades, and exempts the age
     (await request(`${localOrigin}/api/items`, { method: "POST", headers }))
       .status,
   ).toBe(404);
-  expect((await request("/api/report", { method: "POST" })).status).toBe(404);
-  expect((await request("/mcp", { method: "POST" })).status).toBe(404);
+  expect((await request("/api/report", { method: "POST" })).status).toBe(401);
+  expect((await request("/mcp", { method: "POST" })).status).toBe(401);
 });
 
 it("only enables dev login on localhost with an explicitly configured email", async () => {

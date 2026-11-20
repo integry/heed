@@ -1,13 +1,13 @@
+import { DEFAULT_WORKSPACE_ID } from "../shared/workspace";
 import { readSignedCookie, signCookie } from "./signed-cookie";
 
 export const SESSION_COOKIE = "__Host-heed_session";
-export const WORKSPACE_ID = "default";
 const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
 
 export interface HumanActor {
   kind: "human";
   email: string;
-  workspaceId: typeof WORKSPACE_ID;
+  workspaceId: typeof DEFAULT_WORKSPACE_ID;
 }
 
 export function hasAppOrigin(request: Request, url: URL): boolean {
@@ -17,7 +17,7 @@ export function hasAppOrigin(request: Request, url: URL): boolean {
 export function issueSession(email: string, secret: string): Promise<string> {
   return signCookie(
     SESSION_COOKIE,
-    { email, workspaceId: WORKSPACE_ID },
+    { email, workspaceId: DEFAULT_WORKSPACE_ID },
     secret,
     SESSION_MAX_AGE,
   );
@@ -44,7 +44,7 @@ export async function requireSession(
     !session ||
     typeof session.email !== "string" ||
     !session.email ||
-    session.workspaceId !== WORKSPACE_ID
+    session.workspaceId !== DEFAULT_WORKSPACE_ID
   ) {
     return new Response("Unauthorized", {
       status: 401,

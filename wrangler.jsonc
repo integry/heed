@@ -11,5 +11,13 @@
   "durable_objects": {
     "bindings": [{ "name": "WORKSPACE", "class_name": "Workspace" }],
   },
+  "ratelimits": [
+    {
+      "name": "TOKEN_RATE_LIMITER",
+      "namespace_id": "1001",
+      // Requests are weighted in agent-auth.ts using TOKEN_RATE_LIMIT_PER_MINUTE.
+      "simple": { "limit": 1000000, "period": 60 },
+    },
+  ],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workspace"] }],
 }

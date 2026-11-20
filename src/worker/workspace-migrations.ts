@@ -88,6 +88,12 @@ const migrations = [
       INBOX_PROJECT_ID,
     );
   },
+  // Version 2
+  (sql: SqlStorage) => {
+    sql.exec(
+      "CREATE INDEX idx_tokens_hash_prefix ON tokens (substr(secret_hash, 1, 16))",
+    );
+  },
 ];
 
 export function migrateWorkspace(storage: DurableObjectStorage): void {
