@@ -64,6 +64,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState(null, "", "/");
   localStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -98,11 +99,13 @@ it.each([true, false])(
 async function openWorkspace(
   registry?: readonly [Lens, ...Lens[]],
   initialSnapshot: Extract<SocketMessage, { type: "SNAPSHOT" }> = snapshot,
+  readWorkspaceApi: (path: string) => Response | Promise<Response> = () =>
+    Response.json([]),
 ) {
   fetchSession.mockImplementation(async (path: string) =>
     path === "/api/me"
       ? Response.json({ workspaceId: "default", email: "person@example.test" })
-      : Response.json([]),
+      : readWorkspaceApi(path),
   );
   const previousSocket = TestSocket.current;
   const view = render(<App registry={registry} />);
@@ -110,6 +113,112 @@ async function openWorkspace(
   TestSocket.current.receive(initialSnapshot);
   return view;
 }
+
+const notificationItem = {
+  ...goal,
+  id: "older-item",
+  title: "Review payment alerts",
+  status: "done",
+  completed_at: "2024-03-01T12:00:00Z",
+} as const;
+const inspectorRegion = { name: "Inspector" };
+
+function missingItem() {
+  return Response.json(
+    { error: { code: "not_found", message: "Item not found" } },
+    { status: 404 },
+  );
+}
+
+async function openNotificationItem(lookup: () => Response) {
+  window.history.replaceState(null, "", `/?item=${notificationItem.id}`);
+  await openWorkspace(undefined, snapshot, (path) =>
+    path === `/api/items/${notificationItem.id}` ? lookup() : Response.json([]),
+  );
+  return TestSocket.current;
+}
+
+it("discards the notification fallback when a reopened item enters the canvas", async () => {
+  const lookup = vi
+    .fn(missingItem)
+    .mockReturnValueOnce(Response.json(notificationItem));
+  const socket = await openNotificationItem(lookup);
+  await screen.findByDisplayValue(notificationItem.title);
+
+  const reopened = {
+    ...notificationItem,
+    title: "Review new payment alerts",
+    status: "queued",
+    completed_at: null,
+  } as const;
+  socket.receive({ type: "ITEM_UPSERT", seq: 2, item: reopened });
+  expect(screen.getByDisplayValue(reopened.title)).toBeTruthy();
+  expect(lookup).toHaveBeenCalledTimes(1);
+
+  socket.receive({ type: "ITEM_REMOVE", seq: 3, item_id: reopened.id });
+  expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+  await waitFor(() => expect(lookup).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+});
+
+it("closes the notification inspector when an off-canvas item is removed", async () => {
+  const lookup = vi
+    .fn(missingItem)
+    .mockReturnValueOnce(Response.json(notificationItem));
+  const socket = await openNotificationItem(lookup);
+  await screen.findByDisplayValue(notificationItem.title);
+
+  socket.receive({ type: "ITEM_REMOVE", seq: 2, item_id: notificationItem.id });
+  expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+  await waitFor(() => expect(lookup).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+});
+
+it("ignores a notification lookup still parsing its response when the item is removed", async () => {
+  const response = new Response();
+  let finishBody!: () => void;
+  const json = vi.spyOn(response, "json").mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finishBody = () => resolve(notificationItem);
+      }),
+  );
+  const lookup = vi.fn(missingItem).mockReturnValueOnce(response);
+  const socket = await openNotificationItem(lookup);
+  await waitFor(() => expect(json).toHaveBeenCalledOnce());
+
+  socket.receive({ type: "ITEM_REMOVE", seq: 2, item_id: notificationItem.id });
+  await waitFor(() => expect(lookup).toHaveBeenCalledTimes(2));
+  await act(async () => finishBody());
+  expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+});
+
+it.each([false, true])(
+  "revalidates an off-canvas notification item after resync (exists: %s)",
+  async (exists) => {
+    const lookup = vi
+      .fn(() =>
+        exists
+          ? Response.json({ ...notificationItem, title: "Updated alerts" })
+          : missingItem(),
+      )
+      .mockReturnValueOnce(Response.json(notificationItem));
+    const socket = await openNotificationItem(lookup);
+    await screen.findByDisplayValue(notificationItem.title);
+
+    socket.receive({ type: "ITEM_UPSERT", seq: 3, item: goal });
+    expect(socket.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: "GET_SNAPSHOT" }),
+    );
+    socket.receive({ ...snapshot, seq: 4 });
+    expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+    await waitFor(() => expect(lookup).toHaveBeenCalledTimes(2));
+    if (exists)
+      expect(await screen.findByDisplayValue("Updated alerts")).toBeTruthy();
+    else
+      expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+  },
+);
 
 it("cross-highlights nested and banded rows, and hides them when the project is toggled", async () => {
   localStorage.setItem("heed.lens", "list");

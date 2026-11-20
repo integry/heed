@@ -144,11 +144,6 @@ function Workspace({
   registry: readonly [Lens, ...Lens[]];
   onSessionExpired: () => void;
 }) {
-  const [connection] = useState(createWorkspaceConnection);
-  const state = useSyncExternalStore(
-    connection.subscribe,
-    connection.getSnapshot,
-  );
   const [lensId, setLensId] = useState(readLensId);
   const [selectedItem, setSelectedItem] = useState<{
     id: string;
@@ -159,7 +154,16 @@ function Workspace({
     return id ? { id, inspectorOpen: true, fromNotification: true } : null;
   });
   const selectedId = selectedItem?.id ?? null;
-  const [linkedItem, setLinkedItem] = useState<Item>();
+  const [connection] = useState(() => createWorkspaceConnection(selectedId));
+  const state = useSyncExternalStore(
+    connection.subscribe,
+    connection.getSnapshot,
+  );
+  const { notificationItemVersion } = state;
+  const [linkedItem, setLinkedItem] = useState<{
+    item: Item;
+    version: number;
+  }>();
   const [goalId, focusGoal] = useState<string | null>(null);
   // Dependency saves can outlive the graph that submitted them.
   const [dependencyEditGoal, setDependencyEditGoal] = useState<string | null>(
@@ -212,14 +216,28 @@ function Workspace({
       `/api/items/${encodeURIComponent(linkedId)}`,
       controller.signal,
     )
+      .catch(() => undefined)
       .then((item) => {
-        if (!controller.signal.aborted) setLinkedItem(item);
-      })
-      .catch(() => {});
+        const current = connection.getSnapshot();
+        if (
+          !controller.signal.aborted &&
+          current.connection === "live" &&
+          current.notificationItemVersion === notificationItemVersion
+        ) {
+          setLinkedItem(
+            item ? { item, version: notificationItemVersion } : undefined,
+          );
+        }
+      });
     return () => controller.abort();
-  }, [linkedId, live]);
+  }, [connection, linkedId, live, notificationItemVersion]);
+  const fallback =
+    linkedItem?.version === notificationItemVersion &&
+    linkedItem.item.id === linkedId
+      ? linkedItem.item
+      : undefined;
   const inspected = selectedItem?.fromNotification
-    ? (selected ?? (linkedItem?.id === selectedId ? linkedItem : undefined))
+    ? (selected ?? fallback)
     : selected &&
         (hiddenOnly || view.projects.get(selected.project_id)?.hidden === 0)
       ? selected
