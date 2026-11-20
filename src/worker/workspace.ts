@@ -34,6 +34,7 @@ import {
   TimezoneSchema,
 } from "../shared/workspace";
 import type {
+  Dependency,
   EventKind,
   Guidance,
   Item,
@@ -505,6 +506,14 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     });
   }
 
+  listDependencies(): Dependency[] {
+    return this.#sql
+      .exec<Dependency>(
+        "SELECT item_id, blocked_by_id FROM dependencies ORDER BY item_id, blocked_by_id",
+      )
+      .toArray();
+  }
+
   setDependency(
     actor: Actor,
     input: SetDependencyInput,
@@ -513,23 +522,16 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     const { item_id, blocked_by_id, action } = data;
     let changed = false;
     const result = this.#mutateItems(actor, (mutation) => {
+      for (const id of [item_id, blocked_by_id]) {
+        const item = this.#requireItem({ item_id: id });
+        if (item.status === "cancelled") {
+          throw new Error(
+            `Cannot change a dependency for cancelled item ${id}`,
+          );
+        }
+      }
       if (action === "add") {
-        this.#requireItem({ item_id });
-        this.#requireItem({ item_id: blocked_by_id });
-        const cycle =
-          this.#sql
-            .exec(
-              `WITH RECURSIVE blockers(id) AS (
-             SELECT ?
-             UNION
-             SELECT blocked_by_id FROM dependencies JOIN blockers ON dependencies.item_id = blockers.id
-           )
-           SELECT 1 FROM blockers WHERE id = ? LIMIT 1`,
-              blocked_by_id,
-              item_id,
-            )
-            .toArray().length > 0;
-        if (cycle) throw new Error("Dependency would create a cycle");
+        this.#rejectDependencyCycle(item_id, blocked_by_id);
         changed =
           this.#sql.exec(
             "INSERT INTO dependencies (item_id, blocked_by_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
@@ -548,6 +550,39 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       return item_id;
     });
     return { ...result, dependency: changed ? data : null };
+  }
+
+  #rejectDependencyCycle(itemId: string, blockedById: string): void {
+    const previous = new Map<string, string | undefined>([
+      [blockedById, undefined],
+    ]);
+    const pending = [blockedById];
+    for (let index = 0; index < pending.length; index++) {
+      const current = pending[index];
+      if (current === itemId) {
+        const path: string[] = [];
+        for (
+          let id: string | undefined = current;
+          id !== undefined;
+          id = previous.get(id)
+        ) {
+          path.push(id);
+        }
+        path.push(itemId);
+        throw new Error(
+          `Dependency would create a cycle: ${path.reverse().join(" -> ")}`,
+        );
+      }
+      const blockers = this.#sql.exec<Pick<Dependency, "blocked_by_id">>(
+        "SELECT blocked_by_id FROM dependencies WHERE item_id = ?",
+        current,
+      );
+      for (const { blocked_by_id } of blockers) {
+        if (previous.has(blocked_by_id)) continue;
+        previous.set(blocked_by_id, current);
+        pending.push(blocked_by_id);
+      }
+    }
   }
 
   async #notifyHandoff(
