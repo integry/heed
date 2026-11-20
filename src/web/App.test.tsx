@@ -89,6 +89,7 @@ async function openWorkspace(registry?: readonly [Lens, ...Lens[]]) {
 }
 
 it("cross-highlights nested and banded rows, and hides them when the project is toggled", async () => {
+  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
   const list = within(screen.getByRole("region", { name: "List" }));
   const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
@@ -125,6 +126,7 @@ it("cross-highlights nested and banded rows, and hides them when the project is 
 it("keeps fall-back completions in Done today until workspace midnight", async () => {
   const completed_at = "2026-11-01T04:05:00Z";
   vi.mocked(Date.now).mockReturnValue(Date.parse(completed_at));
+  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
   TestSocket.current.receive({
     ...snapshot,
@@ -179,6 +181,7 @@ it("keeps fall-back completions in Done today until workspace midnight", async (
 });
 
 it("shows a nested List item as blocked by a hidden item until it completes", async () => {
+  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
   const socket = TestSocket.current;
   const blocker = { ...goal, id: "blocker", hidden: 1 as const };
@@ -205,6 +208,7 @@ it("shows a nested List item as blocked by a hidden item until it completes", as
 });
 
 it("updates List status when a dependency is added or removed live", async () => {
+  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
   const socket = TestSocket.current;
   const dependency = { item_id: goal.id, blocked_by_id: tomorrow.id };
@@ -315,4 +319,130 @@ it("reconnects with backoff and accepts a fresh connection sequence", async () =
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("defaults to Radar, opens a goal, and cross-highlights and resizes its children", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+  const socket = TestSocket.current;
+  socket.receive({
+    type: "DEPENDENCY_ADD",
+    seq: 2,
+    dependency: {
+      item_id: tomorrow.id,
+      blocked_by_id: child.id,
+    },
+  });
+  expect(radar.queryByRole("button", { name: child.title })).toBeNull();
+
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  expect(
+    radar.getByRole("navigation", { name: "Goal breadcrumb" }),
+  ).toBeTruthy();
+  expect(
+    stream
+      .getByRole("button", { name: goal.title })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  expect(
+    screen
+      .getByLabelText(`Items in ${goal.title}`)
+      .querySelector(".radar-edge"),
+  ).toBeTruthy();
+
+  fireEvent.click(stream.getByRole("button", { name: child.title }));
+  expect(
+    radar
+      .getByRole("button", { name: child.title })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  fireEvent.keyDown(
+    radar.getByRole("slider", { name: `Priority for ${child.title}` }),
+    { key: "End" },
+  );
+  expect(JSON.parse(socket.send.mock.lastCall![0])).toMatchObject({
+    type: "UPDATE_ITEM",
+    input: { item_id: child.id, priority: 10 },
+  });
+  fireEvent.click(radar.getByRole("button", { name: "All projects" }));
+  expect(radar.getByRole("button", { name: goal.title })).toBeTruthy();
+});
+
+it("keeps radar positions on status updates and filters attention and completed ghosts", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const socket = TestSocket.current;
+  const finished = {
+    ...goal,
+    id: "finished",
+    title: "Shipped work",
+    status: "done",
+    completed_at: "2024-04-03T12:00:00Z",
+    completed_band: "later",
+  } as const;
+  socket.receive({ ...snapshot, seq: 2, items: [...snapshot.items, finished] });
+  const marker = () =>
+    radar
+      .getByRole("button", { name: goal.title })
+      .parentElement?.getAttribute("transform");
+  const before = marker();
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 3,
+    item: {
+      ...goal,
+      status: "active",
+      last_heartbeat_at: "2024-04-03T11:58:00Z",
+    },
+  });
+  expect(marker()).toBe(before);
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 4,
+    item: {
+      ...goal,
+      status: "blocked",
+    },
+  });
+  expect(marker()).toBe(before);
+  const ghost = radar.getByRole("button", { name: finished.title });
+  expect(ghost.getAttribute("data-ghost")).toBe("true");
+  fireEvent.click(
+    radar.getByRole("checkbox", { name: "Show completed ghosts" }),
+  );
+  expect(radar.queryByRole("button", { name: finished.title })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Needs me 1" }));
+  expect(radar.queryByRole("button", { name: goal.title })).toBeNull();
+  expect(radar.getByRole("button", { name: child.title })).toBeTruthy();
+});
+
+it("offers a registered Dependencies lens for the focused goal", async () => {
+  const dependencies: Lens = {
+    id: "dependencies",
+    label: "Dependencies",
+    component: ({ goalId }) => <p>Dependencies for {goalId}</p>,
+  };
+  await openWorkspace([lensRegistry[0], dependencies]);
+  expect(screen.queryByRole("option", { name: "Dependencies" })).toBeNull();
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  fireEvent.click(radar.getByRole("button", { name: "Dependencies" }));
+  expect(screen.getByText("Dependencies for goal")).toBeTruthy();
+});
+
+it("opens the selected child's goal when switching from List to Radar", async () => {
+  localStorage.setItem("heed.lens", "list");
+  await openWorkspace();
+  const list = within(screen.getByRole("region", { name: "List" }));
+  fireEvent.click(list.getByRole("button", { name: new RegExp(child.title) }));
+  fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
+    target: { value: "radar" },
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  expect(
+    radar
+      .getByRole("button", { name: child.title })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
 });

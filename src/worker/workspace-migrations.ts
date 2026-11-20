@@ -95,6 +95,10 @@ const migrations = [
       "CREATE INDEX idx_tokens_hash_prefix ON tokens (substr(secret_hash, 1, 16))",
     );
   },
+  // Version 3
+  (sql: SqlStorage) => {
+    sql.exec("ALTER TABLE items ADD COLUMN completed_band TEXT");
+  },
 ];
 
 export function migrateWorkspace(storage: DurableObjectStorage): void {

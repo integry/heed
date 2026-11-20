@@ -256,6 +256,7 @@ CREATE TABLE items (
   hidden INTEGER NOT NULL DEFAULT 0,        -- view toggle; steer-only
   last_heartbeat_at TEXT,
   completed_at TEXT,
+  completed_band TEXT,                      -- radar ring at completion, retained for ghosts
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
