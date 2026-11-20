@@ -5,6 +5,12 @@ export default defineConfig({
   test: {
     projects: [
       {
+        test: {
+          name: "shared",
+          include: ["src/shared/**/*.test.ts"],
+        },
+      },
+      {
         plugins: [
           cloudflareTest({
             wrangler: { configPath: "./wrangler.jsonc" },

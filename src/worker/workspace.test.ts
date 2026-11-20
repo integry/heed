@@ -207,3 +207,65 @@ it("accepts IANA timezone names and rejects invalid names and offsets", async ()
   });
   expect((await stub.getSettings()).timezone).toBe("Asia/Kathmandu");
 });
+
+it("returns a compact canvas with bands inherited from ancestors outside the query", async () => {
+  const stub = newWorkspace();
+  const guidance = await stub.setGuidance(
+    { kind: "human" },
+    "Start with billing",
+  );
+  await runInDurableObject(stub, (_, { storage: { sql } }) => {
+    sql.exec(`
+      INSERT INTO items (id, project_id, title, scheduled_on)
+      VALUES ('goal', 'inbox', 'Billing', '2000-01-01');
+      INSERT INTO items (id, project_id, title, parent_id, depth, ref_url)
+      VALUES ('task', 'inbox', 'Payment flow', 'goal', 2, NULL),
+             ('child', 'inbox', 'Repair retries', 'task', 3, 'https://example.com/pull/1');
+      INSERT INTO items (id, project_id, title, status, completed_at)
+      VALUES ('archive', 'inbox', 'Retry tests', 'done', '2000-01-01 00:00:00');
+    `);
+  });
+
+  expect(
+    await stub.getCanvas({
+      project: "Inbox",
+      query: "RETRIES",
+      parent_id: "task",
+    }),
+  ).toEqual({
+    ...guidance,
+    items: [
+      {
+        id: "child",
+        title: "Repair retries",
+        project: "Inbox",
+        status: "queued",
+        parent_id: "task",
+        ref_url: "https://example.com/pull/1",
+        band: "today",
+      },
+    ],
+  });
+  expect(
+    (await stub.getCanvas({ parent_id: null })).items.map(({ id }) => id),
+  ).toEqual(["goal"]);
+  expect(
+    (await stub.getCanvas({ query: "retry tests", include_done: true })).items,
+  ).toMatchObject([{ id: "archive", band: null }]);
+  expect((await stub.getCanvas({ limit: 1 })).items).toHaveLength(1);
+  expect((await stub.getCanvas({ project: "Missing" })).items).toEqual([]);
+});
+
+it("caps the canvas response at 50 items", async () => {
+  const stub = newWorkspace();
+  await runInDurableObject(stub, (_, { storage: { sql } }) => {
+    sql.exec(`
+      WITH RECURSIVE numbers(n) AS (
+        VALUES (1) UNION ALL SELECT n + 1 FROM numbers WHERE n < 51
+      )
+      INSERT INTO items (id, project_id, title) SELECT n, 'inbox', 'Task ' || n FROM numbers
+    `);
+  });
+  expect((await stub.getCanvas()).items).toHaveLength(50);
+  expect((await stub.getCanvas({ limit: 500 })).items).toHaveLength(50);
+});
