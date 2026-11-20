@@ -1,17 +1,14 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   STREAM_BANDS,
   type Band,
   type StreamRow,
 } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
-import { GuidanceTextSchema, MAX_GUIDANCE_LENGTH } from "../shared/workspace";
+import { Guidance } from "./Guidance";
+import { Inspector } from "./Inspector";
+import { QuickAdd } from "./QuickAdd";
+import { Settings } from "./Settings";
 import {
   lensRegistry,
   readLensId,
@@ -102,83 +99,6 @@ function StreamItems({
   );
 }
 
-function WorkspaceDialog({
-  panel,
-  close,
-  guidance,
-  timezone,
-  email,
-  save,
-  live,
-}: {
-  panel: "guidance" | "settings";
-  close: () => void;
-  guidance: string;
-  timezone: string;
-  email: string;
-  save: (text: string) => boolean;
-  live: boolean;
-}) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  const [draft, setDraft] = useState(guidance);
-  const valid = GuidanceTextSchema.safeParse(draft).success;
-  useEffect(() => {
-    dialog.current?.showModal();
-  }, []);
-  return (
-    <dialog ref={dialog} onClose={close} aria-labelledby="panel-title">
-      <div className="panel-heading">
-        <h2 id="panel-title">
-          {panel === "guidance" ? "Guidance" : "Settings"}
-        </h2>
-        <button
-          type="button"
-          className="subtle"
-          onClick={() => dialog.current?.close()}
-        >
-          Close
-        </button>
-      </div>
-      {panel === "guidance" ? (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (valid && save(draft)) dialog.current?.close();
-          }}
-        >
-          <label htmlFor="guidance-text">Instructions for your agents</label>
-          <textarea
-            id="guidance-text"
-            rows={6}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-          />
-          <div className="dialog-actions">
-            <small>
-              {[...draft].length} / {MAX_GUIDANCE_LENGTH}
-            </small>
-            <button className="primary" disabled={!live || !valid}>
-              Save guidance
-            </button>
-          </div>
-        </form>
-      ) : (
-        <>
-          <dl className="settings-details">
-            <dt>Signed in as</dt>
-            <dd>{email}</dd>
-            <dt>Workspace timezone</dt>
-            <dd>{timezone}</dd>
-          </dl>
-          <form action="/auth/logout" method="post">
-            <button className="subtle">Sign out</button>
-          </form>
-        </>
-      )}
-    </dialog>
-  );
-}
-
 const connectionLabels = {
   connecting: "Connecting to workspace…",
   reconnecting: "Reconnecting to workspace…",
@@ -202,7 +122,10 @@ function Workspace({
   const [lensId, setLensId] = useState(readLensId);
   const [selectedId, select] = useState<string | null>(null);
   const [attentionOnly, setAttentionOnly] = useState(false);
-  const [panel, setPanel] = useState<"guidance" | "settings" | null>(null);
+  const [hiddenOnly, setHiddenOnly] = useState(false);
+  const [panel, setPanel] = useState<
+    "guidance" | "settings" | "goal" | "child" | null
+  >(null);
   const clock = useMinuteClock();
   const view = useMemo(() => workspaceView(state), [state]);
   const {
@@ -223,6 +146,21 @@ function Workspace({
   const LensComponent = lens.component;
   const live = state.connection === "live";
   const selection = selectedId && filtered.has(selectedId) ? selectedId : null;
+  const selected = selectedId ? state.items.get(selectedId) : undefined;
+  const inspected =
+    selected &&
+    (hiddenOnly || view.projects.get(selected.project_id)?.hidden === 0)
+      ? selected
+      : undefined;
+  const dependencies = [...view.dependencies.values()];
+  const hiddenRows = hiddenOnly
+    ? [...view.items.values()]
+        .filter((item) => item.parent_id === null && item.hidden === 1)
+        .sort((a, b) => a.title.localeCompare(b.title))
+        .map((item) => ({ item, children: [] }))
+    : [];
+  const closePanel = () =>
+    setPanel((current) => (current === panel ? null : current));
   const hasStreamRows = STREAM_BANDS.some((band) => bands[band].length > 0);
 
   useEffect(
@@ -340,13 +278,21 @@ function Workspace({
         <section className="lens-pane" aria-labelledby="lens-heading">
           <div className="section-heading">
             <h1 id="lens-heading">{lens.label}</h1>
+            <button
+              type="button"
+              className="primary"
+              disabled={!live}
+              onClick={() => setPanel("goal")}
+            >
+              + Goal
+            </button>
           </div>
           {state.settings && (
             <LensComponent
               tree={tree}
               projects={projects}
               items={view.items}
-              dependencies={[...view.dependencies.values()]}
+              dependencies={dependencies}
               selectedId={selection}
               now={now}
               select={select}
@@ -368,55 +314,117 @@ function Workspace({
               }}
             />
           )}
+          {inspected && (
+            <Inspector
+              key={inspected.id}
+              item={inspected}
+              projects={projects}
+              items={state.items}
+              dependencies={dependencies}
+              timezone={timezone}
+              live={live}
+              save={connection.save}
+              close={() =>
+                select((current) => (current === inspected.id ? null : current))
+              }
+              addChild={() => setPanel("child")}
+            />
+          )}
         </section>
         <section className="stream-pane" aria-labelledby="stream-heading">
           <div className="sheet-handle" aria-hidden="true" />
           <div className="section-heading stream-heading">
             <h2 id="stream-heading">Horizon Stream</h2>
-            <button
-              type="button"
-              className="attention-button"
-              aria-pressed={attentionOnly}
-              onClick={() => setAttentionOnly((value) => !value)}
-            >
-              Needs me <span>{attentionCount}</span>
-            </button>
+            <div className="inline-actions">
+              <button
+                type="button"
+                className="attention-button"
+                aria-pressed={attentionOnly}
+                onClick={() => {
+                  setHiddenOnly(false);
+                  setAttentionOnly((value) => !value);
+                }}
+              >
+                Needs me <span>{attentionCount}</span>
+              </button>
+              <button
+                type="button"
+                className="project-chip"
+                aria-pressed={hiddenOnly}
+                onClick={() => {
+                  setAttentionOnly(false);
+                  setHiddenOnly((value) => !value);
+                }}
+              >
+                Hidden
+              </button>
+            </div>
           </div>
           <div className="stream-content">
-            {state.settings && !hasStreamRows && (
-              <p className="empty">
-                {attentionOnly
-                  ? "Nothing needs your input."
-                  : "No items in the stream."}
-              </p>
-            )}
-            {STREAM_BANDS.filter((band) => bands[band].length > 0).map(
-              (band) => (
-                <section className="stream-band" key={band}>
-                  <h3>{bandLabels[band]}</h3>
-                  <StreamItems
-                    rows={bands[band]}
-                    selectedId={selectedId}
-                    select={select}
-                  />
-                </section>
-              ),
+            {hiddenOnly ? (
+              hiddenRows.length ? (
+                <StreamItems
+                  rows={hiddenRows}
+                  selectedId={selectedId}
+                  select={select}
+                />
+              ) : (
+                <p className="empty">No hidden items.</p>
+              )
+            ) : (
+              <>
+                {state.settings && !hasStreamRows && (
+                  <p className="empty">
+                    {attentionOnly
+                      ? "Nothing needs your input."
+                      : "No items in the stream."}
+                  </p>
+                )}
+                {STREAM_BANDS.filter((band) => bands[band].length > 0).map(
+                  (band) => (
+                    <section className="stream-band" key={band}>
+                      <h3>{bandLabels[band]}</h3>
+                      <StreamItems
+                        rows={bands[band]}
+                        selectedId={selectedId}
+                        select={select}
+                      />
+                    </section>
+                  ),
+                )}
+              </>
             )}
           </div>
         </section>
       </main>
-      {panel && (
-        <WorkspaceDialog
-          key={panel}
-          panel={panel}
-          close={() => setPanel(null)}
-          guidance={view.settings?.guidance ?? ""}
+      {panel === "guidance" && state.settings && (
+        <Guidance
+          settings={state.settings}
+          live={live}
+          save={connection.save}
+          close={closePanel}
+        />
+      )}
+      {panel === "settings" && (
+        <Settings
+          projects={projects}
+          items={state.items}
           timezone={timezone}
           email={email}
           live={live}
-          save={(text) =>
-            connection.mutate({ type: "SET_GUIDANCE", input: { text } })
-          }
+          save={connection.save}
+          close={closePanel}
+        />
+      )}
+      {(panel === "goal" || panel === "child") && (
+        <QuickAdd
+          parent={panel === "child" ? inspected : undefined}
+          parentMissing={panel === "child" && !inspected}
+          projects={projects}
+          timezone={timezone}
+          live={live}
+          save={connection.save}
+          close={closePanel}
         />
       )}
     </div>

@@ -5,9 +5,10 @@ import {
   render,
   screen,
   within,
+  waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { SocketMessage } from "../shared/workspace-socket";
+import type { SocketMessage, SocketRequest } from "../shared/workspace-socket";
 import { App } from "./App";
 import { lensRegistry, type Lens } from "./lenses";
 import { child, goal, project, snapshot, tomorrow } from "./workspace-fixtures";
@@ -21,6 +22,13 @@ class TestSocket extends EventTarget {
   constructor() {
     super();
     TestSocket.current = this;
+  }
+
+  latestRequest() {
+    return JSON.parse(this.send.mock.lastCall![0]) as Exclude<
+      SocketRequest,
+      { type: "GET_SNAPSHOT" }
+    >;
   }
 
   receive(message: SocketMessage) {
@@ -38,6 +46,13 @@ class TestSocket extends EventTarget {
 }
 
 const fetchSession = vi.fn();
+
+Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+  configurable: true,
+  value(this: HTMLDialogElement) {
+    this.open = true;
+  },
+});
 
 beforeEach(() => {
   vi.stubGlobal("fetch", fetchSession);
@@ -79,8 +94,10 @@ it.each([true, false])(
 );
 
 async function openWorkspace(registry?: readonly [Lens, ...Lens[]]) {
-  fetchSession.mockImplementation(async () =>
-    Response.json({ workspaceId: "default", email: "person@example.test" }),
+  fetchSession.mockImplementation(async (path: string) =>
+    path === "/api/me"
+      ? Response.json({ workspaceId: "default", email: "person@example.test" })
+      : Response.json([]),
   );
   const view = render(<App registry={registry} />);
   await screen.findByRole("heading", { name: "Horizon Stream" });
@@ -315,4 +332,379 @@ it("reconnects with backoff and accepts a fresh connection sequence", async () =
   } finally {
     vi.useRealTimers();
   }
+});
+
+function inspect(title: string) {
+  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+  fireEvent.click(stream.getByRole("button", { name: title }));
+  return within(screen.getByRole("complementary", { name: "Inspector" }));
+}
+
+it("sends the inspector actions and displays activity from the item endpoint", async () => {
+  await openWorkspace();
+  fetchSession.mockImplementation(async () =>
+    Response.json([
+      {
+        id: 1,
+        item_id: goal.id,
+        kind: "created",
+        actor: "human",
+        at: goal.created_at,
+        detail: null,
+      },
+    ]),
+  );
+  const socket = TestSocket.current;
+  const inspector = inspect(goal.title);
+  expect(await inspector.findByText("Created item")).toBeTruthy();
+  expect(fetchSession).toHaveBeenCalledWith(
+    `/api/items/${goal.id}/events`,
+    expect.anything(),
+  );
+
+  let seq = 1;
+  async function acknowledge(
+    message?: Omit<Extract<SocketMessage, { type: "ITEM_UPSERT" }>, "seq">,
+  ) {
+    if (message) socket.receive({ ...message, seq: ++seq });
+    await act(async () =>
+      socket.receive({
+        type: "ACK",
+        requestId: socket.latestRequest().requestId,
+        seq: ++seq,
+      }),
+    );
+  }
+  fireEvent.click(inspector.getByRole("button", { name: "Mark done" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "SET_STATUS",
+    input: { item_id: goal.id, status: "done" },
+  });
+  await acknowledge({
+    type: "ITEM_UPSERT",
+    item: { ...goal, status: "done", completed_at: "2024-04-03T12:00:00Z" },
+  });
+
+  fireEvent.click(inspector.getByRole("button", { name: "Reopen" }));
+  expect(
+    (
+      inspector.getByRole("button", {
+        name: "Reopen item",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  fireEvent.change(inspector.getByLabelText("Reason for reopening"), {
+    target: { value: "Check the rollback" },
+  });
+  fireEvent.click(inspector.getByRole("button", { name: "Reopen item" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "REOPEN_ITEM",
+    input: { item_id: goal.id, reason: "Check the rollback" },
+  });
+  await acknowledge({ type: "ITEM_UPSERT", item: goal });
+
+  fireEvent.click(inspector.getByRole("button", { name: "Flag handoff" }));
+  fireEvent.change(inspector.getByLabelText("What input do you need?"), {
+    target: { value: "Approve the rollback" },
+  });
+  fireEvent.click(inspector.getByRole("button", { name: "Save handoff" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "FLAG_HANDOFF",
+    input: { item_id: goal.id, note: "Approve the rollback" },
+  });
+  await acknowledge({
+    type: "ITEM_UPSERT",
+    item: { ...goal, handoff: 1, handoff_note: "Approve the rollback" },
+  });
+  fireEvent.click(inspector.getByRole("button", { name: "Clear handoff" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "CLEAR_HANDOFF",
+    input: { item_id: goal.id },
+  });
+  await acknowledge({ type: "ITEM_UPSERT", item: goal });
+
+  fireEvent.change(inspector.getByLabelText("Blocked by"), {
+    target: { value: tomorrow.id },
+  });
+  fireEvent.click(inspector.getByRole("button", { name: "Add dependency" }));
+  const dependency = { item_id: goal.id, blocked_by_id: tomorrow.id };
+  expect(socket.latestRequest()).toMatchObject({
+    type: "SET_DEPENDENCY",
+    input: { ...dependency, action: "add" },
+  });
+  socket.receive({ type: "DEPENDENCY_ADD", seq: ++seq, dependency });
+  await acknowledge();
+  fireEvent.click(inspector.getByRole("button", { name: "Remove" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "SET_DEPENDENCY",
+    input: { ...dependency, action: "remove" },
+  });
+  socket.receive({ type: "DEPENDENCY_REMOVE", seq: ++seq, dependency });
+  await acknowledge();
+
+  fireEvent.click(inspector.getByRole("button", { name: "Hide" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "UPDATE_ITEM",
+    input: { item_id: goal.id, hidden: true },
+  });
+  await acknowledge({ type: "ITEM_UPSERT", item: { ...goal, hidden: 1 } });
+  fireEvent.click(screen.getByRole("button", { name: "Hidden" }));
+  inspect(goal.title);
+  fireEvent.click(inspector.getByRole("button", { name: "Unhide" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "UPDATE_ITEM",
+    input: { item_id: goal.id, hidden: false },
+  });
+  await acknowledge({ type: "ITEM_UPSERT", item: goal });
+
+  const confirm = vi
+    .spyOn(window, "confirm")
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+  fireEvent.click(inspector.getByRole("button", { name: "Delete" }));
+  expect(socket.latestRequest().type).toBe("UPDATE_ITEM");
+  fireEvent.click(inspector.getByRole("button", { name: "Delete" }));
+  expect(confirm).toHaveBeenCalledTimes(2);
+  expect(socket.latestRequest()).toMatchObject({
+    type: "DELETE_ITEM",
+    input: { item_id: goal.id },
+  });
+  socket.receive({ type: "ITEM_REMOVE", seq: ++seq, item_id: goal.id });
+  await acknowledge();
+  expect(screen.queryByRole("complementary", { name: "Inspector" })).toBeNull();
+});
+
+it("unlocks only the chosen field and reflects the server update", async () => {
+  await openWorkspace();
+  const socket = TestSocket.current;
+  const item = { ...goal, locked_fields: '["priority","layout_pos"]' };
+  socket.receive({ type: "ITEM_UPSERT", seq: 2, item });
+  const inspector = inspect(goal.title);
+  fireEvent.click(inspector.getByRole("button", { name: "Unlock priority" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "UPDATE_ITEM",
+    input: { item_id: goal.id, unlock: "priority" },
+  });
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 3,
+    item: { ...goal, locked_fields: '["layout_pos"]' },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 4,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  expect(
+    inspector.queryByRole("button", { name: "Unlock priority" }),
+  ).toBeNull();
+  expect(
+    inspector.getByRole("button", { name: "Unlock canvas position" }),
+  ).toBeTruthy();
+});
+
+it("adds a goal with workspace-local time and explains the child depth cap", async () => {
+  await openWorkspace();
+  const socket = TestSocket.current;
+  const leaf = {
+    ...tomorrow,
+    title: "Verify the backlog",
+    parent_id: child.id,
+    depth: 3 as const,
+  };
+  socket.receive({
+    ...snapshot,
+    seq: 2,
+    items: [goal, child, leaf],
+    settings: { ...snapshot.settings, timezone: "America/New_York" },
+  });
+  const inspector = inspect(leaf.title);
+  expect(
+    inspector.getByText(
+      "This item is a sub-task. Add another sub-task under its parent.",
+    ),
+  ).toBeTruthy();
+  expect(
+    inspector.queryByRole("button", { name: "Add child item" }),
+  ).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "+ Goal" }));
+  const dialog = within(screen.getByRole("dialog", { name: "Add a goal" }));
+  fireEvent.change(dialog.getByLabelText("Title"), {
+    target: { value: "Plan the rollout" },
+  });
+  fireEvent.change(dialog.getByLabelText("Schedule"), {
+    target: { value: "2024-04-04" },
+  });
+  fireEvent.change(dialog.getByLabelText("Time type"), {
+    target: { value: "fixed" },
+  });
+  fireEvent.change(dialog.getByLabelText("Fixed time (America/New_York)"), {
+    target: { value: "2024-04-04T09:15" },
+  });
+  fireEvent.click(dialog.getByRole("button", { name: "Add goal" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "ADD_ITEM",
+    input: {
+      title: "Plan the rollout",
+      project: "inbox",
+      scheduled_on: "2024-04-04",
+      time_type: "fixed",
+      time_at: "2024-04-04T13:15:00.000Z",
+    },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 3,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+
+  const parent = inspect(child.title);
+  fireEvent.click(parent.getByRole("button", { name: "Add child item" }));
+  const childForm = within(
+    screen.getByRole("dialog", { name: "Add child item" }),
+  );
+  fireEvent.change(childForm.getByLabelText("Title"), {
+    target: { value: "Check retry metrics" },
+  });
+  fireEvent.click(childForm.getByRole("button", { name: "Add child" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "ADD_ITEM",
+    input: { title: "Check retry metrics", parent_id: child.id },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 4,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+});
+
+it("enforces the guidance limit and applies settings broadcasts to an open editor", async () => {
+  await openWorkspace();
+  fireEvent.click(screen.getByRole("button", { name: "Guidance" }));
+  const editor = within(screen.getByRole("dialog", { name: "Guidance" }));
+  const textarea = editor.getByLabelText("Instructions for your agents");
+  const save = editor.getByRole("button", {
+    name: "Save guidance",
+  }) as HTMLButtonElement;
+  const socket = TestSocket.current;
+
+  socket.receive({
+    type: "SETTINGS_UPDATE",
+    seq: 2,
+    settings: {
+      ...snapshot.settings,
+      guidance: "Prioritize billing.",
+      guidance_updated_at: "2024-04-03T12:00:00Z",
+    },
+  });
+  expect((textarea as HTMLTextAreaElement).value).toBe("Prioritize billing.");
+  expect(editor.getByText(/^Updated /)).toBeTruthy();
+
+  fireEvent.change(textarea, { target: { value: "🌱".repeat(2001) } });
+  expect(editor.getByText("2,001 / 2,000")).toBeTruthy();
+  expect(save.disabled).toBe(true);
+  fireEvent.submit(save.form!);
+  expect(socket.send).not.toHaveBeenCalled();
+
+  const text = "🌱".repeat(2000);
+  fireEvent.change(textarea, { target: { value: text } });
+  expect(save.disabled).toBe(false);
+  fireEvent.click(save);
+  expect(socket.latestRequest()).toMatchObject({
+    type: "SET_GUIDANCE",
+    input: { text },
+  });
+  socket.receive({
+    type: "SETTINGS_UPDATE",
+    seq: 3,
+    settings: {
+      ...snapshot.settings,
+      guidance: text,
+      guidance_updated_at: "2024-04-03T12:01:00Z",
+    },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 4,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  expect(editor.getByText("Guidance saved.")).toBeTruthy();
+});
+
+it("shows the token and MCP config once and lists only metadata afterward", async () => {
+  await openWorkspace();
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal(
+    "navigator",
+    Object.assign({}, navigator, { clipboard: { writeText } }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  let settings = within(screen.getByRole("dialog", { name: "Settings" }));
+  await settings.findByText("No API tokens yet.");
+  fireEvent.change(settings.getByLabelText("Label"), {
+    target: { value: "Build reporter" },
+  });
+  fireEvent.change(settings.getByLabelText("Scope"), {
+    target: { value: "steer" },
+  });
+  fireEvent.change(settings.getByLabelText("Default project"), {
+    target: { value: project.id },
+  });
+  fireEvent.click(settings.getByRole("button", { name: "Create token" }));
+  const socket = TestSocket.current;
+  expect(socket.latestRequest()).toMatchObject({
+    type: "CREATE_TOKEN",
+    input: {
+      label: "Build reporter",
+      scope: "steer",
+      default_project_id: project.id,
+    },
+  });
+  const metadata = {
+    id: "token-id",
+    label: "Build reporter",
+    scope: "steer",
+    default_project_id: project.id,
+    last_used_at: null,
+    created_at: goal.created_at,
+  } as const;
+  const token = "example-plaintext-for-test";
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 2,
+      requestId: socket.latestRequest().requestId,
+      createdToken: { ...metadata, token },
+    }),
+  );
+  expect(settings.getByDisplayValue(token)).toBeTruthy();
+  const config = settings.getByLabelText(
+    /Claude Code MCP config/,
+  ) as HTMLTextAreaElement;
+  expect(JSON.parse(config.value).mcpServers.heed).toMatchObject({
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  fireEvent.click(settings.getByRole("button", { name: "Copy token" }));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith(token));
+  await settings.findByText("Token copied.");
+  fireEvent.click(settings.getByRole("button", { name: "Done" }));
+  expect(settings.queryByDisplayValue(token)).toBeNull();
+  expect(settings.getByText(metadata.label)).toBeTruthy();
+
+  fireEvent.click(settings.getByRole("button", { name: "Close" }));
+  fetchSession.mockImplementation(async () => Response.json([metadata]));
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  settings = within(screen.getByRole("dialog", { name: "Settings" }));
+  expect(await settings.findByText(metadata.label)).toBeTruthy();
+  expect(settings.queryByDisplayValue(token)).toBeNull();
+  expect(settings.queryByLabelText(/Claude Code MCP config/)).toBeNull();
 });

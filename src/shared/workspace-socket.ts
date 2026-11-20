@@ -1,18 +1,68 @@
 import { z } from "zod";
 import {
+  AddItemSchema,
+  FlagHandoffSchema,
   ItemIdSchema,
+  ReopenItemSchema,
+  ReportProgressSchema,
+  SetDependencySchema,
   SetStatusBodySchema,
   UpdateItemSchema,
 } from "./item-operations";
 import { GuidanceBodySchema, TimezoneBodySchema } from "./human-api";
-import { UpdateProjectSchema } from "./workspace";
-import type { Dependency, Item, Project, Settings } from "./workspace";
+import {
+  CreateProjectSchema,
+  CreateTokenSchema,
+  UpdateProjectSchema,
+} from "./workspace";
+import type {
+  Dependency,
+  Item,
+  Project,
+  Settings,
+  TokenMetadata,
+} from "./workspace";
 
 export const SocketRequestIdSchema = z.string().min(1).max(128);
+const resourceId = z.string().min(1);
+
+export const MoveProjectSchema = z.strictObject({
+  project_id: resourceId,
+  direction: z.enum(["up", "down"]),
+});
+
+function mutation<Type extends string, Input extends z.ZodType>(
+  type: Type,
+  input: Input,
+) {
+  return z.strictObject({
+    type: z.literal(type),
+    requestId: SocketRequestIdSchema,
+    input,
+  });
+}
+
+export type CreatedToken = TokenMetadata & { token: string };
 
 // Reordering, rescheduling and positioning use the same fields as HTTP item edits.
 export const SocketRequestSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("GET_SNAPSHOT") }),
+  mutation("ADD_ITEM", AddItemSchema),
+  mutation("DELETE_ITEM", ItemIdSchema),
+  mutation("REOPEN_ITEM", ReopenItemSchema),
+  mutation("FLAG_HANDOFF", FlagHandoffSchema.omit({ notify: true })),
+  mutation("CLEAR_HANDOFF", ItemIdSchema),
+  mutation("SET_DEPENDENCY", SetDependencySchema),
+  mutation(
+    "SET_NOTE",
+    ItemIdSchema.extend({ note: ReportProgressSchema.shape.note.unwrap() }),
+  ),
+  mutation("CREATE_PROJECT", CreateProjectSchema),
+  mutation("MOVE_PROJECT", MoveProjectSchema),
+  mutation("DELETE_PROJECT", z.strictObject({ project_id: resourceId })),
+  mutation("SET_TIMEZONE", TimezoneBodySchema),
+  mutation("CREATE_TOKEN", CreateTokenSchema),
+  mutation("REVOKE_TOKEN", z.strictObject({ token_id: resourceId })),
   z.strictObject({
     type: z.literal("UPDATE_ITEM"),
     requestId: SocketRequestIdSchema,
@@ -61,7 +111,7 @@ export type WorkspaceMessage =
   | { type: "PROJECT_REMOVE"; project_id: string }
   | { type: "DEPENDENCY_ADD" | "DEPENDENCY_REMOVE"; dependency: Dependency }
   | { type: "SETTINGS_UPDATE"; settings: Settings }
-  | { type: "ACK"; requestId: string }
+  | { type: "ACK"; requestId: string; createdToken?: CreatedToken }
   | {
       type: "ERROR";
       requestId: string | null;
