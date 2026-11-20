@@ -13,6 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Check documentation links
+        uses: lycheeverse/lychee-action@v2.9.0
+        with:
+          # The deploy link hands off to the authenticated Cloudflare dashboard.
+          args: >-
+            --no-progress --exclude-loopback --include-fragments=anchor-only
+            --exclude '^https://deploy\.workers\.cloudflare\.com/\?url='
+            README.md 'docs/**/*.md'
       - uses: actions/setup-node@v6
         with:
           node-version: 22
