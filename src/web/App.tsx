@@ -123,9 +123,9 @@ function Workspace({
   const [selectedId, select] = useState<string | null>(null);
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [hiddenOnly, setHiddenOnly] = useState(false);
-  const [panel, setPanel] = useState<
-    "guidance" | "settings" | "goal" | "child" | null
-  >(null);
+  const [panel, setPanel] = useState<{
+    kind: "guidance" | "settings" | "goal" | "child";
+  } | null>(null);
   const clock = useMinuteClock();
   const view = useMemo(() => workspaceView(state), [state]);
   const {
@@ -159,6 +159,7 @@ function Workspace({
         .sort((a, b) => a.title.localeCompare(b.title))
         .map((item) => ({ item, children: [] }))
     : [];
+  // A save can finish after the same kind of panel has been reopened.
   const closePanel = () =>
     setPanel((current) => (current === panel ? null : current));
   const hasStreamRows = STREAM_BANDS.some((band) => bands[band].length > 0);
@@ -242,14 +243,14 @@ function Workspace({
             type="button"
             className="subtle"
             disabled={!state.settings}
-            onClick={() => setPanel("guidance")}
+            onClick={() => setPanel({ kind: "guidance" })}
           >
             Guidance
           </button>
           <button
             type="button"
             className="subtle"
-            onClick={() => setPanel("settings")}
+            onClick={() => setPanel({ kind: "settings" })}
           >
             Settings
           </button>
@@ -282,7 +283,7 @@ function Workspace({
               type="button"
               className="primary"
               disabled={!live}
-              onClick={() => setPanel("goal")}
+              onClick={() => setPanel({ kind: "goal" })}
             >
               + Goal
             </button>
@@ -327,7 +328,7 @@ function Workspace({
               close={() =>
                 select((current) => (current === inspected.id ? null : current))
               }
-              addChild={() => setPanel("child")}
+              addChild={() => setPanel({ kind: "child" })}
             />
           )}
         </section>
@@ -397,7 +398,7 @@ function Workspace({
           </div>
         </section>
       </main>
-      {panel === "guidance" && state.settings && (
+      {panel?.kind === "guidance" && state.settings && (
         <Guidance
           settings={state.settings}
           live={live}
@@ -405,7 +406,7 @@ function Workspace({
           close={closePanel}
         />
       )}
-      {panel === "settings" && (
+      {panel?.kind === "settings" && (
         <Settings
           projects={projects}
           items={state.items}
@@ -416,10 +417,10 @@ function Workspace({
           close={closePanel}
         />
       )}
-      {(panel === "goal" || panel === "child") && (
+      {(panel?.kind === "goal" || panel?.kind === "child") && (
         <QuickAdd
-          parent={panel === "child" ? inspected : undefined}
-          parentMissing={panel === "child" && !inspected}
+          parent={panel.kind === "child" ? inspected : undefined}
+          parentMissing={panel.kind === "child" && !inspected}
           projects={projects}
           timezone={timezone}
           live={live}

@@ -225,7 +225,7 @@ function Projects({
       >
         <label className="form-field">
           New project name
-          <input name="name" required />
+          <input name="name" required disabled={busy} />
         </label>
         <button className="primary" disabled={!live || busy}>
           Create project
@@ -489,6 +489,7 @@ function Account({
           <input
             value={draft ?? timezone}
             required
+            disabled={busy}
             placeholder="Europe/Tallinn"
             onChange={(event) => setDraft(event.target.value)}
           />

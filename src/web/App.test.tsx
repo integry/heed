@@ -99,8 +99,9 @@ async function openWorkspace(registry?: readonly [Lens, ...Lens[]]) {
       ? Response.json({ workspaceId: "default", email: "person@example.test" })
       : Response.json([]),
   );
+  const previousSocket = TestSocket.current;
   const view = render(<App registry={registry} />);
-  await screen.findByRole("heading", { name: "Horizon Stream" });
+  await waitFor(() => expect(TestSocket.current).not.toBe(previousSocket));
   TestSocket.current.receive(snapshot);
   return view;
 }
@@ -585,6 +586,46 @@ it("adds a goal with workspace-local time and explains the child depth cap", asy
   );
 });
 
+it.each([
+  { dialogName: "Add a goal", openName: "+ Goal", submitName: "Add goal" },
+  {
+    dialogName: "Add child item",
+    openName: "Add child item",
+    submitName: "Add child",
+  },
+])(
+  "keeps a reopened $dialogName draft when the first save completes",
+  async ({ dialogName, openName, submitName }) => {
+    await openWorkspace();
+    if (submitName === "Add child") inspect(goal.title);
+    const open = screen.getByRole("button", { name: openName });
+    fireEvent.click(open);
+    const first = within(screen.getByRole("dialog", { name: dialogName }));
+    fireEvent.change(first.getByLabelText("Title"), {
+      target: { value: "First draft" },
+    });
+    fireEvent.click(first.getByRole("button", { name: submitName }));
+    const socket = TestSocket.current;
+    const request = socket.latestRequest();
+    expect(request).toMatchObject({
+      type: "ADD_ITEM",
+      input: { title: "First draft" },
+    });
+
+    fireEvent.click(first.getByRole("button", { name: "Close" }));
+    fireEvent.click(open);
+    const reopened = screen.getByRole("dialog", { name: dialogName });
+    fireEvent.change(within(reopened).getByLabelText("Title"), {
+      target: { value: "New draft" },
+    });
+    await act(async () =>
+      socket.receive({ type: "ACK", seq: 2, requestId: request.requestId }),
+    );
+    expect(screen.getByRole("dialog", { name: dialogName })).toBe(reopened);
+    expect(within(reopened).getByDisplayValue("New draft")).toBeTruthy();
+  },
+);
+
 it("enforces the guidance limit and applies settings broadcasts to an open editor", async () => {
   await openWorkspace();
   fireEvent.click(screen.getByRole("button", { name: "Guidance" }));
@@ -638,6 +679,79 @@ it("enforces the guidance limit and applies settings broadcasts to an open edito
     }),
   );
   expect(editor.getByText("Guidance saved.")).toBeTruthy();
+});
+
+it("locks the timezone draft until its save is acknowledged", async () => {
+  await openWorkspace();
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  const account = within(
+    screen.getByRole("region", { name: "Workspace and account" }),
+  );
+  const input = account.getByLabelText(
+    "Workspace timezone",
+  ) as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "Europe/Tallinn" } });
+  fireEvent.click(account.getByRole("button", { name: "Save timezone" }));
+  const socket = TestSocket.current;
+  const request = socket.latestRequest();
+  expect(request).toMatchObject({
+    type: "SET_TIMEZONE",
+    input: { timezone: "Europe/Tallinn" },
+  });
+  expect(input.disabled).toBe(true);
+  socket.receive({
+    type: "SETTINGS_UPDATE",
+    seq: 2,
+    settings: { ...snapshot.settings, timezone: "Europe/Tallinn" },
+  });
+  expect(input.disabled).toBe(true);
+  await act(async () =>
+    socket.receive({ type: "ACK", seq: 3, requestId: request.requestId }),
+  );
+  expect(input.disabled).toBe(false);
+  expect(input.value).toBe("Europe/Tallinn");
+});
+
+it("locks the new project name until creation succeeds or fails", async () => {
+  await openWorkspace();
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  const projects = within(screen.getByRole("region", { name: "Projects" }));
+  const input = projects.getByLabelText("New project name") as HTMLInputElement;
+  const submit = projects.getByRole("button", { name: "Create project" });
+  fireEvent.change(input, { target: { value: "Release planning" } });
+  fireEvent.click(submit);
+  const socket = TestSocket.current;
+  const request = socket.latestRequest();
+  expect(request).toMatchObject({
+    type: "CREATE_PROJECT",
+    input: { name: "Release planning" },
+  });
+  expect(input.disabled).toBe(true);
+  await act(async () =>
+    socket.receive({
+      type: "ERROR",
+      seq: 2,
+      requestId: request.requestId,
+      error: { code: "invalid_input", message: "Try a different name." },
+    }),
+  );
+  expect(input.disabled).toBe(false);
+  expect(input.value).toBe("Release planning");
+
+  fireEvent.change(input, { target: { value: "Launch planning" } });
+  fireEvent.click(submit);
+  const retry = socket.latestRequest();
+  expect(input.disabled).toBe(true);
+  socket.receive({
+    type: "PROJECT_UPSERT",
+    seq: 3,
+    project: { ...project, id: "launch", name: "Launch planning", sort: 1 },
+  });
+  await act(async () =>
+    socket.receive({ type: "ACK", seq: 4, requestId: retry.requestId }),
+  );
+  expect(input.disabled).toBe(false);
+  expect(input.value).toBe("");
 });
 
 it("shows the token and MCP config once and lists only metadata afterward", async () => {
