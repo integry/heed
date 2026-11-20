@@ -1,6 +1,6 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import type { Actor } from "../shared/item-operations";
 import { INBOX_PROJECT_ID, ItemSchema } from "../shared/workspace";
 import type { Event, Item } from "../shared/workspace";
@@ -29,6 +29,23 @@ async function events(stub: ReturnType<typeof newWorkspace>, itemId: string) {
       .exec<Event>("SELECT * FROM events WHERE item_id = ? ORDER BY id", itemId)
       .toArray(),
   );
+}
+
+const pushEndpoint = "https://push.example.test/subscription";
+
+async function subscribeForTest(stub: ReturnType<typeof newWorkspace>) {
+  const keys = {
+    p256dh:
+      "BFLfBq-L-72mUAuH3nwpAGqQ9De5_ftgxlUkdf45jGf4nFaueFozpviheT9ZOXjpRQSKpem_-p5GIt0XjVw8rJE",
+    auth: "dscFXAila4MdiAUf94O-hQ",
+  };
+  await runInDurableObject(stub, (_, { storage: { sql } }) => {
+    sql.exec(
+      "INSERT INTO push_subscriptions (endpoint, keys) VALUES (?, ?)",
+      pushEndpoint,
+      JSON.stringify(keys),
+    );
+  });
 }
 
 it("creates items in Inbox, the actor default, the explicit project or the parent's project", async () => {
@@ -202,7 +219,7 @@ it("validates actors, partial fields, dates, selectors and text limits", async (
   ).toMatchObject({ time_at: null, ref_url: null, time_type: "deadline" });
   await stub.reportProgress(reporter, { item_id, note: "🙂".repeat(280) });
 
-  await runInDurableObject(stub, (workspace) => {
+  await runInDurableObject(stub, async (workspace) => {
     expect(() => workspace.addItem(human, { title: "x".repeat(201) })).toThrow(
       "at most 200 characters",
     );
@@ -215,9 +232,9 @@ it("validates actors, partial fields, dates, selectors and text limits", async (
     expect(() =>
       workspace.reportProgress(reporter, { item_id, note: "x".repeat(281) }),
     ).toThrow("at most 280 characters");
-    expect(() =>
+    await expect(
       workspace.flagHandoff(reporter, { item_id, note: "x".repeat(281) }),
-    ).toThrow("at most 280 characters");
+    ).rejects.toThrow("at most 280 characters");
     expect(() => workspace.reportProgress(reporter, {})).toThrow("exactly one");
     expect(() =>
       workspace.reportProgress(reporter, { item_id, external_key: "key" }),
@@ -629,6 +646,154 @@ it("records handoff requests and notification intent and restricts clearing to h
     },
     { actor: steer.name, handoff: false, note: null, notify: false },
   ]);
+});
+
+it("sends Web Push only when an agent requests notification and records provider acceptance", async () => {
+  const stub = newWorkspace();
+  const { item_id } = await stub.addItem(human, { title: "Rollout" });
+  await subscribeForTest(stub);
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async () => new Response(null, { status: 201 }));
+  onTestFinished(() => fetchMock.mockRestore());
+
+  await stub.flagHandoff(reporter, { item_id, note: "Review rollout" });
+  const note = "Approve rollout";
+  await stub.flagHandoff(reporter, { item_id, note, notify: false });
+  await stub.flagHandoff(human, { item_id, note, notify: true });
+  expect(fetchMock).not.toHaveBeenCalled();
+
+  const result = await stub.flagHandoff(reporter, {
+    item_id,
+    note,
+    notify: true,
+  });
+  expect(result.items).toEqual([]);
+  expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+    pushEndpoint,
+    expect.objectContaining({
+      method: "post",
+      headers: expect.objectContaining({
+        "content-encoding": "aes128gcm",
+        authorization: expect.stringMatching(/^vapid t=/),
+      }),
+      body: expect.any(Uint8Array),
+      redirect: "error",
+    }),
+  );
+  const log = await events(stub, item_id);
+  expect(log.filter(({ kind }) => kind === "notified")).toEqual([
+    expect.objectContaining({
+      actor: reporter.name,
+      detail: JSON.stringify({
+        title: "Rollout",
+        body: note,
+        url: `/?item=${item_id}`,
+      }),
+    }),
+  ]);
+});
+
+it("keeps the handoff and reports failure when the push service rejects it", async () => {
+  const stub = newWorkspace();
+  const { item_id } = await stub.addItem(human, { title: "Rollout" });
+  await subscribeForTest(stub);
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async () => new Response(null, { status: 503 }));
+  onTestFinished(() => fetchMock.mockRestore());
+
+  await runInDurableObject(stub, async (workspace) => {
+    await expect(
+      workspace.flagHandoff(steer, {
+        item_id,
+        note: "Approve rollout",
+        notify: true,
+      }),
+    ).rejects.toThrow("Handoff recorded, but Web Push failed");
+  });
+  const log = await events(stub, item_id);
+  expect(log.map(({ kind }) => kind)).toEqual(["created", "handoff"]);
+  expect(JSON.parse(log[1].detail!)).toMatchObject({
+    handoff: true,
+    notify: true,
+  });
+});
+
+it.each(["clear handoff", "remove subscription"] as const)(
+  "skips a push if a concurrent mutation can %s during preparation",
+  async (change) => {
+    const stub = newWorkspace();
+    const { item_id } = await stub.addItem(human, { title: "Rollout" });
+    await subscribeForTest(stub);
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response(null, { status: 201 }));
+    onTestFinished(() => fetchMock.mockRestore());
+    await runInDurableObject(stub, async (workspace, { storage: { sql } }) => {
+      const sign = crypto.subtle.sign.bind(crypto.subtle);
+      const signMock = vi
+        .spyOn(crypto.subtle, "sign")
+        .mockImplementationOnce(async (...args) => {
+          if (change === "clear handoff") {
+            workspace.clearHandoff(steer, { item_id });
+          } else {
+            sql.exec(
+              "DELETE FROM push_subscriptions WHERE endpoint = ?",
+              pushEndpoint,
+            );
+          }
+          return sign(...args);
+        });
+      try {
+        await workspace.flagHandoff(reporter, {
+          item_id,
+          note: "Approve rollout",
+          notify: true,
+        });
+        expect(signMock).toHaveBeenCalled();
+      } finally {
+        signMock.mockRestore();
+      }
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((await events(stub, item_id)).map(({ kind }) => kind)).not.toContain(
+      "notified",
+    );
+  },
+);
+
+it("handles item deletion after the push request starts", async () => {
+  const stub = newWorkspace();
+  const { item_id } = await stub.addItem(human, { title: "Rollout" });
+  await subscribeForTest(stub);
+  await runInDurableObject(stub, async (workspace, { storage: { sql } }) => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        expect(
+          sql
+            .exec(
+              "SELECT kind FROM events WHERE item_id = ? ORDER BY id",
+              item_id,
+            )
+            .toArray(),
+        ).toEqual([{ kind: "created" }, { kind: "handoff" }]);
+        workspace.deleteItem(human, { item_id });
+        return new Response(null, { status: 201 });
+      });
+    try {
+      await workspace.flagHandoff(reporter, {
+        item_id,
+        note: "Approve rollout",
+        notify: true,
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+  expect(await events(stub, item_id)).toEqual([]);
 });
 
 it("reopens old history, records the reason and increments the count across cancellations", async () => {

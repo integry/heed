@@ -1,3 +1,5 @@
+import { buildPushPayload } from "@block65/webcrypto-web-push";
+import type { PushSubscription } from "@block65/webcrypto-web-push";
 import { DurableObject } from "cloudflare:workers";
 import type { ZodType } from "zod";
 import {
@@ -71,6 +73,11 @@ const MOVE_FIELDS = ["scheduled_on", "project_id", "parent_id"] as const;
 
 type ItemPatch = Partial<Omit<Item, "id" | "created_at" | "updated_at">>;
 type ItemEdit = Partial<AddItemInput & UpdateItemInput>;
+type WorkspaceEnv = Env & {
+  VAPID_SUBJECT?: string;
+  VAPID_SERVER_PUBLIC_KEY?: string;
+  VAPID_SERVER_PRIVATE_KEY?: string;
+};
 type Mutation = {
   actor: Actor;
   now: Date;
@@ -107,10 +114,10 @@ function timestamp(value: string): number {
   );
 }
 
-export class Workspace extends DurableObject<Env> {
+export class Workspace extends DurableObject<WorkspaceEnv> {
   readonly #sql: SqlStorage;
 
-  constructor(ctx: DurableObjectState, env: Env) {
+  constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
     void ctx.blockConcurrencyWhile(async () => {
@@ -329,20 +336,31 @@ export class Workspace extends DurableObject<Env> {
     });
   }
 
-  flagHandoff(actor: Actor, input: FlagHandoffInput): ItemOperationResult {
+  async flagHandoff(
+    actor: Actor,
+    input: FlagHandoffInput,
+  ): Promise<ItemOperationResult> {
     const data = parseInput(FlagHandoffSchema, input);
-    return this.#mutateItems(actor, (mutation) => {
+    let notifyAs: string | undefined;
+    const result = this.#mutateItems(actor, (mutation) => {
       const item = this.#requireItem(data);
+      if (data.notify === true && mutation.actor.kind === "agent") {
+        notifyAs = mutation.actor.name;
+      }
       this.#saveItem(
         mutation,
         item,
         { handoff: 1, handoff_note: data.note },
         {
-          notify: data.notify ?? false,
+          notify: notifyAs !== undefined,
         },
       );
       return item.id;
     });
+    if (notifyAs !== undefined) {
+      await this.#notifyHandoff(notifyAs, data.item_id, data.note);
+    }
+    return result;
   }
 
   clearHandoff(actor: Actor, input: ItemIdInput): ItemOperationResult {
@@ -433,6 +451,89 @@ export class Workspace extends DurableObject<Env> {
       return item_id;
     });
     return { ...result, dependency: changed ? data : null };
+  }
+
+  async #notifyHandoff(
+    actorName: string,
+    itemId: string,
+    note: string,
+  ): Promise<void> {
+    const subscriptions = this.#sql
+      .exec<{ endpoint: string; keys: string }>(
+        "SELECT endpoint, keys FROM push_subscriptions",
+      )
+      .toArray();
+    if (!subscriptions.length) return;
+
+    const handoffId = this.#latestHandoffId(itemId);
+    const item = this.#requireItem({ item_id: itemId });
+    const data = {
+      title: item.title,
+      body: note,
+      url: `/?item=${encodeURIComponent(itemId)}`,
+    };
+    const vapid = {
+      subject: this.env.VAPID_SUBJECT,
+      publicKey: this.env.VAPID_SERVER_PUBLIC_KEY,
+      privateKey: this.env.VAPID_SERVER_PRIVATE_KEY,
+    };
+
+    const attempts = await Promise.allSettled(
+      subscriptions.map(async ({ endpoint, keys }) => {
+        const subscription: PushSubscription = {
+          endpoint,
+          expirationTime: null,
+          keys: JSON.parse(keys),
+        };
+        const payload = await buildPushPayload({ data }, subscription, vapid);
+        await this.ctx.storage.sync();
+
+        // A handoff or subscription can change while the payload is prepared.
+        const stillSubscribed = this.#sql
+          .exec(
+            "SELECT 1 FROM push_subscriptions WHERE endpoint = ? AND keys = ?",
+            endpoint,
+            keys,
+          )
+          .toArray().length;
+        if (!stillSubscribed || this.#latestHandoffId(itemId) !== handoffId)
+          return;
+
+        const response = await fetch(endpoint, {
+          ...payload,
+          redirect: "error",
+        });
+        void response.body?.cancel().catch(() => {});
+        if (response.status !== 201) throw new Error("Web Push rejected");
+        return true;
+      }),
+    );
+    if (
+      attempts.some(
+        (attempt) => attempt.status === "fulfilled" && attempt.value,
+      )
+    ) {
+      // The item may have been deleted after the request reached the provider.
+      this.#sql.exec(
+        `INSERT INTO events (item_id, at, actor, kind, detail)
+         SELECT id, ?, ?, 'notified', ? FROM items WHERE id = ?`,
+        new Date().toISOString(),
+        actorName,
+        JSON.stringify(data),
+        itemId,
+      );
+    } else if (attempts.some((attempt) => attempt.status === "rejected")) {
+      throw new Error("Handoff recorded, but Web Push failed");
+    }
+  }
+
+  #latestHandoffId(itemId: string): number | undefined {
+    return this.#sql
+      .exec<{ id: number }>(
+        "SELECT id FROM events WHERE item_id = ? AND kind = 'handoff' ORDER BY id DESC LIMIT 1",
+        itemId,
+      )
+      .toArray()[0]?.id;
   }
 
   #mutateItems(
