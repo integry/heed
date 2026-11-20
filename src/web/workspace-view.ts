@@ -1,5 +1,6 @@
 import {
   agentsLive,
+  isBlocked,
   isGhost,
   isLive,
   isStale,
@@ -11,6 +12,7 @@ import {
   type StreamRow,
 } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
+import type { Dependency } from "../shared/workspace";
 import type { WorkspaceData } from "./workspace-state";
 
 export function selectWorkspace(
@@ -80,10 +82,16 @@ export function selectWorkspace(
   };
 }
 
-export function itemStatus(item: CanvasItem, now: number) {
+export function itemStatus(
+  item: CanvasItem,
+  now: number,
+  items: WorkspaceData["items"],
+  dependencies: readonly Dependency[],
+) {
   if (item.status === "done") return "Done";
   if (item.handoff) return "Needs input";
   if (isStale(item, now)) return "Stale";
+  if (isBlocked(item, items, dependencies)) return "Blocked";
   if (isLive(item, now)) return "Live";
-  return item.status === "blocked" ? "Blocked" : "Queued";
+  return "Queued";
 }

@@ -122,6 +122,49 @@ it("cross-highlights nested and banded rows, and hides them when the project is 
   });
 });
 
+it("shows a nested List item as blocked by a hidden item until it completes", async () => {
+  await openWorkspace();
+  const socket = TestSocket.current;
+  const blocker = { ...goal, id: "blocker", hidden: 1 as const };
+  const dependency = { item_id: tomorrow.id, blocked_by_id: blocker.id };
+  const list = within(screen.getByRole("region", { name: "List" }));
+
+  socket.receive({
+    ...snapshot,
+    seq: 2,
+    items: [...snapshot.items, blocker],
+    dependencies: [dependency],
+  });
+  const row = within(
+    list.getByRole("button", { name: new RegExp(tomorrow.title) }),
+  );
+  expect(row.getByText("Blocked")).toBeTruthy();
+
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 3,
+    item: { ...blocker, status: "done", completed_at: "2024-04-03T12:00:00Z" },
+  });
+  expect(row.getByText("Queued")).toBeTruthy();
+});
+
+it("updates List status when a dependency is added or removed live", async () => {
+  await openWorkspace();
+  const socket = TestSocket.current;
+  const dependency = { item_id: goal.id, blocked_by_id: tomorrow.id };
+  const list = within(screen.getByRole("region", { name: "List" }));
+  const row = within(
+    list.getByRole("button", { name: new RegExp(goal.title) }),
+  );
+  expect(row.getByText("Queued")).toBeTruthy();
+
+  socket.receive({ type: "DEPENDENCY_ADD", seq: 2, dependency });
+  expect(row.getByText("Blocked")).toBeTruthy();
+
+  socket.receive({ type: "DEPENDENCY_REMOVE", seq: 3, dependency });
+  expect(row.getByText("Queued")).toBeTruthy();
+});
+
 it("switches registered lenses, retains the selection and remembers the lens on reload", async () => {
   const detail: Lens = {
     id: "detail",

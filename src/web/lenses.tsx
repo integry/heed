@@ -1,12 +1,14 @@
 import type { ComponentType } from "react";
 import type { StreamRow } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
-import type { Project } from "../shared/workspace";
+import type { Dependency, Project } from "../shared/workspace";
 import { itemStatus } from "./workspace-view";
 
 export interface LensProps {
   tree: readonly StreamRow<CanvasItem>[];
   projects: readonly Project[];
+  items: ReadonlyMap<string, CanvasItem>;
+  dependencies: readonly Dependency[];
   selectedId: string | null;
   now: number;
   select: (id: string | null) => void;
@@ -24,14 +26,16 @@ export interface Lens {
 
 function ListRows({
   tree,
-  selectedId,
-  now,
-  select,
-}: Pick<LensProps, "tree" | "selectedId" | "now" | "select">) {
+  ...rowProps
+}: Pick<
+  LensProps,
+  "tree" | "items" | "dependencies" | "selectedId" | "now" | "select"
+>) {
+  const { items, dependencies, selectedId, now, select } = rowProps;
   return (
     <ul className="item-list">
       {tree.map(({ item, children }) => {
-        const status = itemStatus(item, now);
+        const status = itemStatus(item, now, items, dependencies);
         return (
           <li key={item.id}>
             <button
@@ -45,14 +49,7 @@ function ListRows({
                 {status}
               </span>
             </button>
-            {children.length > 0 && (
-              <ListRows
-                tree={children}
-                selectedId={selectedId}
-                now={now}
-                select={select}
-              />
-            )}
+            {children.length > 0 && <ListRows tree={children} {...rowProps} />}
           </li>
         );
       })}
@@ -60,7 +57,15 @@ function ListRows({
   );
 }
 
-function ListLens({ tree, projects, selectedId, now, select }: LensProps) {
+function ListLens({
+  tree,
+  projects,
+  items,
+  dependencies,
+  selectedId,
+  now,
+  select,
+}: LensProps) {
   if (!tree.length) return <p className="empty">No items in this view.</p>;
   return projects.map(({ id, name }) => {
     const rows = tree.filter(({ item }) => item.project_id === id);
@@ -70,6 +75,8 @@ function ListLens({ tree, projects, selectedId, now, select }: LensProps) {
         <h3>{name}</h3>
         <ListRows
           tree={rows}
+          items={items}
+          dependencies={dependencies}
           selectedId={selectedId}
           now={now}
           select={select}

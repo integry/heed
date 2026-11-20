@@ -345,6 +345,8 @@ function Workspace({
             <LensComponent
               tree={tree}
               projects={projects}
+              items={view.items}
+              dependencies={[...view.dependencies.values()]}
               selectedId={selection}
               now={now}
               select={select}
