@@ -120,7 +120,6 @@ function Activity({ item, timezone }: { item: Item; timezone: string }) {
 
 type DetailDraft = {
   project: string;
-  tags: string;
   priority: number;
   schedule: string;
   timeType: TimeType;
@@ -159,13 +158,17 @@ export function Inspector({
   const [title, setTitle] = useState<string>();
   const [note, setNote] = useState<string>();
   const [details, setDetails] = useState<Partial<DetailDraft>>({});
+  const [tagDraft, setTagDraft] = useState<{
+    original: string;
+    values: string[];
+  }>();
+  const [newTag, setNewTag] = useState("");
   const [action, setAction] = useState<"handoff" | "reopen">();
   const [reason, setReason] = useState("");
   const [target, setTarget] = useState("");
   const { run, error, busy } = useAction();
   const baseline: DetailDraft = {
     project: item.project_id,
-    tags: (JSON.parse(item.tags) as string[]).join(", "),
     priority: item.priority,
     schedule: item.scheduled_on ?? "",
     timeType: item.time_type,
@@ -173,9 +176,18 @@ export function Inspector({
     link: item.ref_url ?? "",
   };
   const draft = { ...baseline, ...details };
-  const dirty = (Object.keys(details) as (keyof DetailDraft)[]).some(
-    (field) => draft[field] !== baseline[field],
-  );
+  const storedTags = JSON.parse(item.tags) as string[];
+  const tagValues = tagDraft?.values ?? storedTags;
+  const pendingTag = newTag.trim();
+  const tags = pendingTag ? [...tagValues, pendingTag] : tagValues;
+  const tagsChanged = JSON.stringify(tags) !== JSON.stringify(storedTags);
+  const tagConflict =
+    tagsChanged && tagDraft && tagDraft.original !== item.tags;
+  const dirty =
+    tagsChanged ||
+    (Object.keys(details) as (keyof DetailDraft)[]).some(
+      (field) => draft[field] !== baseline[field],
+    );
   const disabled = !live || busy;
   const terminal = item.status === "done" || item.status === "cancelled";
   const item_id = item.id;
@@ -209,6 +221,20 @@ export function Inspector({
     return save({ type: "UPDATE_ITEM", input: { item_id, ...patch } });
   }
 
+  function editTags(values: string[]) {
+    setTagDraft((previous) =>
+      JSON.stringify(values) === JSON.stringify(storedTags)
+        ? undefined
+        : { original: previous?.original ?? item.tags, values },
+    );
+  }
+
+  function addTag() {
+    if (!pendingTag) return;
+    editTags(tags);
+    setNewTag("");
+  }
+
   function saveDetails() {
     return run(async () => {
       const patch: Omit<UpdateItemInput, "item_id"> = {};
@@ -216,11 +242,6 @@ export function Inspector({
       if (draft.priority !== baseline.priority) patch.priority = draft.priority;
       if (draft.schedule !== baseline.schedule)
         patch.scheduled_on = draft.schedule || null;
-      if (draft.tags !== baseline.tags)
-        patch.tags = draft.tags
-          .split(",")
-          .map((tag) => tag.trim())
-          .filter(Boolean);
       if (draft.link !== baseline.link) {
         const value = draft.link.trim();
         if (value && !safeLink(value))
@@ -234,8 +255,15 @@ export function Inspector({
       } else if (draft.timeAt !== baseline.timeAt || !item.time_at) {
         patch.time_at = timeInputInstant(draft.timeAt, timezone);
       }
+      if (tagsChanged) {
+        patch.tags = tags;
+        // Keep the submitted list in the draft while waiting for confirmation.
+        editTags(tags);
+        setNewTag("");
+      }
       await update(patch);
       setDetails({});
+      setTagDraft(undefined);
     });
   }
 
@@ -427,7 +455,7 @@ export function Inspector({
           <form
             onSubmit={(event) => {
               event.preventDefault();
-              if (dirty) void saveDetails();
+              if (dirty && !disabled && !tagConflict) void saveDetails();
             }}
           >
             <fieldset className="form-stack" disabled={disabled}>
@@ -479,14 +507,78 @@ export function Inspector({
                   timezone={timezone}
                 />
               </div>
-              <label className="form-field">
-                Tags
-                <input
-                  value={draft.tags}
-                  placeholder="Comma-separated tags"
-                  onChange={(event) => edit("tags", event.target.value)}
-                />
-              </label>
+              <fieldset className="inspector-tags" disabled={tagConflict}>
+                <legend className="form-field">Tags</legend>
+                {tagValues.length > 0 && (
+                  <ul className="compact-list">
+                    {tagValues.map((tag, index) => (
+                      <li key={index}>
+                        <span>{tag || "(Empty tag)"}</span>
+                        <button
+                          type="button"
+                          className="subtle"
+                          aria-label={
+                            tag ? `Remove tag ${tag}` : "Remove empty tag"
+                          }
+                          onClick={() =>
+                            editTags(
+                              tagValues.filter(
+                                (_, position) => position !== index,
+                              ),
+                            )
+                          }
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="tag-input">
+                  <label className="form-field">
+                    New tag
+                    <input
+                      value={newTag}
+                      onChange={(event) => setNewTag(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (
+                          event.key !== "Enter" ||
+                          event.nativeEvent.isComposing
+                        )
+                          return;
+                        event.preventDefault();
+                        addTag();
+                      }}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="subtle"
+                    disabled={!pendingTag}
+                    onClick={addTag}
+                  >
+                    Add tag
+                  </button>
+                </div>
+              </fieldset>
+              {tagConflict && (
+                <div className="inline-actions">
+                  <p role="alert">
+                    Tags changed elsewhere. Reload tags to edit the current
+                    list.
+                  </p>
+                  <button
+                    type="button"
+                    className="subtle"
+                    onClick={() => {
+                      setTagDraft(undefined);
+                      setNewTag("");
+                    }}
+                  >
+                    Reload tags
+                  </button>
+                </div>
+              )}
               <label className="form-field">
                 Link
                 <input
@@ -498,7 +590,11 @@ export function Inspector({
               </label>
               {(dirty || link) && (
                 <div className="inline-actions">
-                  {dirty && <button className="subtle">Save details</button>}
+                  {dirty && (
+                    <button className="subtle" disabled={tagConflict}>
+                      Save details
+                    </button>
+                  )}
                   {link && (
                     <a href={link} target="_blank" rel="noreferrer">
                       Open link ↗

@@ -668,6 +668,16 @@ fieldset {
   gap: 10px;
   padding: 5px 0;
 }
+.inspector-tags li span {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.tag-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
 .note-form,
 .dependency-form {
   margin-top: 10px;

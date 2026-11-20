@@ -1061,6 +1061,98 @@ it("filters collapsible backlog project groups by tag", async () => {
   expect(stream.getByRole("button", { name: unplanned.title })).toBeTruthy();
 });
 
+it("preserves existing tag values and backlog membership when adding a tag", async () => {
+  await openWorkspace();
+  const existing = ["research, development", "  platform  ", "", "two\nlines"];
+  const item = {
+    ...goal,
+    scheduled_on: null,
+    tags: JSON.stringify(existing),
+  };
+  const socket = TestSocket.current;
+  socket.receive({ ...snapshot, seq: 2, items: [item] });
+  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+  fireEvent.click(stream.getByRole("button", { name: "Inbox 1" }));
+  const filter = stream.getByRole<HTMLSelectElement>("combobox", {
+    name: "Filter backlog by tag",
+  });
+  fireEvent.change(filter, { target: { value: existing[0] } });
+
+  const inspector = inspect(item.title);
+  fireEvent.change(inspector.getByRole("textbox", { name: "New tag" }), {
+    target: { value: "urgent" },
+  });
+  fireEvent.click(inspector.getByRole("button", { name: "Add tag" }));
+  fireEvent.click(inspector.getByRole("button", { name: "Save details" }));
+
+  const tags = [...existing, "urgent"];
+  const request = socket.latestRequest();
+  expect(request).toMatchObject({
+    type: "UPDATE_ITEM",
+    input: { item_id: item.id, tags },
+  });
+  expect(
+    inspector.getByRole("textbox", { name: "New tag" }).matches(":disabled"),
+  ).toBe(true);
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 3,
+    item: { ...item, tags: JSON.stringify(tags) },
+  });
+  await act(async () =>
+    socket.receive({ type: "ACK", requestId: request.requestId, seq: 4 }),
+  );
+  expect(filter.value).toBe(existing[0]);
+  expect(stream.getByRole("button", { name: item.title })).toBeTruthy();
+  expect(inspector.getByText("urgent")).toBeTruthy();
+  expect(inspector.queryByRole("button", { name: "Save details" })).toBeNull();
+});
+
+it("prevents an outdated tag draft from replacing newer tags", async () => {
+  await openWorkspace();
+  const originalTag = "research, development";
+  const item = { ...goal, tags: JSON.stringify([originalTag, "retired"]) };
+  const socket = TestSocket.current;
+  socket.receive({ ...snapshot, seq: 2, items: [item] });
+  const inspector = inspect(item.title);
+  fireEvent.click(
+    inspector.getByRole("button", { name: "Remove tag retired" }),
+  );
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 3,
+    item: { ...item, tags: JSON.stringify([originalTag, "retired", "remote"]) },
+  });
+  fireEvent.click(inspector.getByRole("button", { name: "Save details" }));
+  expect(socket.send).not.toHaveBeenCalled();
+
+  fireEvent.click(inspector.getByRole("button", { name: "Reload tags" }));
+  fireEvent.click(
+    inspector.getByRole("button", { name: "Remove tag retired" }),
+  );
+  fireEvent.click(inspector.getByRole("button", { name: "Save details" }));
+  const request = socket.latestRequest();
+  expect(request).toMatchObject({
+    type: "UPDATE_ITEM",
+    input: { item_id: item.id, tags: [originalTag, "remote"] },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ERROR",
+      requestId: request.requestId,
+      seq: 4,
+      error: { code: "invalid_input", message: "Couldn’t save tags." },
+    }),
+  );
+  expect(
+    inspector.queryByRole("button", { name: "Remove tag retired" }),
+  ).toBeNull();
+  expect(
+    inspector.getByRole<HTMLButtonElement>("button", { name: "Save details" })
+      .disabled,
+  ).toBe(false);
+});
+
 const taggedProject = { ...project, id: "engineering", name: "Engineering" };
 const taggedBacklogItem = {
   ...goal,
