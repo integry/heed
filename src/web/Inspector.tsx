@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { LockableFieldSchema } from "../shared/item-operations";
 import type { LockableField, UpdateItemInput } from "../shared/item-operations";
-import { effectiveSchedule } from "../shared/derived-state";
+import { effectiveSchedule, streamOrder } from "../shared/derived-state";
 import type {
   Dependency,
   Event,
@@ -144,6 +144,7 @@ export function Inspector({
   save,
   close,
   addChild,
+  selectChild,
 }: {
   item: Item;
   projects: readonly Project[];
@@ -154,6 +155,7 @@ export function Inspector({
   save: SaveMutation;
   close: () => void;
   addChild: () => void;
+  selectChild?: (id: string) => void;
 }) {
   const [title, setTitle] = useState<string>();
   const [note, setNote] = useState<string>();
@@ -167,6 +169,14 @@ export function Inspector({
   const [reason, setReason] = useState("");
   const [target, setTarget] = useState("");
   const { run, error, busy } = useAction();
+  const children = selectChild
+    ? streamOrder(
+        [...items.values()].filter(
+          (candidate) =>
+            candidate.parent_id === item.id && candidate.status !== "cancelled",
+        ),
+      )
+    : [];
   const baseline: DetailDraft = {
     project: item.project_id,
     priority: item.priority,
@@ -724,6 +734,21 @@ export function Inspector({
         </section>
         <section className="inspector-section">
           <h3>Child items</h3>
+          {selectChild && children.length > 0 && (
+            <ul className="item-list">
+              {children.map(({ id, title }) => (
+                <li key={id}>
+                  <button
+                    className="item-row"
+                    type="button"
+                    onClick={() => selectChild(id)}
+                  >
+                    <span className="item-title">{title}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           {item.depth === 3 ? (
             <p className="muted">{depthLimitMessage}</p>
           ) : (
