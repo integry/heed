@@ -37,6 +37,7 @@ function DependencyGraph({
   focusGoal,
   now,
   live,
+  showGhosts,
   changeDependency,
   savingDependency,
 }: LensProps) {
@@ -69,7 +70,10 @@ function DependencyGraph({
   const goal = goalId ? filtered.get(goalId) : undefined;
   const graph = useMemo(() => {
     if (!goalId) return;
-    const scope = scopeDependencies(goalId, items, filtered, dependencies);
+    const visible = showGhosts
+      ? filtered
+      : new Map([...filtered].filter(([, item]) => item.status !== "done"));
+    const scope = scopeDependencies(goalId, items, visible, dependencies);
     const counts = blockerCounts(scope.nodes, scope.edges);
     return {
       ...scope,
@@ -77,7 +81,7 @@ function DependencyGraph({
       counts,
       maxCount: Math.max(0, ...counts.values()),
     };
-  }, [goalId, items, filtered, dependencies]);
+  }, [goalId, items, filtered, dependencies, showGhosts]);
 
   if (!goal || !graph) {
     const goals = [...filtered.values()]

@@ -754,6 +754,70 @@ it("offers a registered Dependencies lens for the focused goal", async () => {
   expect(screen.getByText("Dependencies for goal")).toBeTruthy();
 });
 
+it.each([false, true])(
+  "carries Radar's completed ghost visibility (%s) into Dependencies",
+  async (showGhosts) => {
+    const finished = {
+      ...child,
+      id: "finished",
+      title: "Trace checkout errors",
+      status: "done" as const,
+      completed_at: "2024-04-03T11:00:00Z",
+    };
+    const external = {
+      ...finished,
+      id: "external",
+      parent_id: null,
+      depth: 1,
+      title: "Confirm vendor capacity",
+    };
+    await openWorkspace(undefined, {
+      ...snapshot,
+      items: [...snapshot.items, finished, external],
+      dependencies: [
+        { item_id: child.id, blocked_by_id: finished.id },
+        { item_id: tomorrow.id, blocked_by_id: external.id },
+        { item_id: tomorrow.id, blocked_by_id: child.id },
+      ],
+    });
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    if (!showGhosts) {
+      fireEvent.click(
+        radar.getByRole("checkbox", { name: "Show completed ghosts" }),
+      );
+    }
+    fireEvent.click(radar.getByRole("button", { name: goal.title }));
+    fireEvent.click(radar.getByRole("button", { name: "Dependencies" }));
+    const graph = within(
+      screen.getByRole("region", {
+        name: `Dependency graph for ${goal.title}`,
+      }),
+    );
+
+    expect(graph.getByText(child.title)).toBeTruthy();
+    expect(graph.getByText(tomorrow.title)).toBeTruthy();
+    expect(
+      graph.getByRole("button", {
+        name: `${child.title} blocks ${tomorrow.title}`,
+      }),
+    ).toBeTruthy();
+    expect(Boolean(graph.queryByText(finished.title))).toBe(showGhosts);
+    expect(Boolean(graph.queryByText(external.title))).toBe(showGhosts);
+    for (const [blocker, blocked] of [
+      [finished, child],
+      [external, tomorrow],
+    ]) {
+      expect(
+        Boolean(
+          graph.queryByRole("button", {
+            name: `${blocker.title} blocks ${blocked.title}`,
+          }),
+        ),
+      ).toBe(showGhosts);
+    }
+  },
+);
+
 it("opens the goal graph from the inspector and highlights the leading blocker", async () => {
   const upstream = {
     ...goal,
