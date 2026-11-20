@@ -527,6 +527,101 @@ it("shares project and guidance edits across sockets and initializes the timezon
   });
 });
 
+it("delivers token plaintext only in the creation reply", async () => {
+  const first = await connect();
+  const second = await connect();
+  await first.next();
+  await second.next();
+
+  first.send({
+    type: "CREATE_TOKEN",
+    requestId: "create-token",
+    input: {
+      label: "Build agent",
+      scope: "report",
+      default_project_id: "inbox",
+    },
+  });
+  const reply = await first.next();
+  expect(reply).toMatchObject({
+    type: "ACK",
+    requestId: "create-token",
+    createdToken: {
+      token: expect.stringMatching(/^heed_/),
+      label: "Build agent",
+      default_project_id: "inbox",
+    },
+  });
+  if (reply.type !== "ACK" || !reply.createdToken)
+    throw new Error("Expected a newly issued token");
+  const { id, token } = reply.createdToken;
+  const response = await request("/api/tokens");
+  const metadata = await response.json();
+  expect(metadata).toMatchObject([{ id, label: "Build agent" }]);
+  expect(JSON.stringify(metadata)).not.toContain(token);
+
+  for (const client of [first, second]) {
+    client.send({ type: "GET_SNAPSHOT" });
+    const snapshot = await client.next();
+    expect(snapshot.type).toBe("SNAPSHOT");
+    expect(JSON.stringify(snapshot)).not.toContain(token);
+  }
+
+  first.send({
+    type: "REVOKE_TOKEN",
+    requestId: "revoke-token",
+    input: { token_id: id },
+  });
+  expect(await first.next()).toMatchObject({
+    type: "ACK",
+    requestId: "revoke-token",
+  });
+  expect(await (await request("/api/tokens")).json()).toEqual([]);
+});
+
+it("reorders projects with legacy tied positions while keeping Inbox fixed", async () => {
+  const atlas = await workspace.createProject({ name: "Atlas" });
+  const quill = await workspace.createProject({ name: "Quill" });
+  const client = await connect();
+  await client.next();
+
+  client.send({
+    type: "MOVE_PROJECT",
+    requestId: "move-quill",
+    input: { project_id: quill.id, direction: "up" },
+  });
+  expect(await client.next()).toMatchObject({
+    type: "PROJECT_UPSERT",
+    project: { id: quill.id, sort: -1 },
+  });
+  expect(await client.next()).toMatchObject({
+    type: "PROJECT_UPSERT",
+    project: { id: atlas.id, sort: 1 },
+  });
+  expect(await client.next()).toMatchObject({
+    type: "ACK",
+    requestId: "move-quill",
+  });
+  expect(
+    (await workspace.listProjects()).map(({ id, sort }) => [id, sort]),
+  ).toEqual([
+    [quill.id, -1],
+    ["inbox", 0],
+    [atlas.id, 1],
+  ]);
+
+  client.send({
+    type: "MOVE_PROJECT",
+    requestId: "move-inbox",
+    input: { project_id: "inbox", direction: "up" },
+  });
+  expect(await client.next()).toMatchObject({
+    type: "ERROR",
+    requestId: "move-inbox",
+    error: { code: "conflict" },
+  });
+});
+
 it("reopens an older item through the shared operation and publishes it to the canvas", async () => {
   const item_id = await addItem("Investigate regression");
   await workspace.reportProgress(human, { item_id, status: "cancelled" });
