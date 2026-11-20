@@ -16,6 +16,8 @@ jobs:
       - name: Check documentation links
         uses: lycheeverse/lychee-action@v2.9.0
         with:
+          # Keep the generated report outside Prettier's workspace scan.
+          output: ${{ runner.temp }}/lychee-report.md
           # The deploy link hands off to the authenticated Cloudflare dashboard.
           args: >-
             --no-progress --exclude-loopback --include-fragments=anchor-only
