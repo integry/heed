@@ -1,6 +1,6 @@
 # HEED (`heed.work`) — Product & Technical Specification
 
-**Version:** 1.2 (MVP Blueprint, revised after architecture review)
+**Version:** 1.5 (MVP Blueprint, revised after architecture review)
 
 **Model:** Open source (MIT, self-hostable) + Hosted SaaS (`heed.work`)
 
@@ -21,7 +21,7 @@ Traditional task trackers (Jira, Linear, Asana) assume human-speed execution and
 * **Done work stays in view.** Completed items remain as unobtrusive "ghost moons" for 24 hours and stay in history forever, so anything can be reopened ("boomeranged") when a follow-up or regression appears.
 * **Voice and chat use the same tools.** The in-UI command bar calls the same operations as external agents.
 
-Terminology: an **item** is anything shown in Heed (goal, task, sub-task, meeting). Items render as bubbles in the Bubble Field and as rows in the Horizon Stream. A **project** is a user-defined grouping (e.g. Dev, Marketing, Support, Clients, or one per product). Nesting is capped at four levels: project → goal → task → sub-task.
+Terminology: an **item** is anything shown in Heed (goal, task, sub-task, meeting). Items render as bubbles (or rectangles, or graph nodes, depending on the lens) in the left pane and as rows in the Horizon Stream. A **project** is a user-defined grouping (e.g. Dev, Marketing, Support, Clients, or one per product). Nesting is capped at four levels: project → goal → task → sub-task.
 
 ---
 
@@ -31,10 +31,10 @@ Terminology: an **item** is anything shown in Heed (goal, task, sub-task, meetin
 
 ```text
 +---------------------------------------------------------------------------------------------------+
-|  (*) HEED   [x]Dev [x]Marketing [x]Support [ ]Clients     | Ghosts: [Orbits v] |  ● 3 Agents Live |
+|  (*) HEED   [x]Dev [x]Marketing [x]Support [ ]Clients     | Lens: [Radar v]    |  ● 3 Agents Live |
 +-------------------------------------------------------------+-------------------------------------+
 |                                                             |  HORIZON STREAM      [Needs me: 2]  |
-|   ACTIVE & NEAR HORIZON (Zoomable Bubble Field)             |-------------------------------------|
+|   BUBBLE FIELD (radar lens, schematic drawing)              |-------------------------------------|
 |                                                             |  v Completed Earlier Today (3)      |
 |        .---. (ghost)                                        |    [x] OAuth2 PKCE Flow      10:15  |
 |       ( C1  )                                               |    [x] Morning Metrics       09:30  |
@@ -53,7 +53,7 @@ Terminology: an **item** is anything shown in Heed (goal, task, sub-task, meetin
 |        \___________/  `-------'                             |  +-------------------------------+  |
 |                                                             |  | [FLEX] ! Billing Escalation   |  |
 | - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - |  | Support · Reopened · from Thu |  |
-|   BACKLOG POOL (clustered by project)                       |  +-------------------------------+  |
+|   BACKLOG (outer ring, by project)                          |  +-------------------------------+  |
 |                                                             |                                     |
 |   [Dev (2)]            [Marketing (2)]      [Support (2)]   |  TOMORROW & THIS WEEK               |
 |    (B1)  (B2)           (B3)   (B4)          (B5)  (B6)     |  · [Tom 16:00] Stripe Rollout       |
@@ -70,26 +70,59 @@ Terminology: an **item** is anything shown in Heed (goal, task, sub-task, meetin
 **Interaction rules:**
 
 * **Needs me.** The stream header counts items that need a human decision or input: handoff-flagged items, plus stale agent work (an agent went silent mid-task). Clicking it filters both lenses to those items.
-* **Direct manipulation.** Bubbles can be dragged to a position and resized; resizing sets priority. Stream rows can be dragged to reorder within a band, or into another band to reschedule. Anything set this way is locked against agent changes (see section 5).
+* **Direct manipulation.** Bubbles can be dragged and resized; resizing sets priority. In the radar lens, dragging a bubble to another ring reschedules it and dragging a top-level bubble to another sector moves it to that project; within its ring and sector it stays where it is dropped. Stream rows can be dragged to reorder within a band, or into another band to reschedule. Anything set this way is locked against agent changes (see section 5).
 * **Roll-up.** A parent bubble shows the ring of its most urgent descendant (handoff, then stale, then reopened, then blocked, then live), so problems are visible when zoomed out.
 * **Visibility toggles.** Each project chip in the header turns a project on or off. Individual top-level items can also be hidden from the inspector. Hidden things disappear from both lenses and are listed under a "Hidden" filter. Visibility is stored in the workspace, so it follows the user across devices.
 * **Semantic zoom.** Clicking a parent bubble zooms in to reveal its sub-items and `blocked_by` arrows.
 * **Cross-highlighting.** Selecting a bubble highlights its row in the Horizon Stream, and vice versa.
 * **Progress arcs.** A parent bubble shows `done children / all non-cancelled children`. The count includes children that have left the ghost layer, so progress never goes backwards.
 * **Carried over.** Unfinished items scheduled for an earlier day stay in Today and show the day they came from ("from Thu").
-* **Stable layout.** Bubbles the user has dragged stay where they were put. The rest are placed deterministically (seeded per item, simulation only re-run for added/removed nodes) so the field does not jitter when agents report.
+* **Stable layout.** Bubbles the user has dragged stay where they were put. The rest are placed deterministically within their ring and sector (seeded per item, simulation only re-run for added/removed nodes) so the field does not jitter when agents report.
 * **Stream order.** Within a band: fixed-time items in time order, then manually ordered items, then the rest by priority.
 * **Guidance editor.** The guidance text is one click away from the header on desktop and from the voice dock on mobile, and can also be changed by voice ("from now on, only notify me about billing").
 
-### 2.2 Mobile Layout (PWA)
+### 2.2 Lenses
 
-The split-pane collapses into a full-screen touch-zoomable bubble field with a 3-stop draggable bottom sheet (`Peek` / `50-50 Split` / `Full Timeline`) and a thumb-zone voice dock.
+The left pane is a switchable **lens** over the same items. The Horizon Stream stays alongside every lens, and selection, filters and visibility toggles carry over when switching. The chosen lens is remembered per device. The wireframe above shows the pane's contents schematically rather than the exact radar geometry.
+
+| Lens | Layout | Use it for |
+| --- | --- | --- |
+| **Radar** (default) | Bubbles on concentric rings around the user: Today at the centre, then This week, Later, and Backlog as the dim outer ring. Each project is a sector. Size is priority. | What is close to me now, and how much is piling up where |
+| **Board** | Grid of project rows by time-band columns (Today, This week, Later, Backlog), items as cards ordered as in the stream | People who prefer a structured, familiar layout; bulk rescheduling |
+| **Treemap** | Nested rectangles per project and goal; area is priority, colour and border carry status | Dense overview with readable labels; small screens |
+| **Dependencies** | Left-to-right graph of one goal's items and their `blocked_by` edges; offered when zoomed into a goal | Finding the item that holds up the rest |
+
+```text
+            Dev        |      Marketing
+        .  .  .  .  .  |  .  .  .  .  .        backlog (outer ring, dim)
+          .  ( )  .    |    . (  ) .           later
+            .  (( A )) | ( B )  .              this week
+   ----------- [ TODAY · you ] -----------     today (centre)
+            .  ( C! )  | (D)   .
+          .   .   .    |    .   .   .
+            Support    |      Clients
+```
+
+Radar rules:
+
+* A bubble's ring is its band from section 5, so a carried-over or active item sits in Today. Ghosts stay in the ring where they were completed, faded.
+* Dropping a bubble on a ring sets `scheduled_on` to the first day of that band (Today: today; This week: tomorrow; Later: the first day after this week; Backlog: cleared).
+* Zooming into a goal shows its children packed inside it; the Dependencies lens is one tap away from there.
+* Roll-up rings, progress arcs, ghosts and the stale/live states are drawn the same way in every lens.
+
+The Board is the radar unrolled: rings become columns and sectors become rows, so dragging a card to another column reschedules it and to another row moves it to that project, with the same rules as above. While the Board is open on desktop the Horizon Stream collapses to its Needs me and Completed sections, since the Board already shows the bands.
+
+Left out of the MVP: timeline lanes (a horizontal time axis per project). Most items have no time, so it would be mostly empty; it becomes worthwhile if calendar import is added.
+
+### 2.3 Mobile Layout (PWA)
+
+The split-pane collapses into a full-screen touch-zoomable lens (radar by default) with a 3-stop draggable bottom sheet (`Peek` / `50-50 Split` / `Full Timeline`) and a thumb-zone voice dock.
 
 ```text
    [STATE A: RADAR + PEEK SHEET]              [STATE B: 50/50 SPLIT + INSPECTOR]
 +---------------------------------+        +---------------------------------+
 | 9:41                   ● 3 Live |        | 9:41                   ● 3 Live |
-| (*) HEED    [All v]   [Ghosts]  |        | (*) HEED    [All v]   [Ghosts]  |
+| (*) HEED    [All v]   [Lens v]  |        | (*) HEED    [All v]   [Lens v]  |
 +---------------------------------+        +---------------------------------+
 |                                 |        |     .-------.    .-----------.  |
 |      (C1)                       |        |    / CLIENTS \  /  (( DEV ))  \ |
@@ -104,7 +137,7 @@ The split-pane collapses into a full-screen touch-zoomable bubble field with a 3
 |    | ! Boomerang |   v2.4    |  |        |  +---------------------------+  |
 |     \___________/ \_________/   |        |  | [DUE 17:00] Auth Mid  2/3 |  |
 |                                 |        |  | ((●)) Claude-Code-1       |  |
-|  - - - Backlog Pool - - - - -   |        |  | [Handoff] [Done] [PR ->]  |  |
+|  - - - Backlog ring - - - - -   |        |  | [Handoff] [Done] [PR ->]  |  |
 |   (Dev)   (Marketing) (Support) |        |  +---------------------------+  |
 +---------------------------------+        |  +---------------------------+  |
 |            =======              |        |  | [FLEX] ! Billing Retry    |  |
@@ -157,7 +190,7 @@ Design notes:
 * **No alarm is needed.** The 24-hour ghost window, staleness and the time bands are all computed at query/render time.
 * **Schema versioning.** `settings.schema_version` is checked in the DO constructor and migrations run before any request is served.
 * **Push notifications use Web Push** (VAPID keys in Worker secrets, subscriptions stored in the DO), so they work for self-hosted and hosted alike without a native wrapper. On iOS this requires the PWA to be installed to the home screen.
-* **Limits.** Notes are capped at 280 characters, `get_canvas` returns at most 50 items by default, writes are rate-limited per token, and pushes are capped per token per hour regardless of what the agent asks for.
+* **Limits.** Notes are capped at 280 characters, guidance at 2,000, `get_canvas` returns at most 50 items by default, writes are rate-limited per token, and pushes are capped per token per hour regardless of what the agent asks for.
 
 ---
 
@@ -207,7 +240,7 @@ CREATE TABLE items (
   priority INTEGER NOT NULL DEFAULT 5,      -- 1..10, bubble size (resize handle)
   scheduled_on TEXT,                        -- local date 'YYYY-MM-DD'; NULL = inherit from parent, else backlog
   sort_key REAL,                            -- manual order within a stream band; NULL = not manually ordered
-  pos_x REAL, pos_y REAL,                   -- manual bubble position relative to parent; NULL = auto layout
+  layout_pos TEXT NOT NULL DEFAULT '{}',    -- manual positions per lens, JSON, e.g. '{"radar":{"angle":0.3,"radius":0.6}}' (fractions within ring/sector)
   locked_fields TEXT NOT NULL DEFAULT '[]', -- JSON array of fields the human set by hand, e.g. '["priority","scheduled_on"]'
   time_type TEXT NOT NULL DEFAULT 'flexible', -- 'flexible' | 'fixed' | 'deadline'
   time_at TEXT,                             -- ISO-8601 instant for fixed/deadline
@@ -261,9 +294,8 @@ CREATE TABLE push_subscriptions (
 
 CREATE INDEX idx_events_item ON events(item_id, at);
 
-CREATE INDEX idx_items_parent ON items(parent_id);
-CREATE INDEX idx_items_status_sched ON items(status, scheduled_on);
-CREATE INDEX idx_items_project ON items(project_id);
+-- No secondary indexes on items: a workspace holds hundreds of rows, scans are effectively free,
+-- and every index adds to the cost of each write (see section 9).
 ```
 
 ### Derived state (never stored)
@@ -388,9 +420,36 @@ Agents only report if the tool text tells them when to. The server `instructions
 
 ---
 
-## 9. Implementation Roadmap
+## 9. Operating Cost
 
-1. **Phase 1 — Core engine.** Worker + workspace DO, schema and migrations, the shared operations, derived-state queries, lock rule, nesting cap, events log, guidance storage and delivery, API tokens with scopes, limits, `/mcp`, `/api/report`, WebSocket snapshot/broadcast. Tool descriptions and guidance behaviour tried against Claude Code and one other agent.
-2. **Phase 2 — Frontend.** Google sign-in and session cookie; Horizon Stream (Needs me, carried-over, drag to reorder and reschedule, history); zoomable Bubble Field (drag, resize, ghost moons, backlog pool, progress arcs, roll-up rings, stable layout); inspector with timeline and field unlock; guidance editor; visibility toggles; responsive bottom sheet; PWA manifest.
+Target: a single-user self-hosted workspace runs inside the Cloudflare **Workers Free plan**, and a hosted workspace costs cents per month. Figures below are from the Cloudflare pricing pages as of November 2026; re-check them before launch.
+
+What is billed, and what Heed does about it:
+
+| Cost driver | Price signal | Design rule |
+| --- | --- | --- |
+| **DO duration** | Billed at 128 MB while the object is running; not billed while idle and able to hibernate | Nothing may keep the DO awake: no timers, no alarms, no polling, WebSockets only through the Hibernation API. All time-based state (bands, live/stale, ghosts) is computed in the browser from timestamps, so the server never ticks. |
+| **Long-lived connections** | A non-hibernating connection bills duration for as long as it is open | MCP is request/response only: the optional server-to-client stream of Streamable HTTP is not offered. Browser keepalives use protocol pings or `setWebSocketAutoResponse`, which are not charged. |
+| **Rows written** | $1.00 per million beyond the allowance — a thousand times the price of rows read | The most important number to keep down. A report that changes nothing but the heartbeat is persisted at most once per 5 minutes per item and writes no event. No secondary indexes on `items`. Events older than 90 days are pruned lazily, at most once a day, as part of an ordinary write. Drags are written on drop, not while dragging. |
+| **Requests** | Worker and DO requests are each metered; static assets are free | The SPA is served straight from static assets without invoking the Worker. Session cookies are verified in the Worker by signature, with no DO or database lookup. Malformed or unknown-workspace tokens are rejected before the DO is touched. UI mutations go over the open WebSocket (20 incoming messages bill as 1 request). |
+| **Abuse and runaway agents** | An agent stuck in a loop can burn the daily free allowance | Per-token rate limit enforced in the Worker, before the DO. On the free plan, hitting a daily limit makes writes fail until midnight UTC, so the limit is set well below it. |
+| **CPU time** | 10 ms per request on the free plan | API tokens are high-entropy and hashed with SHA-256, not a slow password hash. `get_canvas` is bounded. |
+| **LLM and speech** | The only cost that scales with use rather than with idle design | Speech is transcribed in the browser where possible; Whisper is the fallback. The command bar uses a small tool-calling model. Self-hosted brings its own key; hosted has a monthly allowance per plan. |
+| **Agent context** | Not our bill, but the user's | Guidance is capped at 2,000 characters, since it is injected into every connected agent's context. Tool responses are compact. |
+
+Rough load for one busy workspace — five agents reporting every five minutes for ten hours a day, plus normal UI use:
+
+* about 600–1,000 requests a day against a free allowance of 100,000;
+* about 5,000 rows written a day against a free allowance of 100,000;
+* DO running time measured in seconds per day against a free allowance of 13,000 GB-s.
+
+For the hosted service the same workspace comes to roughly 20,000–30,000 requests and 150,000 rows written a month, which is on the order of $0.15 per workspace per month at overage prices, almost all of it rows written. Voice and command-bar LLM calls will cost more than everything else combined and are the thing to meter.
+
+---
+
+## 10. Implementation Roadmap
+
+1. **Phase 1 — Core engine.** Worker + workspace DO, schema and migrations, the shared operations, derived-state queries, lock rule, nesting cap, events log, heartbeat write throttling, guidance storage and delivery, API tokens with scopes, limits, `/mcp`, `/api/report`, WebSocket snapshot/broadcast. Tool descriptions and guidance behaviour tried against Claude Code and one other agent.
+2. **Phase 2 — Frontend.** Google sign-in and session cookie; Horizon Stream (Needs me, carried-over, drag to reorder and reschedule, history); lens framework with the radar lens (drag between rings and sectors, resize, ghost moons, backlog ring, progress arcs, roll-up rings, stable layout), then the board, treemap and dependencies lenses; inspector with timeline and field unlock; guidance editor; visibility toggles; responsive bottom sheet; PWA manifest.
 3. **Phase 3 — Voice, push and open-source launch.** `/api/command` voice/chat bar, Web Push for agent-flagged handoffs, MCP and hook setup docs for Claude Code / Cursor / Codex, public GitHub release.
 4. **Phase 4 — Hosted beta.** Workspace registry (D1), multi-workspace membership, Stripe billing, MCP OAuth.
