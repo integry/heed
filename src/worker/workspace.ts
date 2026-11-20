@@ -1,5 +1,4 @@
-import { buildPushPayload } from "@block65/webcrypto-web-push";
-import type { PushSubscription } from "@block65/webcrypto-web-push";
+import type { VapidKeys } from "@block65/webcrypto-web-push";
 import { DurableObject } from "cloudflare:workers";
 import { z, type ZodType } from "zod";
 import { bandsFor, completionBand, isGhost } from "../shared/derived-state";
@@ -27,6 +26,7 @@ import type {
   AddItemInput,
   DependencyOperationResult,
   FlagHandoffInput,
+  HandoffOperationResult,
   ItemIdInput,
   ItemOperationResult,
   LockableField,
@@ -74,6 +74,13 @@ import {
   isTokenSecret,
   newTokenSecret,
 } from "./token-secrets";
+import {
+  preparePush,
+  PushEndpointSchema,
+  PushSubscriptionSchema,
+  vapidKeys,
+} from "./web-push";
+import type { HandoffPush, PushEnv, PushSubscriptionInput } from "./web-push";
 import { migrateWorkspace } from "./workspace-migrations";
 
 type CanvasRow = Pick<
@@ -117,11 +124,8 @@ const MOVE_FIELDS = ["scheduled_on", "project_id", "parent_id"] as const;
 
 type ItemPatch = Partial<Omit<Item, "id" | "created_at" | "updated_at">>;
 type ItemEdit = Partial<AddItemInput & UpdateItemInput>;
-type WorkspaceEnv = Env & {
-  VAPID_SUBJECT?: string;
-  VAPID_SERVER_PUBLIC_KEY?: string;
-  VAPID_SERVER_PRIVATE_KEY?: string;
-};
+type WorkspaceEnv = Env & PushEnv;
+type PushRow = { endpoint: string; keys: string };
 type ItemChange =
   { before?: Item; after: Item } | { before: Item; after?: undefined };
 type Mutation = {
@@ -481,6 +485,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     return {
       kind: "agent",
       name: token.label,
+      token_id: token.id,
       scope: token.scope,
       default_project_id: token.default_project_id,
     };
@@ -539,6 +544,10 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       next_before:
         items.length > limit ? `${last.history_at}|${last.id}` : null,
     };
+  }
+
+  getItem(input: ItemIdInput): Item {
+    return this.#requireItem(parseInput(ItemIdSchema, input));
   }
 
   getItemEvents(input: ItemIdInput): Event[] {
@@ -874,28 +883,131 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
   async flagHandoff(
     actor: Actor,
     input: FlagHandoffInput,
-  ): Promise<ItemOperationResult> {
+  ): Promise<HandoffOperationResult> {
     const data = parseInput(FlagHandoffSchema, input);
-    let notifyAs: string | undefined;
+    const vapid = vapidKeys(this.env);
+    let delivery:
+      | { actorName: string; payload: HandoffPush; subscriptions: PushRow[] }
+      | undefined;
+    let notification: HandoffOperationResult["notification"];
     const result = this.#mutateItems(actor, (mutation) => {
       const item = this.#requireItem(data);
-      if (data.notify === true && mutation.actor.kind === "agent") {
-        notifyAs = mutation.actor.name;
-      }
+      const agent = mutation.actor.kind === "agent" ? mutation.actor : null;
+      const notify = data.notify === true && agent !== null;
       this.#saveItem(
         mutation,
         item,
         { handoff: 1, handoff_note: data.note },
-        {
-          notify: notifyAs !== undefined,
-        },
+        { notify },
       );
+
+      if (notify) {
+        const subscriptions =
+          vapid && agent.token_id
+            ? this.#sql
+                .exec<PushRow>("SELECT endpoint, keys FROM push_subscriptions")
+                .toArray()
+            : [];
+        if (!subscriptions.length || !agent.token_id) {
+          notification = "unavailable";
+        } else if (!this.#reservePush(agent.token_id, mutation.now.getTime())) {
+          notification = "rate_limited";
+        } else {
+          notification = "queued";
+          delivery = {
+            actorName: agent.name,
+            payload: {
+              title: item.title,
+              body: data.note,
+              url: `/?item=${encodeURIComponent(item.id)}`,
+            },
+            subscriptions,
+          };
+        }
+      }
       return item.id;
     });
-    if (notifyAs !== undefined) {
-      await this.#notifyHandoff(notifyAs, data.item_id, data.note);
+    if (delivery && vapid) {
+      this.ctx.waitUntil(
+        this.#notifyHandoff(
+          delivery.actorName,
+          data.item_id,
+          delivery.payload,
+          delivery.subscriptions,
+          vapid,
+        ),
+      );
     }
-    return result;
+    return notification ? { ...result, notification } : result;
+  }
+
+  getPushStatus(input: PushSubscriptionInput): { registered: boolean } {
+    const { endpoint, keys } = parseInput(PushSubscriptionSchema, input);
+    return {
+      registered: this.#hasPushSubscription(endpoint, JSON.stringify(keys)),
+    };
+  }
+
+  subscribePush(input: PushSubscriptionInput): { ok: true } {
+    const { endpoint, keys } = parseInput(PushSubscriptionSchema, input);
+    this.#sql.exec(
+      `INSERT INTO push_subscriptions (endpoint, keys) VALUES (?, ?)
+       ON CONFLICT (endpoint) DO UPDATE SET keys = excluded.keys
+       WHERE push_subscriptions.keys <> excluded.keys`,
+      endpoint,
+      JSON.stringify(keys),
+    );
+    return { ok: true };
+  }
+
+  unsubscribePush(input: { endpoint: string }): { ok: true } {
+    const { endpoint } = parseInput(PushEndpointSchema, input);
+    this.#sql.exec(
+      "DELETE FROM push_subscriptions WHERE endpoint = ?",
+      endpoint,
+    );
+    return { ok: true };
+  }
+
+  #hasPushSubscription(endpoint: string, keys: string): boolean {
+    return (
+      this.#sql
+        .exec(
+          "SELECT 1 FROM push_subscriptions WHERE endpoint = ? AND keys = ?",
+          endpoint,
+          keys,
+        )
+        .toArray().length > 0
+    );
+  }
+
+  #reservePush(tokenId: string, now: number): boolean {
+    const limit = Number(this.env.PUSH_RATE_LIMIT_PER_HOUR ?? 6);
+    const cap = Number.isSafeInteger(limit) && limit >= 0 ? limit : 6;
+    const row = this.#sql
+      .exec<{ attempts: string | null }>(
+        `SELECT attempts FROM tokens
+       LEFT JOIN push_rate_limits ON push_rate_limits.token_id = tokens.id
+       WHERE tokens.id = ?`,
+        tokenId,
+      )
+      .toArray()[0];
+    if (!row) return false;
+    const cutoff = now - 60 * 60 * 1000;
+    const attempts: number[] =
+      row.attempts === null ? [] : JSON.parse(row.attempts);
+    const recent = attempts.filter((at) => at > cutoff);
+    if (recent.length >= cap) return false;
+
+    // Reserve once per handoff fan-out, before delivery. Failed attempts also use
+    // quota so provider failures can't turn into unbounded outbound requests.
+    this.#sql.exec(
+      `INSERT INTO push_rate_limits (token_id, attempts) VALUES (?, ?)
+       ON CONFLICT (token_id) DO UPDATE SET attempts = excluded.attempts`,
+      tokenId,
+      JSON.stringify([...recent, now]),
+    );
+    return true;
   }
 
   clearHandoff(actor: Actor, input: ItemIdInput): ItemOperationResult {
@@ -1038,47 +1150,29 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
   async #notifyHandoff(
     actorName: string,
     itemId: string,
-    note: string,
+    data: HandoffPush,
+    subscriptions: PushRow[],
+    vapid: VapidKeys,
   ): Promise<void> {
-    const subscriptions = this.#sql
-      .exec<{ endpoint: string; keys: string }>(
-        "SELECT endpoint, keys FROM push_subscriptions",
-      )
-      .toArray();
-    if (!subscriptions.length) return;
-
     const handoffId = this.#latestHandoffId(itemId);
-    const item = this.#requireItem({ item_id: itemId });
-    const data = {
-      title: item.title,
-      body: note,
-      url: `/?item=${encodeURIComponent(itemId)}`,
-    };
-    const vapid = {
-      subject: this.env.VAPID_SUBJECT,
-      publicKey: this.env.VAPID_SERVER_PUBLIC_KEY,
-      privateKey: this.env.VAPID_SERVER_PRIVATE_KEY,
-    };
-
     const attempts = await Promise.allSettled(
       subscriptions.map(async ({ endpoint, keys }) => {
-        const subscription: PushSubscription = {
+        const subscription = PushSubscriptionSchema.parse({
           endpoint,
-          expirationTime: null,
           keys: JSON.parse(keys),
-        };
-        const payload = await buildPushPayload({ data }, subscription, vapid);
+        });
+        const payload = await preparePush(
+          data,
+          { ...subscription, expirationTime: null },
+          vapid,
+        );
         await this.ctx.storage.sync();
 
         // A handoff or subscription can change while the payload is prepared.
-        const stillSubscribed = this.#sql
-          .exec(
-            "SELECT 1 FROM push_subscriptions WHERE endpoint = ? AND keys = ?",
-            endpoint,
-            keys,
-          )
-          .toArray().length;
-        if (!stillSubscribed || this.#latestHandoffId(itemId) !== handoffId)
+        if (
+          !this.#hasPushSubscription(endpoint, keys) ||
+          this.#latestHandoffId(itemId) !== handoffId
+        )
           return;
 
         const response = await fetch(endpoint, {
@@ -1086,8 +1180,16 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
           redirect: "error",
         });
         void response.body?.cancel().catch(() => {});
-        if (response.status !== 201) throw new Error("Web Push rejected");
-        return true;
+        if (response.status === 404 || response.status === 410) {
+          this.#sql.exec(
+            "DELETE FROM push_subscriptions WHERE endpoint = ? AND keys = ?",
+            endpoint,
+            keys,
+          );
+        } else if (!response.ok) {
+          throw new Error("Push provider rejected delivery");
+        }
+        return response.ok;
       }),
     );
     if (
@@ -1104,8 +1206,9 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         JSON.stringify(data),
         itemId,
       );
-    } else if (attempts.some((attempt) => attempt.status === "rejected")) {
-      throw new Error("Handoff recorded, but Web Push failed");
+    }
+    if (attempts.some((attempt) => attempt.status === "rejected")) {
+      console.warn("Web Push delivery failed for one or more devices");
     }
   }
 

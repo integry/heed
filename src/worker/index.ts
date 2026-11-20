@@ -1,4 +1,5 @@
 import { ReportProgressSchema } from "../shared/item-operations";
+import { apiError } from "./api-response";
 import { requireAgent } from "./agent-auth";
 import type { AgentAuthEnv } from "./agent-auth";
 import { devLoginEmail, handleAuth } from "./auth";
@@ -8,6 +9,8 @@ import { handleMcp } from "./mcp";
 import { requireSession } from "./session";
 import { handleTokenBootstrap } from "./token-admin";
 import type { TokenAdminEnv } from "./token-admin";
+import { vapidKeys } from "./web-push";
+import type { PushEnv } from "./web-push";
 import { getWorkspaceStub } from "./workspace";
 
 export { Workspace } from "./workspace";
@@ -18,6 +21,22 @@ export default {
     const { pathname } = url;
     if (request.method === "GET" && pathname === "/api/health") {
       return Response.json({ ok: true });
+    }
+
+    if (request.method === "GET" && pathname === "/api/push/key") {
+      const vapid = vapidKeys(env);
+      return vapid
+        ? Response.json(
+            { publicKey: vapid.publicKey },
+            {
+              headers: { "Cache-Control": "no-store" },
+            },
+          )
+        : apiError(
+            503,
+            "push_unavailable",
+            "Push notifications are not configured.",
+          );
     }
 
     if (pathname.startsWith("/auth/")) {
@@ -112,4 +131,6 @@ export default {
 
     return new Response("Not found", { status: 404 });
   },
-} satisfies ExportedHandler<Env & AgentAuthEnv & AuthEnv & TokenAdminEnv>;
+} satisfies ExportedHandler<
+  Env & AgentAuthEnv & AuthEnv & TokenAdminEnv & PushEnv
+>;

@@ -70,6 +70,17 @@ function callbackUrl(url: URL): string {
   return new URL("/auth/callback", url.origin).href;
 }
 
+function itemId(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-f0-9]{16}$/.test(value)
+    ? value
+    : undefined;
+}
+
+function itemDestination(value: unknown): string {
+  const item = itemId(value);
+  return item ? `/?item=${item}` : "/";
+}
+
 async function startLogin(
   url: URL,
   clientId: string,
@@ -96,7 +107,12 @@ async function startLogin(
     authorization.href,
     await signCookie(
       STATE_COOKIE,
-      { state, verifier, origin: url.origin },
+      {
+        state,
+        verifier,
+        origin: url.origin,
+        item: itemId(url.searchParams.get("item")),
+      },
       secret,
       STATE_MAX_AGE,
     ),
@@ -219,7 +235,10 @@ async function finishLogin(
         .map((entry) => entry.trim().toLowerCase());
       response =
         email && allowed.includes(email)
-          ? redirect("/", await issueSession(email, secret))
+          ? redirect(
+              itemDestination(state.item),
+              await issueSession(email, secret),
+            )
           : signInError(
               403,
               "Access denied",
@@ -260,7 +279,10 @@ export async function handleAuth(
   if (pathname === "/auth/dev-login" && request.method === "GET") {
     const email = devLoginEmail(url, env);
     if (email && SESSION_SECRET) {
-      return redirect("/", await issueSession(email, SESSION_SECRET));
+      return redirect(
+        itemDestination(url.searchParams.get("item")),
+        await issueSession(email, SESSION_SECRET),
+      );
     }
   }
 

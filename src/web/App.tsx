@@ -7,7 +7,7 @@ import {
 } from "react";
 import type { StreamRow } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
-import type { Dependency } from "../shared/workspace";
+import type { Dependency, Item } from "../shared/workspace";
 import { isDescendant } from "./dependency-graph";
 import { Guidance } from "./Guidance";
 import { Inspector } from "./Inspector";
@@ -26,7 +26,7 @@ import { HorizonStream, type LensSelection } from "./horizon-stream";
 import { isRadarRowVisible } from "./RadarLens";
 import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
-import { useAction } from "./workspace-controls";
+import { readApi, useAction } from "./workspace-controls";
 import { workspaceView, type MutationInput } from "./workspace-state";
 import { selectWorkspace } from "./workspace-view";
 
@@ -144,17 +144,26 @@ function Workspace({
   registry: readonly [Lens, ...Lens[]];
   onSessionExpired: () => void;
 }) {
-  const [connection] = useState(createWorkspaceConnection);
-  const state = useSyncExternalStore(
-    connection.subscribe,
-    connection.getSnapshot,
-  );
   const [lensId, setLensId] = useState(readLensId);
   const [selectedItem, setSelectedItem] = useState<{
     id: string;
     inspectorOpen: boolean;
-  } | null>(null);
+    fromNotification?: boolean;
+  } | null>(() => {
+    const id = new URLSearchParams(window.location.search).get("item");
+    return id ? { id, inspectorOpen: true, fromNotification: true } : null;
+  });
   const selectedId = selectedItem?.id ?? null;
+  const [connection] = useState(() => createWorkspaceConnection(selectedId));
+  const state = useSyncExternalStore(
+    connection.subscribe,
+    connection.getSnapshot,
+  );
+  const { notificationItemVersion } = state;
+  const [linkedItem, setLinkedItem] = useState<{
+    item: Item;
+    version: number;
+  }>();
   const [goalId, focusGoal] = useState<string | null>(null);
   // Dependency saves can outlive the graph that submitted them.
   const [dependencyEditGoal, setDependencyEditGoal] = useState<string | null>(
@@ -198,9 +207,39 @@ function Workspace({
   const selection = selectedId && filtered.has(selectedId) ? selectedId : null;
   const dependenciesLens = registry.find(({ id }) => id === "dependencies");
   const selected = selectedId ? state.items.get(selectedId) : undefined;
-  const inspected =
-    selected &&
-    (hiddenOnly || view.projects.get(selected.project_id)?.hidden === 0)
+  const linkedId =
+    selectedItem?.fromNotification && !selected ? selectedId : null;
+  useEffect(() => {
+    if (!linkedId || !live) return;
+    const controller = new AbortController();
+    void readApi<Item>(
+      `/api/items/${encodeURIComponent(linkedId)}`,
+      controller.signal,
+    )
+      .catch(() => undefined)
+      .then((item) => {
+        const current = connection.getSnapshot();
+        if (
+          !controller.signal.aborted &&
+          current.connection === "live" &&
+          current.notificationItemVersion === notificationItemVersion
+        ) {
+          setLinkedItem(
+            item ? { item, version: notificationItemVersion } : undefined,
+          );
+        }
+      });
+    return () => controller.abort();
+  }, [connection, linkedId, live, notificationItemVersion]);
+  const fallback =
+    linkedItem?.version === notificationItemVersion &&
+    linkedItem.item.id === linkedId
+      ? linkedItem.item
+      : undefined;
+  const inspected = selectedItem?.fromNotification
+    ? (selected ?? fallback)
+    : selected &&
+        (hiddenOnly || view.projects.get(selected.project_id)?.hidden === 0)
       ? selected
       : undefined;
   // Desktop opens the inspector for a selection made on the mobile canvas.
@@ -833,6 +872,8 @@ export function App({
     );
   }
 
+  const item = new URLSearchParams(window.location.search).get("item");
+  const signInQuery = item ? `?item=${encodeURIComponent(item)}` : "";
   return (
     <main className="sign-in">
       <div className="sign-in-card">
@@ -853,11 +894,11 @@ export function App({
         {session.status === "signed-out" && (
           <>
             <p>Sign in to your workspace.</p>
-            <a className="primary" href="/auth/login">
+            <a className="primary" href={`/auth/login${signInQuery}`}>
               Sign in with Google
             </a>
             {session.devLoginEnabled && (
-              <a className="dev-login" href="/auth/dev-login">
+              <a className="dev-login" href={`/auth/dev-login${signInQuery}`}>
                 Development sign-in
               </a>
             )}

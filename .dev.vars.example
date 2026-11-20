@@ -20,3 +20,14 @@ ALLOWED_EMAILS=
 # Optional local shortcut at http://localhost:8787/auth/dev-login.
 # Requires SESSION_SECRET and bypasses Google and ALLOWED_EMAILS.
 # DEV_LOGIN_EMAIL=dev@example.test
+
+# Generate a separate key pair for each environment with npm run vapid:generate.
+# Keep these three values in Wrangler secrets in deployed environments.
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=
+# Set to a contact URL or a mailto: address, such as mailto:admin@example.com.
+VAPID_SUBJECT=
+
+# Maximum agent handoff notifications per token per rolling hour (default 6).
+# Each handoff counts once and is delivered to all subscribed devices. Set 0 to disable.
+# PUSH_RATE_LIMIT_PER_HOUR=6
