@@ -11,6 +11,7 @@ import type {
 } from "../shared/workspace";
 import worker from "./index";
 import { issueSession } from "./session";
+import type { PushEnv } from "./web-push";
 import { getWorkspaceStub } from "./workspace";
 
 const origin = "https://heed.test";
@@ -20,7 +21,7 @@ let workspaceId: string;
 let workspace: ReturnType<typeof getWorkspaceStub>;
 const getByName = vi.fn(() => workspace);
 const bindings = {
-  ...env,
+  ...(env as Env & PushEnv),
   SESSION_SECRET: secret,
   WORKSPACE: { getByName } as unknown as Env["WORKSPACE"],
 };
@@ -469,4 +470,63 @@ it("searches and pages terminal items newest first without skipping equal timest
     "invalid_input",
   );
   await error(await request("/api/history?limit=101"), 400, "invalid_input");
+});
+
+it("authenticates and stores one push subscription per endpoint and removes it idempotently", async () => {
+  const path = "/api/push/subscribe";
+  const endpoint = "https://fcm.googleapis.com/fcm/send/test-subscription";
+  const keys = {
+    p256dh:
+      "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+    auth: "BTBZMqHH6r4Tts7J_aSIgg",
+  };
+  const subscriptions = () =>
+    runInDurableObject(workspace, (_, { storage: { sql } }) =>
+      sql.exec("SELECT endpoint, keys FROM push_subscriptions").toArray(),
+    );
+  await error(
+    await request(path, "POST", { endpoint, keys }, { Origin: origin }),
+    401,
+    "unauthorized",
+  );
+  await error(
+    await request(path, "DELETE", { endpoint }, { Cookie: cookie }),
+    403,
+    "forbidden_origin",
+  );
+  expect(getByName).not.toHaveBeenCalled();
+  expect(
+    await json(await request("/api/push/key", "GET", undefined, {})),
+  ).toEqual({
+    publicKey: bindings.VAPID_PUBLIC_KEY,
+  });
+  expect(getByName).not.toHaveBeenCalled();
+  await error(
+    await request(path, "POST", { endpoint: "https://localhost/api", keys }),
+    400,
+    "invalid_input",
+  );
+  await error(
+    await request(path, "POST", { endpoint, keys: { ...keys, auth: "bad" } }),
+    400,
+    "invalid_input",
+  );
+  expect(await subscriptions()).toEqual([]);
+  const updatedKeys = { ...keys, auth: "AAAAAAAAAAAAAAAAAAAAAA" };
+  for (const body of [
+    { endpoint, keys },
+    { endpoint, keys },
+    { endpoint, keys: updatedKeys },
+  ]) {
+    expect(await json(await request(path, "POST", body))).toEqual({ ok: true });
+  }
+  expect(await subscriptions()).toEqual([
+    { endpoint, keys: JSON.stringify(updatedKeys) },
+  ]);
+  for (let index = 0; index < 2; index++) {
+    expect(await json(await request(path, "DELETE", { endpoint }))).toEqual({
+      ok: true,
+    });
+  }
+  expect(await subscriptions()).toEqual([]);
 });

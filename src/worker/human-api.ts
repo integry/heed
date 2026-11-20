@@ -19,6 +19,12 @@ import {
 } from "../shared/workspace";
 import { apiError, workspaceOperationError } from "./api-response";
 import type { HumanActor } from "./session";
+import {
+  PushEndpointSchema,
+  PushSubscriptionSchema,
+  vapidKeys,
+} from "./web-push";
+import type { PushEnv } from "./web-push";
 import { getWorkspaceStub } from "./workspace";
 
 const updateItemBodySchema = UpdateItemSchema.omit({ item_id: true });
@@ -40,7 +46,7 @@ export async function handleHumanApi(
   request: Request,
   url: URL,
   session: HumanActor,
-  env: Env,
+  env: Env & PushEnv,
 ): Promise<Response> {
   const { method } = request;
   const { pathname } = url;
@@ -55,6 +61,20 @@ export async function handleHumanApi(
   try {
     const workspace = getWorkspaceStub(env, session.workspaceId);
     switch (`${method} ${pathname}`) {
+      case "POST /api/push/subscribe":
+        if (!vapidKeys(env))
+          return apiError(
+            503,
+            "push_unavailable",
+            "Push notifications are not configured.",
+          );
+        return await withJson(request, PushSubscriptionSchema, (input) =>
+          workspace.subscribePush(input),
+        );
+      case "DELETE /api/push/subscribe":
+        return await withJson(request, PushEndpointSchema, (input) =>
+          workspace.unsubscribePush(input),
+        );
       case "POST /api/items":
         return await withJson(
           request,
@@ -122,6 +142,8 @@ export async function handleHumanApi(
     if (item) {
       const item_id = decodeURIComponent(item[1]);
       switch (`${method} ${item[2] ?? ""}`) {
+        case "GET ":
+          return Response.json(await workspace.getItem({ item_id }));
         case "PATCH ":
           return await withJson(request, updateItemBodySchema, (input) =>
             workspace.updateItem(actor, { ...input, item_id }),

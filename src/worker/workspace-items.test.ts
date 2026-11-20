@@ -31,7 +31,7 @@ async function events(stub: ReturnType<typeof newWorkspace>, itemId: string) {
   );
 }
 
-const pushEndpoint = "https://push.example.test/subscription";
+const pushEndpoint = "https://fcm.googleapis.com/fcm/send/test-subscription";
 
 async function subscribeForTest(stub: ReturnType<typeof newWorkspace>) {
   const keys = {
@@ -39,13 +39,15 @@ async function subscribeForTest(stub: ReturnType<typeof newWorkspace>) {
       "BFLfBq-L-72mUAuH3nwpAGqQ9De5_ftgxlUkdf45jGf4nFaueFozpviheT9ZOXjpRQSKpem_-p5GIt0XjVw8rJE",
     auth: "dscFXAila4MdiAUf94O-hQ",
   };
-  await runInDurableObject(stub, (_, { storage: { sql } }) => {
-    sql.exec(
-      "INSERT INTO push_subscriptions (endpoint, keys) VALUES (?, ?)",
-      pushEndpoint,
-      JSON.stringify(keys),
-    );
-  });
+  await stub.subscribePush({ endpoint: pushEndpoint, keys });
+}
+
+async function authorizedAgent(
+  stub: ReturnType<typeof newWorkspace>,
+  actor = reporter as Extract<Actor, { kind: "agent" }>,
+) {
+  const { token } = await stub.createToken(actor.name, actor.scope);
+  return (await stub.verifyToken(token.slice(-43)))!;
 }
 
 it("creates items in Inbox, the actor default, the explicit project or the parent's project", async () => {
@@ -652,23 +654,29 @@ it("sends Web Push only when an agent requests notification and records provider
   const stub = newWorkspace();
   const { item_id } = await stub.addItem(human, { title: "Rollout" });
   await subscribeForTest(stub);
+  const agent = await authorizedAgent(stub);
   const fetchMock = vi
     .spyOn(globalThis, "fetch")
     .mockImplementation(async () => new Response(null, { status: 201 }));
   onTestFinished(() => fetchMock.mockRestore());
 
-  await stub.flagHandoff(reporter, { item_id, note: "Review rollout" });
+  await stub.flagHandoff(agent, { item_id, note: "Review rollout" });
   const note = "Approve rollout";
-  await stub.flagHandoff(reporter, { item_id, note, notify: false });
+  await stub.flagHandoff(agent, { item_id, note, notify: false });
   await stub.flagHandoff(human, { item_id, note, notify: true });
   expect(fetchMock).not.toHaveBeenCalled();
 
-  const result = await stub.flagHandoff(reporter, {
+  const result = await stub.flagHandoff(agent, {
     item_id,
     note,
     notify: true,
   });
-  expect(result.items).toEqual([]);
+  expect(result).toMatchObject({ items: [], notification: "queued" });
+  await vi.waitFor(async () => {
+    expect((await events(stub, item_id)).map(({ kind }) => kind)).toContain(
+      "notified",
+    );
+  });
   expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
     pushEndpoint,
     expect.objectContaining({
@@ -694,23 +702,43 @@ it("sends Web Push only when an agent requests notification and records provider
   ]);
 });
 
-it("keeps the handoff and reports failure when the push service rejects it", async () => {
+it("returns the flagged handoff before a push provider responds and records no notified event on failure", async () => {
   const stub = newWorkspace();
   const { item_id } = await stub.addItem(human, { title: "Rollout" });
   await subscribeForTest(stub);
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
-    .mockImplementation(async () => new Response(null, { status: 503 }));
-  onTestFinished(() => fetchMock.mockRestore());
-
-  await runInDurableObject(stub, async (workspace) => {
-    await expect(
-      workspace.flagHandoff(steer, {
+  const agent = await authorizedAgent(stub);
+  await runInDurableObject(stub, async (workspace, ctx) => {
+    let resolve!: (response: Response) => void;
+    const promise = new Promise<Response>((done) => {
+      resolve = done;
+    });
+    let start!: () => void;
+    const started = new Promise<void>((done) => {
+      start = done;
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      start();
+      return promise;
+    });
+    const waitUntil = vi.spyOn(ctx, "waitUntil");
+    try {
+      const result = await workspace.flagHandoff(agent, {
         item_id,
         note: "Approve rollout",
         notify: true,
-      }),
-    ).rejects.toThrow("Handoff recorded, but Web Push failed");
+      });
+      expect(result).toMatchObject({
+        notification: "queued",
+        items: [expect.objectContaining({ handoff: 1 })],
+      });
+      await started;
+      resolve(new Response(null, { status: 503 }));
+      await waitUntil.mock.lastCall?.[0];
+    } finally {
+      resolve(new Response(null, { status: 503 }));
+      waitUntil.mockRestore();
+      fetchMock.mockRestore();
+    }
   });
   const log = await events(stub, item_id);
   expect(log.map(({ kind }) => kind)).toEqual(["created", "handoff"]);
@@ -726,11 +754,14 @@ it.each(["clear handoff", "remove subscription"] as const)(
     const stub = newWorkspace();
     const { item_id } = await stub.addItem(human, { title: "Rollout" });
     await subscribeForTest(stub);
+    const agent = await authorizedAgent(stub);
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(async () => new Response(null, { status: 201 }));
     onTestFinished(() => fetchMock.mockRestore());
-    await runInDurableObject(stub, async (workspace, { storage: { sql } }) => {
+    await runInDurableObject(stub, async (workspace, ctx) => {
+      const { sql } = ctx.storage;
+      const waitUntil = vi.spyOn(ctx, "waitUntil");
       const sign = crypto.subtle.sign.bind(crypto.subtle);
       const signMock = vi
         .spyOn(crypto.subtle, "sign")
@@ -746,14 +777,16 @@ it.each(["clear handoff", "remove subscription"] as const)(
           return sign(...args);
         });
       try {
-        await workspace.flagHandoff(reporter, {
+        await workspace.flagHandoff(agent, {
           item_id,
           note: "Approve rollout",
           notify: true,
         });
+        await waitUntil.mock.lastCall?.[0];
         expect(signMock).toHaveBeenCalled();
       } finally {
         signMock.mockRestore();
+        waitUntil.mockRestore();
       }
     });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -767,7 +800,10 @@ it("handles item deletion after the push request starts", async () => {
   const stub = newWorkspace();
   const { item_id } = await stub.addItem(human, { title: "Rollout" });
   await subscribeForTest(stub);
-  await runInDurableObject(stub, async (workspace, { storage: { sql } }) => {
+  const agent = await authorizedAgent(stub);
+  await runInDurableObject(stub, async (workspace, ctx) => {
+    const { sql } = ctx.storage;
+    const waitUntil = vi.spyOn(ctx, "waitUntil");
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(async () => {
@@ -783,14 +819,16 @@ it("handles item deletion after the push request starts", async () => {
         return new Response(null, { status: 201 });
       });
     try {
-      await workspace.flagHandoff(reporter, {
+      await workspace.flagHandoff(agent, {
         item_id,
         note: "Approve rollout",
         notify: true,
       });
+      await waitUntil.mock.lastCall?.[0];
       expect(fetchMock).toHaveBeenCalledOnce();
     } finally {
       fetchMock.mockRestore();
+      waitUntil.mockRestore();
     }
   });
   expect(await events(stub, item_id)).toEqual([]);
@@ -1135,4 +1173,123 @@ it("keeps the radar completion band for active work and inherited schedules", as
     reason: "More work",
   });
   expect(reopened.items[0].completed_band).toBeNull();
+});
+
+it("removes 404 and 410 subscriptions while keeping the healthy device", async () => {
+  const stub = newWorkspace();
+  const { item_id } = await stub.addItem(human, { title: "Release" });
+  await subscribeForTest(stub);
+  const agent = await authorizedAgent(stub);
+  await runInDurableObject(stub, async (workspace, ctx) => {
+    const { sql } = ctx.storage;
+    const { keys } = sql
+      .exec<{ keys: string }>("SELECT keys FROM push_subscriptions")
+      .one();
+    for (const status of [404, 410]) {
+      workspace.subscribePush({
+        endpoint: `${pushEndpoint}-${status}`,
+        keys: JSON.parse(keys),
+      });
+    }
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url) => {
+        const status =
+          url === pushEndpoint ? 201 : Number(String(url).slice(-3));
+        return new Response(null, { status });
+      });
+    const waitUntil = vi.spyOn(ctx, "waitUntil");
+    try {
+      await workspace.flagHandoff(agent, {
+        item_id,
+        note: "Approve this",
+        notify: true,
+      });
+      await waitUntil.mock.lastCall?.[0];
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(
+        sql.exec("SELECT endpoint FROM push_subscriptions").toArray(),
+      ).toEqual([{ endpoint: pushEndpoint }]);
+    } finally {
+      waitUntil.mockRestore();
+      fetchMock.mockRestore();
+    }
+  });
+  expect((await events(stub, item_id)).map(({ kind }) => kind)).toEqual([
+    "created",
+    "handoff",
+    "notified",
+  ]);
+});
+
+it("enforces the rolling quota per token across eviction and item deletion", async () => {
+  const stub = newWorkspace();
+  await subscribeForTest(stub);
+  const agent = await authorizedAgent(stub);
+  const sameLabel = await authorizedAgent(stub);
+  const { item_id } = await stub.addItem(human, { title: "Release" });
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async () => new Response(null, { status: 201 }));
+  onTestFinished(() => fetchMock.mockRestore());
+
+  await runInDurableObject(stub, async (workspace, ctx) => {
+    const waitUntil = vi.spyOn(ctx, "waitUntil");
+    try {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        expect(
+          await workspace.flagHandoff(agent, {
+            item_id,
+            note: `Approvals ${attempt}`,
+            notify: true,
+          }),
+        ).toMatchObject({ notification: "queued" });
+        await waitUntil.mock.lastCall?.[0];
+      }
+      workspace.deleteItem(human, { item_id });
+    } finally {
+      waitUntil.mockRestore();
+    }
+  });
+  await evictDurableObject(stub);
+
+  const next = await stub.addItem(human, { title: "Follow-up" });
+  const flag = { item_id: next.item_id, note: "Next approval", notify: true };
+  expect(await stub.flagHandoff(agent, flag)).toMatchObject({
+    notification: "rate_limited",
+    items: [expect.objectContaining({ handoff: 1, handoff_note: flag.note })],
+  });
+  expect(fetchMock).toHaveBeenCalledTimes(6);
+  await runInDurableObject(stub, async (workspace, ctx) => {
+    const waitUntil = vi.spyOn(ctx, "waitUntil");
+    try {
+      expect(await workspace.flagHandoff(sameLabel, flag)).toMatchObject({
+        notification: "queued",
+      });
+      await waitUntil.mock.lastCall?.[0];
+      const { attempts } = ctx.storage.sql
+        .exec<{ attempts: string }>(
+          "SELECT attempts FROM push_rate_limits WHERE token_id = ?",
+          agent.token_id!,
+        )
+        .one();
+      const recent = JSON.parse(attempts) as number[];
+      recent[0] = Date.now() - 60 * 60 * 1000;
+      ctx.storage.sql.exec(
+        "UPDATE push_rate_limits SET attempts = ? WHERE token_id = ?",
+        JSON.stringify(recent),
+        agent.token_id!,
+      );
+      expect(await workspace.flagHandoff(agent, flag)).toMatchObject({
+        notification: "queued",
+      });
+      await waitUntil.mock.lastCall?.[0];
+      expect(await workspace.flagHandoff(agent, flag)).toMatchObject({
+        notification: "rate_limited",
+      });
+    } finally {
+      waitUntil.mockRestore();
+    }
+  });
+  expect(fetchMock).toHaveBeenCalledTimes(8);
 });

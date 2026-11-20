@@ -13,6 +13,7 @@ import {
   useAction,
 } from "./workspace-controls";
 import type { SaveMutation } from "./workspace-controls";
+import { PushSettings } from "./PushSettings";
 
 type SettingsActions = { live: boolean; save: SaveMutation };
 
@@ -531,6 +532,7 @@ export function Settings({
 }) {
   return (
     <Panel title="Settings" close={close} className="settings-panel">
+      <PushSettings />
       <Projects projects={projects} items={items} live={live} save={save} />
       <Tokens projects={projects} live={live} save={save} />
       <Account timezone={timezone} email={email} live={live} save={save} />

@@ -42,6 +42,7 @@ it("returns the plaintext once, persists only its hash, and revokes by ID", asyn
   expect(await stub.verifyToken(secret)).toEqual({
     kind: "agent",
     name: "Builder",
+    token_id: metadata.id,
     scope: "steer",
     default_project_id: project.id,
   });

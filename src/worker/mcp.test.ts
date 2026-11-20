@@ -1,3 +1,4 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   CLIENT_CAPABILITIES_META_KEY,
@@ -291,4 +292,46 @@ it("rejects a mismatched Origin and accepts the endpoint's own Origin", async ()
     },
   );
   expect(allowed.status).toBe(200);
+});
+
+it("reports a flagged handoff without delivery when the token has exhausted its push quota", async () => {
+  const { token, id } = await workspace.createToken("Builder");
+  const endpoint = "https://fcm.googleapis.com/fcm/send/mcp-quota-test";
+  try {
+    await workspace.subscribePush({
+      endpoint,
+      keys: {
+        p256dh:
+          "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+        auth: "BTBZMqHH6r4Tts7J_aSIgg",
+      },
+    });
+    await runInDurableObject(workspace, (_, { storage: { sql } }) => {
+      sql.exec(
+        "INSERT INTO push_rate_limits (token_id, attempts) VALUES (?, ?)",
+        id,
+        JSON.stringify(Array.from({ length: 6 }, () => Date.now())),
+      );
+    });
+    const { item_id } = await workspace.addItem(human, {
+      title: "Quota check",
+    });
+    const response = await call(token, "flag_handoff", {
+      item_id,
+      note: "Review this",
+      notify: true,
+    });
+    expect(response.isError).toBeUndefined();
+    expect(response.structuredContent).toMatchObject({
+      item_id,
+      notification: "rate_limited",
+      message: expect.stringContaining("No push sent"),
+    });
+    expect(await workspace.getItem({ item_id })).toMatchObject({
+      handoff: 1,
+      handoff_note: "Review this",
+    });
+  } finally {
+    await workspace.unsubscribePush({ endpoint });
+  }
 });

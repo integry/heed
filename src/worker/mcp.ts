@@ -113,8 +113,18 @@ const tools = [
     "flag_handoff",
     "Use when the user must decide or provide something before the work can continue or be trusted: a decision, a review, a credential, a manual step. Say exactly what you need in the note, phrased so it can be answered in one line. Set notify to true only if the user's guidance says this kind of thing is worth interrupting them for; a notification reaches their phone immediately. When in doubt, flag without notifying.",
     FlagHandoffSchema,
-    async (workspace, actor, input) =>
-      itemResult(await workspace.flagHandoff(actor, input)),
+    async (workspace, actor, input) => {
+      const result = await workspace.flagHandoff(actor, input);
+      const { notification } = result;
+      return {
+        ...itemResult(result),
+        ...(notification && { notification }),
+        ...(notification === "rate_limited" && {
+          message:
+            "Handoff flagged. No push sent because this token reached its hourly push limit.",
+        }),
+      };
+    },
   ),
   defineTool(
     "reopen_item",
