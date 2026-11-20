@@ -10,6 +10,7 @@ import {
   type PointerEvent,
 } from "react";
 import {
+  effectiveSchedule,
   isBlocked,
   isLive,
   isStale,
@@ -188,6 +189,10 @@ function edgePath(source: Bubble, target: Bubble) {
   return `M ${source.point.x - y * start} ${source.point.y + x * start} Q ${middle.x - y * bend} ${middle.y + x * bend} ${target.point.x - y * end} ${target.point.y + x * end}`;
 }
 
+export function isRadarRowVisible(item: CanvasItem, showGhosts: boolean) {
+  return showGhosts || item.status !== "done";
+}
+
 function radarTree(
   tree: readonly StreamRow<CanvasItem>[],
   showGhosts: boolean,
@@ -199,7 +204,7 @@ function radarTree(
     parent: string | null,
   ): StreamRow<CanvasItem>[] {
     return children.flatMap(({ item, children }) => {
-      if (!showGhosts && item.status === "done") return visit(children, parent);
+      if (!isRadarRowVisible(item, showGhosts)) return visit(children, parent);
       parents.set(item.id, parent);
       const row = { item, children: visit(children, item.id) };
       rows.set(item.id, row);
@@ -234,6 +239,7 @@ export function RadarLens({
   const preventClick = useRef(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [tooltip, setTooltip] = useState<string | null>(null);
+  const [dropMessage, setDropMessage] = useState<string | null>(null);
   const arrowId = useId();
   const projects = useMemo(
     () => allProjects.filter(({ hidden }) => hidden === 0),
@@ -457,6 +463,7 @@ export function RadarLens({
       kind: Gesture["kind"],
     ) => {
       if (event.button !== 0 || !event.isPrimary) return;
+      setDropMessage(null);
       const point = scenePoint(event);
       gesture.current = {
         id: bubble.item.id,
@@ -511,6 +518,19 @@ export function RadarLens({
     };
   }
 
+  function canApplySchedule(item: CanvasItem, date: string | null | undefined) {
+    if (
+      date === null &&
+      effectiveSchedule({ ...item, scheduled_on: null }, items) !== null
+    ) {
+      setDropMessage(
+        `${item.title} can’t move to Backlog because it would inherit a schedule from an ancestor.`,
+      );
+      return false;
+    }
+    return true;
+  }
+
   function release(event: PointerEvent<SVGSVGElement>) {
     if (gesture.current?.pointer !== event.pointerId) return;
     const drag = dragPreview(event);
@@ -524,7 +544,8 @@ export function RadarLens({
       const target = goalDropTarget(next.point);
       const band = bandById.get(item.id);
       if (target && target !== band) {
-        reschedule(item.id, scheduleForRing(target, now, timezone));
+        const date = scheduleForRing(target, now, timezone);
+        if (canApplySchedule(item, date)) reschedule(item.id, date);
       } else if (distance(next.point, CENTER) <= GOAL_RADIUS) {
         moveRadar(
           item.id,
@@ -548,7 +569,8 @@ export function RadarLens({
         now,
         timezone,
       );
-      if (drop) moveRadar(item.id, drop);
+      if (drop && canApplySchedule(item, drop.scheduled_on))
+        moveRadar(item.id, drop);
     }
   }
 
@@ -556,6 +578,7 @@ export function RadarLens({
     (id: string | null) => {
       focusGoal(id);
       setTooltip(null);
+      setDropMessage(null);
       cancelGesture();
     },
     [focusGoal, cancelGesture],
@@ -772,7 +795,12 @@ export function RadarLens({
             ))}
           </g>
         </svg>
-        {tooltip && !preview && <p className="radar-tooltip">{tooltip}</p>}
+        <div aria-live="polite">
+          {dropMessage && <p className="radar-tooltip">{dropMessage}</p>}
+        </div>
+        {!dropMessage && tooltip && !preview && (
+          <p className="radar-tooltip">{tooltip}</p>
+        )}
       </div>
     </div>
   );

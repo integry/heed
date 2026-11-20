@@ -14,6 +14,7 @@ import {
   type Lens,
 } from "./lenses";
 import { HorizonStream } from "./horizon-stream";
+import { isRadarRowVisible } from "./RadarLens";
 import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
 import { workspaceView, type MutationInput } from "./workspace-state";
@@ -220,8 +221,11 @@ function Workspace({
   function selectStreamItem(id: string) {
     select(id);
     if (id === focusedGoal) return;
+    const focusForRadar = lens.id === "radar" || lens.id === "list";
     let parent = view.items.get(id)?.parent_id ?? null;
-    while (parent && !filtered.has(parent)) {
+    while (parent) {
+      const row = filtered.get(parent);
+      if (row && (!focusForRadar || isRadarRowVisible(row, showGhosts))) break;
       parent = view.items.get(parent)?.parent_id ?? null;
     }
     focusGoal(parent);

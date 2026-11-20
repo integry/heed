@@ -11,6 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SocketMessage } from "../shared/workspace-socket";
 import { App } from "./App";
 import { lensRegistry, type Lens } from "./lenses";
+import { cellPoint } from "./radar-geometry";
 import { child, goal, project, snapshot, tomorrow } from "./workspace-fixtures";
 
 class TestSocket extends EventTarget {
@@ -430,6 +431,115 @@ it("keeps radar positions on status updates and filters attention and completed 
   fireEvent.click(radar.getByRole("button", { name: goal.title }));
   expect(radar.getByRole("button", { name: child.title })).toBeTruthy();
 });
+
+const completedGoal = {
+  ...goal,
+  status: "done",
+  completed_at: "2024-04-03T11:00:00Z",
+} as const;
+
+it.each(["goal", "overview", "new ancestor schedule", "no ancestor schedule"])(
+  "checks inheritance before applying a Radar Backlog drop (%s)",
+  async (scenario) => {
+    const overview = scenario === "overview";
+    const initiallyUnscheduled = scenario.includes("ancestor schedule");
+    const parent = overview
+      ? completedGoal
+      : {
+          ...goal,
+          scheduled_on: initiallyUnscheduled ? null : goal.scheduled_on,
+        };
+    const task = {
+      ...child,
+      scheduled_on: initiallyUnscheduled ? goal.scheduled_on : null,
+    };
+    await openWorkspace(undefined, { ...snapshot, items: [parent, task] });
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    if (overview)
+      fireEvent.click(
+        radar.getByRole("checkbox", { name: "Show completed ghosts" }),
+      );
+    else fireEvent.click(radar.getByRole("button", { name: parent.title }));
+
+    const bubble = radar.getByRole("button", { name: task.title });
+    const scene = bubble.closest(".radar-node")!.parentElement!;
+    Object.defineProperty(scene, "getScreenCTM", { value: () => null });
+    const [clientX, clientY] = bubble
+      .parentElement!.getAttribute("transform")!
+      .slice("translate(".length, -1)
+      .split(",")
+      .map(Number);
+    const target = overview
+      ? cellPoint(
+          { band: "backlog", sector: 0, sectors: 1 },
+          { angle: 0.5, radius: 0.5 },
+        )
+      : { x: 625, y: 716 };
+    const pointer = { pointerId: 1, isPrimary: true, button: 0 };
+    const destination = { ...pointer, clientX: target.x, clientY: target.y };
+    const socket = TestSocket.current;
+    fireEvent.pointerDown(bubble, { ...pointer, clientX, clientY });
+    fireEvent.pointerMove(bubble, destination);
+    expect(socket.send).not.toHaveBeenCalled();
+    if (scenario === "new ancestor schedule")
+      socket.receive({ type: "ITEM_UPSERT", seq: 2, item: goal });
+    fireEvent.pointerUp(bubble, destination);
+
+    const rejection = /it would inherit a schedule from an ancestor/;
+    if (scenario === "no ancestor schedule") {
+      expect(JSON.parse(socket.send.mock.lastCall![0])).toMatchObject({
+        type: "UPDATE_ITEM",
+        input: { item_id: task.id, scheduled_on: null },
+      });
+      expect(radar.queryByText(rejection)).toBeNull();
+    } else {
+      expect(socket.send).not.toHaveBeenCalled();
+      expect(radar.getByText(rejection)).toBeTruthy();
+    }
+  },
+);
+
+it.each(["Radar", "List"])(
+  "reveals a selected %s child through a hidden completed ancestor",
+  async (source) => {
+    const middle = {
+      ...completedGoal,
+      id: "middle",
+      parent_id: goal.id,
+      title: "Completed milestone",
+    };
+    const task = { ...child, parent_id: middle.id, depth: 3 };
+    await openWorkspace(undefined, {
+      ...snapshot,
+      items: [goal, middle, task],
+    });
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    fireEvent.click(
+      radar.getByRole("checkbox", { name: "Show completed ghosts" }),
+    );
+    const lens = screen.getByRole("combobox", { name: "Lens" });
+    if (source === "List") {
+      fireEvent.change(lens, { target: { value: "list" } });
+      const list = within(screen.getByRole("region", { name: "List" }));
+      fireEvent.click(
+        list.getByRole("button", { name: new RegExp(task.title) }),
+      );
+      fireEvent.change(lens, { target: { value: "radar" } });
+    } else {
+      const stream = within(
+        screen.getByRole("region", { name: "Horizon Stream" }),
+      );
+      fireEvent.click(stream.getByRole("button", { name: task.title }));
+    }
+    expect(radar.queryByRole("button", { name: middle.title })).toBeNull();
+    expect(radar.getByLabelText(`Items in ${goal.title}`)).toBeTruthy();
+    expect(
+      radar
+        .getByRole("button", { name: task.title })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+  },
+);
 
 it("offers a registered Dependencies lens for the focused goal", async () => {
   const dependencies: Lens = {
