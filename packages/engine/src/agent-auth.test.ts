@@ -35,7 +35,11 @@ it("rejects malformed and unknown-workspace tokens before the limiter or Workspa
     for (const path of ["/api/report", "/mcp"]) {
       const response = await fetchOpen(request(path, token), bindings);
       expect(response.status).toBe(401);
-      expect(response.headers.get("WWW-Authenticate")).toBe("Bearer");
+      expect(response.headers.get("WWW-Authenticate")).toBe(
+        path === "/mcp"
+          ? `Bearer resource_metadata="https://heed.test/.well-known/oauth-protected-resource/mcp", scope="report"${token ? ', error="invalid_token"' : ""}`
+          : "Bearer",
+      );
     }
   }
   expect(getByName).not.toHaveBeenCalled();

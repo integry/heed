@@ -18,15 +18,11 @@ import {
   UpdateItemSchema,
 } from "@heedwork/core";
 import type { Actor, ItemOperationResult } from "@heedwork/core";
-import { addItemWithLimit } from "./workspace.js";
-import type { getWorkspaceStub } from "./workspace.js";
-import type { AppContext } from "./app.js";
-import {
-  checkLimit,
-  LimitError,
-  OpenPushAllowance,
-  recordUsage,
-} from "./seams.js";
+import { addItemWithLimit, SteerScopeError } from "./workspace.js";
+import type { Workspace } from "./workspace.js";
+import { checkLimit, LimitError, OpenPushAllowance } from "./seams.js";
+import type { LimitAction, Limits } from "./seams.js";
+import { mcpChallenge } from "./oauth.js";
 
 const instructions =
   "Heed is the user's live view of everything they and their agents are working on. It only stays accurate if you report to it. Whenever you do work for the user: find or create the matching item, mark it active when you start, report after each meaningful step, and mark it done, blocked or flagged for handoff when you stop. Heed does not assign work — never pick up items from it on your own initiative. The user's current guidance follows; it decides where items go, how important they are and when the user may be interrupted. Follow it over your own judgement.";
@@ -37,17 +33,51 @@ const defaultGuidance =
 const MAX_TOOL_RESULT_BYTES = 128 * 1024;
 
 type Agent = Extract<Actor, { kind: "agent" }>;
-type WorkspaceStub = ReturnType<typeof getWorkspaceStub>;
+type McpWorkspace = Pick<
+  Workspace,
+  | "getCanvas"
+  | "getGuidance"
+  | "addItem"
+  | "updateExistingItem"
+  | "reportProgress"
+  | "updateItem"
+  | "setDependency"
+  | "flagHandoff"
+  | "reopenItem"
+  | "setGuidance"
+>;
+
+type McpContext = {
+  workspaceId: string;
+  limits: Limits;
+  recordWrite: (operation: string) => void;
+  oauth: boolean;
+};
+
+export type McpLimitCheck = (
+  action: LimitAction,
+) => Promise<{ ok: true; pushCap?: number } | { ok: false; reason: string }>;
+
+export function mcpLimits(check: McpLimitCheck): Limits {
+  return {
+    async check(_workspaceId, action) {
+      const decision = await check(action);
+      return decision.ok && decision.pushCap !== undefined
+        ? new OpenPushAllowance(decision.pushCap)
+        : decision;
+    },
+  };
+}
 
 function defineTool<T>(
   name: string,
   description: string,
   schema: z.ZodObject<z.ZodRawShape> & z.ZodType<T>,
   run: (
-    workspace: WorkspaceStub,
+    workspace: McpWorkspace,
     actor: Agent,
     input: T,
-    context: { pushCap: number | null; app: AppContext; workspaceId: string },
+    context: McpContext & { pushCap: number | null },
   ) => Promise<Record<string, unknown>>,
   limit?: (input: T) => "push" | undefined,
 ) {
@@ -60,11 +90,10 @@ function defineTool<T>(
   return {
     definition,
     async call(
-      workspace: WorkspaceStub,
+      workspace: McpWorkspace,
       actor: Agent,
       args: unknown,
-      workspaceId: string,
-      app: AppContext,
+      context: McpContext,
     ) {
       const input = schema.safeParse(args ?? {});
       if (!input.success) {
@@ -75,19 +104,15 @@ function defineTool<T>(
       }
       const action = limit?.(input.data);
       const decision =
-        action && (await checkLimit(app.limits, workspaceId, action));
+        action &&
+        (await checkLimit(context.limits, context.workspaceId, action));
       const pushCap =
         decision instanceof OpenPushAllowance ? decision.cap : null;
       const result = await run(workspace, actor, input.data, {
+        ...context,
         pushCap,
-        app,
-        workspaceId,
       });
-      if (name !== "get_canvas")
-        recordUsage(app.ctx, app.usage, workspaceId, {
-          type: "agent.write",
-          operation: name,
-        });
+      if (name !== "get_canvas") context.recordWrite(name);
       return result;
     },
   };
@@ -114,13 +139,13 @@ const tools = [
     "add_item",
     "Add work to the user's view. Use it when you start something that has no item yet, when you split a task into parts (pass parent_id), or when you discover follow-up work that should not be forgotten (leave it in the backlog). Call get_canvas first to avoid duplicates, and pass external_key (PR URL or repo#branch) so retries update the same item.",
     AddItemSchema,
-    async (workspace, actor, input, { app, workspaceId }) =>
+    async (workspace, actor, input, { limits, workspaceId }) =>
       itemResult(
         await addItemWithLimit(
           () => workspace,
           actor,
           input,
-          app.limits,
+          limits,
           workspaceId,
         ),
       ),
@@ -205,7 +230,7 @@ function toolResult(
 }
 
 class HeedMcpServer extends Server {
-  constructor(private readonly workspace: WorkspaceStub) {
+  constructor(private readonly workspace: McpWorkspace) {
     super({ name: "heed", version: "0.1.0" }, { capabilities: { tools: {} } });
   }
 
@@ -227,9 +252,9 @@ class HeedMcpServer extends Server {
 
 function createServer(
   actor: Agent,
-  workspace: WorkspaceStub,
-  workspaceId: string,
-  app: AppContext,
+  workspace: McpWorkspace,
+  context: McpContext,
+  scopeDenied: () => void,
 ) {
   const server = new HeedMcpServer(workspace);
   server.setRequestHandler("tools/list", () => ({
@@ -245,9 +270,10 @@ function createServer(
           "Unknown tool. Call tools/list to see the available tools.",
         );
       return toolResult(
-        await tool.call(workspace, actor, params.arguments, workspaceId, app),
+        await tool.call(workspace, actor, params.arguments, context),
       );
     } catch (error) {
+      if (context.oauth && error instanceof SteerScopeError) scopeDenied();
       if (error instanceof LimitError)
         return toolResult(
           {
@@ -280,24 +306,34 @@ function createServer(
 export async function handleMcp(
   request: Request,
   actor: Agent,
-  workspace: WorkspaceStub,
-  workspaceId: string,
-  app: AppContext,
+  workspace: McpWorkspace,
+  context: McpContext,
 ) {
+  let denied = false;
+  const server = () =>
+    createServer(actor, workspace, context, () => {
+      denied = true;
+    });
+  const response = await dispatchMcp(request, server);
+  if (!denied) return response;
+  const headers = new Headers(response.headers);
+  headers.set("WWW-Authenticate", mcpChallenge(request, true));
+  headers.set("Cache-Control", "no-store");
+  return new Response(response.body, { status: 403, headers });
+}
+
+async function dispatchMcp(request: Request, create: () => HeedMcpServer) {
   // The SDK's built-in compatibility fallback uses SSE for 2025 requests.
   if (!(await isLegacyRequest(request))) {
-    const handler = createMcpHandler(
-      () => createServer(actor, workspace, workspaceId, app),
-      {
-        legacy: "reject",
-        responseMode: "json",
-        maxSubscriptions: 0,
-      },
-    );
+    const handler = createMcpHandler(create, {
+      legacy: "reject",
+      responseMode: "json",
+      maxSubscriptions: 0,
+    });
     return handler.fetch(request);
   }
 
-  const server = createServer(actor, workspace, workspaceId, app);
+  const server = create();
   const transport = new WebStandardStreamableHTTPServerTransport({
     enableJsonResponse: true,
   });

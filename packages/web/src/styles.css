@@ -626,6 +626,9 @@ fieldset {
   color: inherit;
   text-decoration: none;
 }
+.connected-apps {
+  margin-top: 16px;
+}
 .settings-row,
 .token-row {
   margin: 6px 0;

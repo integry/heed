@@ -163,6 +163,8 @@ export async function handleHumanApi(
         );
       case "GET /api/tokens":
         return Response.json(await workspace().listTokens());
+      case "GET /api/connected-apps":
+        return Response.json(await workspace().listConnectedApps());
       case "POST /api/tokens":
         return await withJson(
           request,
@@ -239,6 +241,15 @@ export async function handleHumanApi(
       return revoked
         ? Response.json({ ok: true })
         : apiError(404, "not_found", "Token not found");
+    }
+    const grant = /^\/api\/connected-apps\/([^/]+)$/.exec(pathname);
+    if (grant && method === "DELETE") {
+      const revoked = await workspace().revokeConnectedApp(
+        decodeURIComponent(grant[1]),
+      );
+      return revoked
+        ? Response.json({ ok: true })
+        : apiError(404, "not_found", "Connected app not found");
     }
 
     return apiError(404, "not_found", "Not found");

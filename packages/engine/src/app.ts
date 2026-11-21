@@ -1,8 +1,8 @@
 import { ReportProgressSchema } from "@heedwork/core";
 import { apiError, limitResponse } from "./api-response.js";
-import { requireAgent } from "./agent-auth.js";
+import { requireAgent, requireAgentToken } from "./agent-auth.js";
 import { handleHumanApi } from "./human-api.js";
-import { handleMcp } from "./mcp.js";
+import { handleOAuth, mcpChallenge } from "./oauth.js";
 import { requireSession } from "./session.js";
 import { handleTokenBootstrap } from "./token-admin.js";
 import type { TokenAdminEnv } from "./token-admin.js";
@@ -10,7 +10,7 @@ import { vapidKeys } from "./web-push.js";
 import type { PushEnv } from "./web-push.js";
 import type { Workspace } from "./workspace.js";
 import { getWorkspaceStub, socketUpgrade } from "./workspace.js";
-import { LimitError, recordUsage } from "./seams.js";
+import { LimitError, OpenPushAllowance, recordUsage } from "./seams.js";
 import type { AppSeams, WorkspaceSession } from "./seams.js";
 
 export interface AppEnv extends TokenAdminEnv, PushEnv {
@@ -110,6 +110,9 @@ async function route<Bindings extends AppEnv>(
     ctx,
   };
 
+  const oauth = handleOAuth(request, url, app);
+  if (oauth) return oauth;
+
   if (pathname.startsWith("/auth/")) {
     return app.auth.handleAuthRoute(request);
   }
@@ -155,15 +158,38 @@ async function route<Bindings extends AppEnv>(
     if (origin !== null && origin !== url.origin) {
       return new Response("Invalid Origin", { status: 403 });
     }
-    if (request.method !== "POST") {
-      return new Response("Method not allowed", {
-        status: 405,
-        headers: { Allow: "POST" },
-      });
-    }
-    return requireAgent(request, app, (actor, workspace, workspaceId) =>
-      handleMcp(request, actor, workspace, workspaceId, app),
+    const response = await requireAgentToken(
+      request,
+      app,
+      async (secret, workspace, workspaceId) => {
+        const { response, writes } = await workspace.mcp(
+          request,
+          secret,
+          async (action) => {
+            const decision = await app.limits.check(workspaceId, action);
+            return decision.ok
+              ? {
+                  ok: true,
+                  ...(decision instanceof OpenPushAllowance && {
+                    pushCap: decision.cap,
+                  }),
+                }
+              : { ok: false, reason: decision.reason };
+          },
+        );
+        for (const operation of writes)
+          recordUsage(ctx, app.usage, workspaceId, {
+            type: "agent.write",
+            operation,
+          });
+        return response;
+      },
     );
+    if (response.status !== 401) return response;
+    const headers = new Headers(response.headers);
+    headers.set("WWW-Authenticate", mcpChallenge(request));
+    headers.set("Cache-Control", "no-store");
+    return new Response(response.body, { status: 401, headers });
   }
 
   if (pathname === "/ws") {

@@ -73,6 +73,7 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
   mutation("CREATE_TOKEN", CreateTokenSchema),
   mutation("REVOKE_TOKEN", z.strictObject({ token_id: resourceId })),
   mutation("RESET_WORKSPACE", ResetWorkspaceBodySchema),
+  mutation("REVOKE_CONNECTED_APP", z.strictObject({ grant_id: resourceId })),
   z.strictObject({
     type: z.literal("UPDATE_ITEM"),
     requestId: SocketRequestIdSchema,
