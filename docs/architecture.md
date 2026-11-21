@@ -1,6 +1,6 @@
 # HEED (`heed.work`) — Product & Technical Specification
 
-**Version:** 1.6 (MVP Blueprint, revised after architecture review)
+**Version:** 1.7 (MVP Blueprint, revised after architecture review)
 
 **Model:** Open source (MIT, self-hostable). The hosted service (`heed.work`) is a separate private layer; see section 8.
 
@@ -257,6 +257,7 @@ CREATE TABLE items (
   created_by TEXT NOT NULL DEFAULT 'human', -- 'human' | 'agent'
   ref_url TEXT,
   note TEXT,                                -- latest one-line status
+  acceptance TEXT NOT NULL DEFAULT '[]',    -- JSON array of "done when" criteria: at most 8, each at most 200 characters
   hidden INTEGER NOT NULL DEFAULT 0,        -- view toggle; steer-only
   demo INTEGER NOT NULL DEFAULT 0 CHECK (demo IN (0, 1)),
   last_heartbeat_at TEXT,
@@ -288,7 +289,7 @@ CREATE TABLE events (                       -- append-only activity log, feeds t
   item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
   at TEXT NOT NULL DEFAULT (datetime('now')),
   actor TEXT NOT NULL,                      -- 'human' or the agent name
-  kind TEXT NOT NULL,                       -- 'created' | 'status' | 'note' | 'handoff' | 'reopened' | 'moved' | 'notified'
+  kind TEXT NOT NULL,                       -- 'created' | 'status' | 'note' | 'handoff' | 'reopened' | 'moved' | 'notified' | 'judged' | 'judge_feedback'
   detail TEXT                               -- JSON: old/new values, note text, push text
 );
 
@@ -329,7 +330,7 @@ Rules enforced on write:
 
 * A sub-item inherits `project_id` from its parent. Its `depth` is the parent's plus one; a write that would exceed depth 3 is rejected with an error telling the agent to attach to the parent instead.
 * A new item with no parent and no project goes to the token's default project, or to Inbox. Agents cannot create projects.
-* When the human (UI, voice, or a `steer` token) sets `priority`, `scheduled_on`, `sort_key` or position, that field is added to `locked_fields`. A `report` token's write to a locked field is ignored and the response says so. The human can unlock a field from the inspector.
+* When the human (UI, voice, or a `steer` token) sets `priority`, `scheduled_on`, `sort_key`, `acceptance` or position, that field is added to `locked_fields`. A `report` token's write to a locked field is ignored and the response says so. The human can unlock a field from the inspector.
 * Parents never complete automatically; when the last open child finishes, the parent shows a full progress arc and waits.
 * Every status change, note, handoff, reopen, move and push is appended to `events`.
 * When an item first becomes `active` with no `scheduled_on`, `scheduled_on` is set to today.
@@ -348,9 +349,9 @@ Served at `/mcp` (Streamable HTTP). The same operations back `/api/command` and 
 | Tool | Parameters | Behaviour |
 | --- | --- | --- |
 | `get_canvas` | `project?`, `parent_id?`, `query?`, `include_done?`, `limit?` | Returns the user's current guidance plus a compact list of items (ID, title, project, status, parent, link) so an agent can find the item to report against and avoid creating duplicates. It is not a work queue. |
-| `add_item` | `title`, `project?`, `parent_id?`, `external_key?`, `tags?`, `priority?`, `scheduled_on?`, `time_type?`, `time_at?`, `ref_url?`, `note?`, `status?`, `agent_name?` | Creates an item or sub-item, placed according to the guidance. With an `external_key` that already exists, updates that item instead of creating a duplicate. |
-| `report_progress` | `item_id` or `external_key`, `status?`, `note?`, `ref_url?`, `agent_name?` | Heartbeat plus optional status change (`active`, `blocked`, `done`, `cancelled`). Without `status` it only refreshes the heartbeat and note. |
-| `update_item` | `item_id`, `title?`, `tags?`, `ref_url?`, `parent_id?`, `priority?`, `scheduled_on?`, `time_type?`, `time_at?`; steer-only: `project?`, `hidden?`, `sort_key?`, position, unlock | Edits an item. Writes to human-locked fields from a `report` token are ignored and reported back. |
+| `add_item` | `title`, `project?`, `parent_id?`, `external_key?`, `tags?`, `priority?`, `scheduled_on?`, `time_type?`, `time_at?`, `ref_url?`, `note?`, `status?`, `agent_name?`, `acceptance?` | Creates an item or sub-item, placed according to the guidance. With an `external_key` that already exists, updates that item instead of creating a duplicate. |
+| `report_progress` | `item_id` or `external_key`, `status?`, `note?`, `ref_url?`, `agent_name?`, `evidence?` | Heartbeat plus optional status change (`active`, `blocked`, `done`, `cancelled`). Without `status` it only refreshes the heartbeat and note. `evidence` (at most 4,000 characters) is accepted with `status: "done"` and stored on that status event. |
+| `update_item` | `item_id`, `title?`, `tags?`, `ref_url?`, `parent_id?`, `priority?`, `scheduled_on?`, `time_type?`, `time_at?`, `acceptance?`; steer-only: `project?`, `hidden?`, `sort_key?`, position, unlock | Edits an item. Writes to human-locked fields from a `report` token are ignored and reported back. |
 | `set_dependency` | `item_id`, `blocked_by_id`, `action: "add"｜"remove"` | Adds or removes a dependency edge. |
 | `flag_handoff` | `item_id`, `note`, `notify?` | Marks the item as needing a human decision or input and records exactly what is needed. With `notify: true` it also sends a push notification. Clearing the flag is steer-only. |
 | `reopen_item` | `item_id` or `external_key`, `reason` | Brings a done item back (boomerang), at any age. |
@@ -359,6 +360,27 @@ Served at `/mcp` (Streamable HTTP). The same operations back `/api/command` and 
 Every tool response includes `guidance_updated_at`, so a long-running agent can tell the guidance has changed and re-read it with `get_canvas`.
 
 `POST /api/report` accepts the same body as `report_progress` over plain HTTP, so session hooks (start, stop) can report without relying on the model to call a tool.
+
+### Acceptance criteria and the shadow judge
+
+An item may carry up to eight short acceptance criteria ("done when…"), set by the human or by the agent that creates the item. A `done` report may carry `evidence`: the output that shows the criteria are met, such as a test summary, a CI result or a link. Both are useful to the human on their own and are always available.
+
+The judge is optional and off unless a host configures it (section 8). It is a decision model (the reference target is TypeSafe's Jev): given a state and typed questions it returns probabilities, not text. When a report sets an item to `done`, the item has at least one criterion, and a judge is configured:
+
+1. The Durable Object stores the report as usual and returns the judging input to the Worker. The report response is not delayed.
+2. The Worker, inside `ctx.waitUntil`, sends one request with one yes/no question per criterion ("Does the evidence show this criterion is met?"). The state holds the item title, the criteria, the evidence, the report note and the user's guidance as separate labelled fields, and the instructions say that the note and evidence are claims by the party being judged.
+3. The Worker makes one further Durable Object call that appends a `judged` event: the model ID that answered, a probability per criterion, and whether evidence was supplied. This is one row written per judged report.
+
+The judge runs in **shadow mode** only:
+
+* A verdict never changes `status`, `handoff`, Needs me, the roll-up ring or any other derived state, and never sends a push.
+* Verdicts are never returned to agents: not in tool responses, `get_canvas` or `/api/report`. An agent must not be able to tune its report against the judge.
+* The human sees the verdict in the inspector, labelled as a shadow verdict, with each criterion shown as likely met (probability at or above 0.7), likely not met (at or below 0.3) or unclear. Two buttons record whether the human agrees; that writes a `judge_feedback` event.
+* Settings shows the agreement between verdicts and feedback over the retained events, so thresholds can be chosen from the workspace's own data before any verdict is allowed to act.
+
+A failed, refused or rate-limited judge call is dropped silently and recorded nowhere; judging is never retried and never blocks a report. The model ID is pinned by configuration, since a moved alias would invalidate any threshold derived from past verdicts.
+
+Why shadow only: published evaluations find Jev well calibrated and close to frontier judges when a verdict can be read from the evidence, weaker when it must be derived (code, maths, logic), and markedly more easily swayed than generative judges by text addressed to the evaluator. In Heed the agent being judged writes the report, so a verdict cannot be trusted to mark work verified until a workspace's own agreement data says so. Acting on verdicts (a "disputed" state that feeds Needs me, and a `review_item` tool for reviewer agents) is deliberately left for a later revision.
 
 ### User guidance
 
@@ -386,11 +408,11 @@ Agents only report if the tool text tells them when to. The server `instructions
 
 **`report_progress`**
 
-> Tell the user what you are working on. Call this (1) when you start work, with status "active"; (2) after each meaningful step, or at least every 10 minutes during long work, with a one-line note; (3) when you finish, with status "done" and the PR or issue link as ref_url; (4) when you cannot continue, with status "blocked" and the reason. If no item exists for the work yet, call add_item first. Always pass a stable agent_name.
+> Tell the user what you are working on. Call this (1) when you start work, with status "active"; (2) after each meaningful step, or at least every 10 minutes during long work, with a one-line note; (3) when you finish, with status "done", the PR or issue link as ref_url, and as evidence the actual output that shows the item's acceptance criteria are met (test summary, CI result), copied rather than paraphrased; (4) when you cannot continue, with status "blocked" and the reason. If no item exists for the work yet, call add_item first. Always pass a stable agent_name.
 
 **`add_item`**
 
-> Add work to the user's view. Use it when you start something that has no item yet, when you split a task into parts (pass parent_id), or when you discover follow-up work that should not be forgotten (leave it in the backlog). Call get_canvas first to avoid duplicates, and pass external_key (PR URL or repo#branch) so retries update the same item.
+> Add work to the user's view. Use it when you start something that has no item yet, when you split a task into parts (pass parent_id), or when you discover follow-up work that should not be forgotten (leave it in the backlog). Call get_canvas first to avoid duplicates, and pass external_key (PR URL or repo#branch) so retries update the same item. When the work has a clear finish line, pass acceptance: up to eight short, checkable "done when" statements.
 
 **`flag_handoff`**
 
@@ -451,9 +473,10 @@ A host replaces these and nothing else. Every method is async so a host may cons
   * `signIn(request, returnTo)` optionally starts host sign-in for OAuth consent. The engine defaults to `/auth/login?returnTo=…`. Hosts validate the local return path and resume there after sign-in.
   * `workspaceForToken(token)` returns the workspace ID an agent token belongs to, or nothing, **without** instantiating a Durable Object, so tokens for workspaces that do not exist are rejected in the Worker.
   * Open build: `googleAllowlistAuth` — Google sign-in limited to `ALLOWED_EMAILS`, the single workspace `default`, role `owner`.
-* **`Limits`** — may this workspace do this. `check(workspaceId, action)` answers `{ ok: true }` or `{ ok: false, reason }` for `item.create`, `project.create`, `token.create`, `command`, `transcribe`, `push` and `connect` (opening a session or accepting an agent call at all, so a host can suspend a workspace). Refusals are explicit to both the UI and agents. Open build: `basicLimits` — the rate limits and fixed caps configured by vars.
-* **`UsageSink`** — `record(workspaceId, event)` receives usage events: command-bar calls with model and token counts, transcription seconds, pushes sent, agent writes. Called with `ctx.waitUntil`, never awaited on the request path. Open build: `noUsage`.
+* **`Limits`** — may this workspace do this. `check(workspaceId, action)` answers `{ ok: true }` or `{ ok: false, reason }` for `item.create`, `project.create`, `token.create`, `command`, `transcribe`, `judge`, `push` and `connect` (opening a session or accepting an agent call at all, so a host can suspend a workspace). Refusals are explicit to both the UI and agents. Open build: `basicLimits` — the rate limits and fixed caps configured by vars.
+* **`UsageSink`** — `record(workspaceId, event)` receives usage events: command-bar calls with model and token counts, transcription seconds, judge calls with input token counts, pushes sent, agent writes. Called with `ctx.waitUntil`, never awaited on the request path. Open build: `noUsage`.
 * **`KeyProvider`** — `commandProvider(workspaceId)` returns the LLM and transcription configuration for the command bar, or nothing when it is unavailable, plus `managed` (the UI then hides bring-your-own-key hints). Open build: `envKeys` — Workers AI or Anthropic from vars and secrets.
+* **`JudgeProvider`** — `judge(workspaceId)` returns the shadow judge configuration (`url`, `apiKey`, `model`) or nothing when judging is off. Optional: a host that omits the seam has no judge. Open build: `envJudge` — `JUDGE_URL`, `JUDGE_MODEL` and the `JUDGE_API_KEY` secret; all three must be set, there is no default model. The request and response follow TypeSafe's System One format (`state` plus named typed `questions`), which TypeSafe and OpenRouter both serve.
 
 `createApp(seams, options)` returns `{ fetch }`. `@heedwork/engine` also exports the `Workspace` Durable Object class, which the host must bind and re-export from its own Worker entry. When a host supplies limits for socket mutations or meters push delivery, it binds a subclass and exposes the same seams through the protected `socketLimits` and `pushUsage` getters. Hibernated sockets and background push deliveries run in the Durable Object isolate, outside the Worker request and its seam instances.
 
@@ -480,6 +503,7 @@ What is billed, and what Heed does about it:
 | **Abuse and runaway agents** | An agent stuck in a loop can burn the daily free allowance | Per-token rate limit enforced in the Worker, before the DO. On the free plan, hitting a daily limit makes writes fail until midnight UTC, so the limit is set well below it. |
 | **CPU time** | 10 ms per request on the free plan | API tokens are high-entropy and hashed with SHA-256, not a slow password hash. `get_canvas` is bounded. |
 | **LLM and speech** | The only cost that scales with use rather than with idle design | Speech is transcribed in the browser where possible; Whisper is the fallback. The command bar uses a small tool-calling model. Self-hosted brings its own key; hosted has a monthly allowance per plan. |
+| **Shadow judge** | About $0.0001 per judged report at Jev's listed price, plus one DO request and one row written | Off by default. Runs only on a `done` report for an item that has criteria, from the Worker in `waitUntil`, so the Durable Object is not kept awake during the model call. Never retried. |
 | **Agent context** | Not our bill, but the user's | Guidance is capped at 2,000 characters, since it is injected into every connected agent's context. Tool responses are compact. |
 
 Rough load for one busy workspace — five agents reporting every five minutes for ten hours a day, plus normal UI use:
@@ -498,4 +522,5 @@ For the hosted service the same workspace comes to roughly 20,000–30,000 reque
 2. **Phase 2 — Frontend.** Google sign-in and session cookie; Horizon Stream (Needs me, carried-over, drag to reorder and reschedule, history); lens framework with the radar lens (drag between rings and sectors, resize, ghost moons, backlog ring, progress arcs, roll-up rings, stable layout), then the board, treemap and dependencies lenses; inspector with timeline and field unlock; guidance editor; visibility toggles; responsive bottom sheet; PWA manifest.
 3. **Phase 3 — Voice, push and open-source launch.** `/api/command` voice/chat bar, Web Push for agent-flagged handoffs, MCP and hook setup docs for Claude Code / Cursor / Codex, public GitHub release.
 4. **Phase 4 — Open core.** Package split and published `@heedwork/*` packages, extension seams (`createApp`, `mountApp`), first-run onboarding, MCP sign-in (OAuth), data export and workspace reset.
-5. **Hosted service.** Built in `heed-cloud` on the published packages: accounts, workspaces and members, plans, billing, landing site.
+5. **Phase 5 — Acceptance criteria and shadow judge.** Criteria on items, evidence on `done` reports, the optional `JudgeProvider` seam, shadow verdicts and human feedback in the inspector, agreement summary in settings.
+6. **Hosted service.** Built in `heed-cloud` on the published packages: accounts, workspaces and members, plans, billing, landing site.
