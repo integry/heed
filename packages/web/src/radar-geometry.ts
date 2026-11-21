@@ -23,7 +23,13 @@ export const MIN_FIELD_SCALE = 0.35;
 
 export type Point = { x: number; y: number };
 export type Position = { angle: number; radius: number };
-export type Cell = { band: RadarBand; sector: number; sectors: number };
+export type RadialBounds = { inner: number; outer: number };
+export type Cell = {
+  band: RadarBand;
+  sector: number;
+  sectors: number;
+  radial?: RadialBounds;
+};
 export type RadarPlacement = {
   position: Position;
   scheduled_on?: string | null;
@@ -46,12 +52,28 @@ export function polar(angle: number, radius: number): Point {
   };
 }
 
-export function cellBounds({ band, sector, sectors }: Cell) {
+export function radarBoundaries(split: RadarBand | null, groups: number) {
+  if (!split || groups === 0) return boundaries;
+  const expanded = Math.min(235, Math.max(155, 38 * groups));
+  const compressed = (RADAR_RADIUS - expanded) / 3;
+  return RADAR_BANDS.reduce(
+    (edges, band) => [
+      ...edges,
+      edges[edges.length - 1] + (band === split ? expanded : compressed),
+    ],
+    [0],
+  );
+}
+
+export function bandBounds(band: RadarBand, edges = boundaries): RadialBounds {
   const index = RADAR_BANDS.indexOf(band);
+  return { inner: edges[index], outer: edges[index + 1] };
+}
+
+export function cellBounds({ band, sector, sectors, radial }: Cell) {
   const span = TAU / sectors;
   return {
-    inner: boundaries[index],
-    outer: boundaries[index + 1],
+    ...(radial ?? bandBounds(band)),
     start: START + sector * span,
     span,
   };
@@ -79,18 +101,24 @@ export function cellPosition(cell: Cell, point: Point): Position {
   };
 }
 
-export function targetCell(point: Point, sectors: number): Cell | null {
+export function targetCell(
+  point: Point,
+  sectors: number,
+  edges = boundaries,
+): Cell | null {
   const x = point.x - CENTER.x;
   const y = point.y - CENTER.y;
   const radius = Math.hypot(x, y);
   const index = RADAR_BANDS.findIndex(
-    (_, index) => radius <= boundaries[index + 1],
+    (_, index) => radius <= edges[index + 1] + 1e-9,
   );
   if (index < 0 || sectors < 1) return null;
+  const band = RADAR_BANDS[index];
   return {
-    band: RADAR_BANDS[index],
+    band,
     sector: Math.floor(unitAngle(Math.atan2(y, x)) * sectors),
     sectors,
+    ...(edges !== boundaries && { radial: bandBounds(band, edges) }),
   };
 }
 
@@ -112,8 +140,9 @@ export function radarDrop(
   source: { band: RadarBand; project: string; topLevel: boolean },
   now: number,
   timezone: string,
+  cell = targetCell(point, projects.length),
+  day?: string,
 ): (RadarPlacement & { band: RadarBand }) | null {
-  const cell = targetCell(point, projects.length);
   if (!cell) return null;
   const project = projects[cell.sector];
   if (!source.topLevel && project !== source.project) return null;
@@ -121,9 +150,10 @@ export function radarDrop(
     band: cell.band,
     position: cellPosition(cell, point),
     scheduled_on:
-      cell.band === source.band
+      day ??
+      (cell.band === source.band
         ? undefined
-        : scheduleForRing(cell.band, now, timezone),
+        : scheduleForRing(cell.band, now, timezone)),
     project: project === source.project ? undefined : project,
   };
 }
@@ -163,8 +193,14 @@ const ringLabels = RADAR_BANDS.map((band) => {
   };
 });
 
-export function ringLabel(band: RadarBand) {
-  return ringLabels[RADAR_BANDS.indexOf(band)];
+export function ringLabel(band: RadarBand, edges = boundaries, split = false) {
+  const label = ringLabels[RADAR_BANDS.indexOf(band)];
+  if (edges === boundaries || band === "today") return label;
+  const { inner, outer } = bandBounds(band, edges);
+  return {
+    ...label,
+    point: polar(split ? Math.PI / 2 : START, (inner + outer) / 2),
+  };
 }
 
 function ringLabelClearance(point: Point, scale: number, band: RadarBand) {

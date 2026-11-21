@@ -156,7 +156,37 @@ select {
 .live-indicator > span[data-live="true"] {
   background: var(--live);
 }
-.lens-select,
+.lens-tabs {
+  display: flex;
+  gap: 3px;
+  min-width: 0;
+  padding: 3px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--rail);
+}
+
+.lens-tabs button {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 650;
+}
+
+.lens-tabs button[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.lens-tabs button:focus-visible {
+  outline-offset: -2px;
+}
+
 .live-indicator {
   display: inline-flex;
   align-items: center;
@@ -370,6 +400,11 @@ textarea {
 .lens-pane {
   position: relative;
 }
+.lens-tabpanel:has(> .radar) {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
 .lens-pane > .section-heading {
   justify-content: space-between;
 }
@@ -493,16 +528,87 @@ fieldset {
   overflow-wrap: anywhere;
 }
 .inspector-title {
-  display: flex;
-  align-items: end;
-  gap: 8px;
+  font-size: 1.25rem;
+  line-height: 1.3;
+  letter-spacing: -0.025em;
 }
-.inspector-title label {
-  flex: 1;
+.inline-edit {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: start;
+  overflow-wrap: anywhere;
 }
-.inspector-title input {
-  font-size: 1.08rem;
+.inline-edit:hover:not(:disabled),
+.inline-edit:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.inline-edit:disabled {
+  opacity: 1;
+}
+.inspector-note {
+  margin: 8px 0;
+}
+.inspector-note h4,
+.shadow-verdict h4 {
+  margin: 0;
+  font-size: 0.85rem;
   font-weight: 650;
+}
+.inspector-note p {
+  white-space: pre-wrap;
+}
+.inspector-note > button {
+  font-size: 0.85rem;
+}
+.inspector-footer {
+  flex: 0 0 auto;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.inspector-footer .action-form {
+  margin-bottom: 0;
+}
+.inspector-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 0.84rem;
+}
+.inspector-details summary {
+  width: fit-content;
+  margin-top: 8px;
+  padding: 4px 0;
+  color: var(--accent);
+  font-weight: 650;
+  cursor: pointer;
+}
+.inspector-detail-editors {
+  margin-top: 12px;
+}
+.inspector-detail-editors h3 {
+  margin-bottom: 0;
+}
+.lock-mark {
+  position: relative;
+  display: inline-block;
+  width: 9px;
+  height: 7px;
+  margin-inline-start: 0.3em;
+  border-radius: 2px;
+  background: currentColor;
+  color: var(--muted);
+}
+.lock-mark::before {
+  position: absolute;
+  inset: -4px 2px auto;
+  height: 6px;
+  border: 1px solid currentColor;
+  border-radius: 4px 4px 0 0;
+  content: "";
 }
 .inspector-summary {
   display: flex;
@@ -628,26 +734,55 @@ fieldset {
   overflow-wrap: anywhere;
 }
 .acceptance-list {
+  display: grid;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.acceptance-list .inline-actions {
-  margin-top: 4px;
+.acceptance-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 8px;
 }
-.shadow-model {
-  overflow-wrap: anywhere;
+.criterion-text,
+.acceptance-list li > form {
+  flex: 1 1 10rem;
+  min-width: 0;
 }
-.shadow-criteria {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  overflow-wrap: anywhere;
+.criterion-text {
+  white-space: pre-wrap;
 }
-.shadow-criteria dd {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.85rem;
+.criterion-remove {
+  margin-inline-start: auto;
+  padding: 0 7px;
+  font-size: 1rem;
+}
+.criterion-add {
+  margin-top: 8px;
+}
+.shadow-verdict {
+  gap: 5px;
+  margin-top: 10px;
+}
+.verdict-score {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.shadow-verdict-marker {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent);
 }
 .judge-totals {
   display: flex;
@@ -1246,7 +1381,7 @@ fieldset {
     flex-shrink: 0;
   }
 
-  .lens-pane:has(> .command-bar) > .radar {
+  .lens-pane:has(> .command-bar) > .lens-tabpanel:has(> .radar) {
     display: flex;
     flex-direction: column;
     flex-shrink: 1;
