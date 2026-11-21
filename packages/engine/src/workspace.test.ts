@@ -25,13 +25,21 @@ it("migrates a fresh object and seeds Inbox", async () => {
   const stub = newWorkspace();
   const settings = await stub.getSettings();
   expect(SettingsSchema.parse(settings)).toEqual({
-    schema_version: 5,
+    schema_version: 6,
+    onboarding_dismissed: false,
     timezone: "UTC",
     guidance: "",
     guidance_updated_at: null,
   });
   expect(await stub.listProjects()).toEqual([
-    { id: INBOX_PROJECT_ID, name: "Inbox", color: null, sort: 0, hidden: 0 },
+    {
+      id: INBOX_PROJECT_ID,
+      name: "Inbox",
+      color: null,
+      sort: 0,
+      hidden: 0,
+      demo: 0,
+    },
   ]);
 
   const schema = await runInDurableObject(stub, (_, { storage: { sql } }) =>
@@ -57,26 +65,60 @@ it("migrates a fresh object and seeds Inbox", async () => {
   ]);
 });
 
-it("keeps the migration and stored data intact across an eviction", async () => {
-  const stub = newWorkspace();
-  await stub.setTimezone("Europe/Tallinn");
-  const guidance = await stub.setGuidance(
-    { kind: "human" },
-    "Start with billing",
-  );
-  const project = await stub.createProject({ name: "Billing" });
-  await evictDurableObject(stub);
+it.each([
+  { layout: "current", dropColumns: [] },
+  { layout: "version 5 with demo flags", dropColumns: ["events.actor_user"] },
+  {
+    layout: "version 5 with actor attribution",
+    dropColumns: ["projects.demo", "items.demo"],
+  },
+])(
+  "preserves stored data when opening the $layout schema after eviction",
+  async ({ dropColumns }) => {
+    const stub = newWorkspace();
+    await stub.setTimezone("Europe/Tallinn");
+    const user = { id: "user", email: "user@example.com", name: "User" };
+    const actor = { kind: "human", user } as const;
+    const guidance = await stub.setGuidance(actor, "Start with billing");
+    const project = await stub.createProject({ name: "Billing" });
+    const { item_id, items } = await stub.addItem(actor, {
+      title: "Send invoice",
+      project: project.id,
+    });
 
-  expect(await stub.getSettings()).toEqual({
-    schema_version: 5,
-    timezone: "Europe/Tallinn",
-    ...guidance,
-  });
-  expect(await stub.listProjects()).toEqual([
-    project,
-    expect.objectContaining({ id: INBOX_PROJECT_ID }),
-  ]);
-});
+    if (dropColumns.length) {
+      // Recreate the schema persisted by either branch before the merge.
+      await runInDurableObject(stub, (_, { storage: { sql } }) => {
+        for (const path of dropColumns) {
+          const [table, column] = path.split(".");
+          sql.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+        }
+        sql.exec(
+          "UPDATE settings SET value = '5' WHERE key = 'schema_version'",
+        );
+      });
+    }
+    await evictDurableObject(stub);
+
+    expect(await stub.getSettings()).toEqual({
+      schema_version: 6,
+      onboarding_dismissed: false,
+      timezone: "Europe/Tallinn",
+      ...guidance,
+    });
+    expect(await stub.listProjects()).toEqual([
+      project,
+      expect.objectContaining({ id: INBOX_PROJECT_ID }),
+    ]);
+    expect(await stub.getItem({ item_id })).toEqual(items[0]);
+    expect(await stub.getItemEvents({ item_id })).toMatchObject([
+      {
+        kind: "created",
+        actor: dropColumns.includes("events.actor_user") ? user.name : user,
+      },
+    ]);
+  },
+);
 
 it("creates, lists, updates and deletes projects", async () => {
   const stub = newWorkspace();
@@ -87,6 +129,7 @@ it("creates, lists, updates and deletes projects", async () => {
     color: "#0033ff",
     sort: 0,
     hidden: 0,
+    demo: 0,
   });
   const updated = await stub.updateProject(project.id, {
     name: "Engineering",

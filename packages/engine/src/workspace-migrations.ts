@@ -112,6 +112,24 @@ const migrations = [
   (sql: SqlStorage) => {
     sql.exec("ALTER TABLE events ADD COLUMN actor_user TEXT");
   },
+  // Version 6 reconciles the two version-5 layouts used by the merge parents.
+  (sql: SqlStorage) => {
+    const demo = "demo INTEGER NOT NULL DEFAULT 0 CHECK (demo IN (0, 1))";
+    for (const [table, column, definition] of [
+      ["events", "actor_user", "actor_user TEXT"],
+      ["projects", "demo", demo],
+      ["items", "demo", demo],
+    ]) {
+      const hasColumn = sql
+        .exec(
+          "SELECT 1 FROM pragma_table_info(?) WHERE name = ?",
+          table,
+          column,
+        )
+        .toArray().length;
+      if (!hasColumn) sql.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+    }
+  },
 ];
 
 export function migrateWorkspace(storage: DurableObjectStorage): void {
