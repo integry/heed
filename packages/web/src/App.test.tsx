@@ -1910,6 +1910,35 @@ it("offers a registered Dependencies lens for the focused goal", async () => {
   expect(screen.getByText("Dependencies for goal")).toBeTruthy();
 });
 
+it.each(["Radar", "Inspector"])(
+  "returns to the focused radar goal with touch controls after opening Dependencies from %s",
+  async (entry) => {
+    mockViewport(false);
+    await openWorkspace();
+    if (entry === "Radar") openGraph();
+    else {
+      fireEvent.click(
+        inspect(goal.title).getByRole("button", {
+          name: "Open dependency graph",
+        }),
+      );
+    }
+    expect(
+      screen.getByRole("region", {
+        name: `Dependency graph for ${goal.title}`,
+      }),
+    ).toBeTruthy();
+
+    fireEvent.click(menuAction("Back to Radar"));
+
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
+    expect(radar.getByRole("button", { name: child.title })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Dependencies" })).toBeNull();
+  },
+);
+
 it.each([false, true])(
   "carries Radar's completed ghost visibility (%s) into Dependencies",
   async (showGhosts) => {
@@ -2850,6 +2879,47 @@ it("adds a goal with workspace-local time and explains the child depth cap", asy
       requestId: socket.latestRequest().requestId,
     }),
   );
+});
+
+it("adds children to a hidden parent and blocks creation once it is removed", async () => {
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: [{ ...goal, hidden: 1 }],
+  });
+  function openChildForm() {
+    fireEvent.click(menuAction("Hidden items"));
+    const hidden = within(screen.getByRole("dialog", { name: "Hidden items" }));
+    fireEvent.click(hidden.getByRole("button", { name: goal.title }));
+    const inspector = within(screen.getByRole("dialog", { name: "Inspector" }));
+    fireEvent.click(inspector.getByRole("button", { name: "Add child item" }));
+    return within(screen.getByRole("dialog", { name: "Add child item" }));
+  }
+
+  const form = openChildForm();
+  expect(form.getByText(`Under ${goal.title}`)).toBeTruthy();
+  fireEvent.change(form.getByLabelText("Title"), {
+    target: { value: "Check retry metrics" },
+  });
+  fireEvent.click(form.getByRole("button", { name: "Add child" }));
+  const socket = TestSocket.current;
+  const request = socket.latestRequest();
+  expect(request).toMatchObject({
+    type: "ADD_ITEM",
+    input: { title: "Check retry metrics", parent_id: goal.id },
+  });
+  expect(screen.getByRole("dialog", { name: "Add child item" })).toBeTruthy();
+  await act(async () =>
+    socket.receive({ type: "ACK", seq: 2, requestId: request.requestId }),
+  );
+  expect(screen.queryByRole("dialog", { name: "Add child item" })).toBeNull();
+
+  const pendingForm = openChildForm();
+  expect(pendingForm.getByRole("button", { name: "Add child" })).toBeTruthy();
+  socket.receive({ type: "ITEM_REMOVE", seq: 3, item_id: goal.id });
+  expect(
+    pendingForm.getByText("The parent item is no longer available."),
+  ).toBeTruthy();
+  expect(pendingForm.queryByRole("button", { name: "Add child" })).toBeNull();
 });
 
 it.each([

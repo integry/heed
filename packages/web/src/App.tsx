@@ -168,6 +168,7 @@ function Workspace({
   const showDependencyErrorInline =
     lens.id === "dependencies" && focusedGoal === dependencyEditGoal;
   const selection = selectedId && filtered.has(selectedId) ? selectedId : null;
+  const radarLens = registry.find(({ id }) => id === "radar");
   const dependenciesLens = registry.find(({ id }) => id === "dependencies");
   const selected = selectedId ? state.items.get(selectedId) : undefined;
   const linkedId =
@@ -201,7 +202,10 @@ function Workspace({
       : undefined;
   const inspected = selectedItem?.fromNotification
     ? (selected ?? fallback)
-    : selected && (panel === "inspector" || derived.visibleIds.has(selected.id))
+    : selected &&
+        (panel === "inspector" ||
+          panel === "child" ||
+          derived.visibleIds.has(selected.id))
       ? selected
       : undefined;
   useEffect(() => {
@@ -382,6 +386,15 @@ function Workspace({
             }}
           >
             {HeaderStart && <HeaderStart {...slotProps} />}
+            {lens.id === "dependencies" && radarLens && (
+              <button
+                className="text-control"
+                type="button"
+                onClick={() => setLensId(radarLens.id)}
+              >
+                Back to Radar
+              </button>
+            )}
             <button
               className="text-control"
               type="button"
