@@ -1,5 +1,13 @@
 # Connect agents to Heed
 
+## Connect with sign-in
+
+Add `https://your-heed.example/mcp` as a remote Streamable HTTP server in an OAuth-capable MCP client and use its Connect or Sign in action. Sign in to Heed, verify the workspace and app on the consent screen, and enter the agent label you want to see on the canvas. **Report** is selected by default. Choose **Steer** only for an app you trust to change workspace guidance and protected item fields.
+
+To disconnect an app, open **Settings → API tokens → Connected apps** and revoke its access. The client will need your consent to connect again.
+
+## Connect with an API token
+
 [Create a Heed API token](self-hosting.md#first-sign-in-and-api-token) with `report` scope for each agent or hook. Use `steer` for a human-operated client that needs to change guidance or other protected fields. Set these variables in the environment that launches your client, substituting your Heed origin and the issued token.
 
 ```sh

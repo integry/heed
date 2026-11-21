@@ -1,5 +1,19 @@
 import { INBOX_PROJECT_ID } from "@heedwork/core";
 
+function reconcileWorkspaceColumns(sql: SqlStorage): void {
+  const demo = "demo INTEGER NOT NULL DEFAULT 0 CHECK (demo IN (0, 1))";
+  for (const [table, column, definition] of [
+    ["events", "actor_user", "actor_user TEXT"],
+    ["projects", "demo", demo],
+    ["items", "demo", demo],
+  ]) {
+    const hasColumn = sql
+      .exec("SELECT 1 FROM pragma_table_info(?) WHERE name = ?", table, column)
+      .toArray().length;
+    if (!hasColumn) sql.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+  }
+}
+
 const migrations = [
   // Version 1
   (sql: SqlStorage) => {
@@ -112,23 +126,39 @@ const migrations = [
   (sql: SqlStorage) => {
     sql.exec("ALTER TABLE events ADD COLUMN actor_user TEXT");
   },
-  // Version 6 reconciles the two version-5 layouts used by the merge parents.
+  // Version 6 reconciles legacy version-5 layouts with demo flags or actor attribution.
+  reconcileWorkspaceColumns,
+  // Version 7 brings both version-6 layouts to the same schema.
   (sql: SqlStorage) => {
-    const demo = "demo INTEGER NOT NULL DEFAULT 0 CHECK (demo IN (0, 1))";
-    for (const [table, column, definition] of [
-      ["events", "actor_user", "actor_user TEXT"],
-      ["projects", "demo", demo],
-      ["items", "demo", demo],
-    ]) {
-      const hasColumn = sql
-        .exec(
-          "SELECT 1 FROM pragma_table_info(?) WHERE name = ?",
-          table,
-          column,
-        )
-        .toArray().length;
-      if (!hasColumn) sql.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
-    }
+    reconcileWorkspaceColumns(sql);
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS oauth_clients (
+        id TEXT PRIMARY KEY,
+        registration TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS oauth_consents (
+        hash TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        request TEXT NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS oauth_grants (
+        id TEXT PRIMARY KEY REFERENCES tokens(id) ON DELETE CASCADE,
+        client_name TEXT NOT NULL,
+        authorization TEXT NOT NULL,
+        resource TEXT NOT NULL,
+        code_hash TEXT UNIQUE,
+        code_expires_at INTEGER NOT NULL,
+        access_expires_at INTEGER,
+        refresh_hash TEXT UNIQUE,
+        refresh_expires_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS oauth_used_refresh_tokens (
+        hash TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL REFERENCES oauth_grants(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_oauth_used_refresh_grant ON oauth_used_refresh_tokens(grant_id);
+    `);
   },
 ];
 

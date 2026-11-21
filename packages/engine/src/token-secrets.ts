@@ -25,10 +25,10 @@ export function equalSecretHashes(left: string, right: string): boolean {
   );
 }
 
-export function tokenParts(token: string) {
+export function tokenParts(token: string, prefix = "heed_") {
   // The secret has a fixed length; workspace names themselves can contain underscores.
-  if (!token.startsWith("heed_") || token.at(-44) !== "_") return null;
-  const workspaceId = token.slice(5, -44);
+  if (!token.startsWith(prefix) || token.at(-44) !== "_") return null;
+  const workspaceId = token.slice(prefix.length, -44);
   const secret = token.slice(-43);
   return workspaceId && isTokenSecret(secret) ? { workspaceId, secret } : null;
 }

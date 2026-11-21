@@ -174,3 +174,7 @@ export type Dependency = z.infer<typeof DependencySchema>;
 export type Event = z.infer<typeof EventSchema>;
 export type Token = z.infer<typeof TokenSchema>;
 export type TokenMetadata = Omit<Token, "secret_hash">;
+export type ConnectedApp = Pick<
+  TokenMetadata,
+  "id" | "label" | "scope" | "last_used_at"
+> & { client_name: string };

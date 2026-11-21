@@ -25,7 +25,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
   const stub = newWorkspace();
   const settings = await stub.getSettings();
   expect(SettingsSchema.parse(settings)).toEqual({
-    schema_version: 6,
+    schema_version: 7,
     onboarding_dismissed: false,
     timezone: "UTC",
     guidance: "",
@@ -55,8 +55,13 @@ it("migrates a fresh object and seeds Inbox", async () => {
     "dependencies",
     "events",
     "idx_events_item",
+    "idx_oauth_used_refresh_grant",
     "idx_tokens_hash_prefix",
     "items",
+    "oauth_clients",
+    "oauth_consents",
+    "oauth_grants",
+    "oauth_used_refresh_tokens",
     "projects",
     "push_rate_limits",
     "push_subscriptions",
@@ -66,15 +71,34 @@ it("migrates a fresh object and seeds Inbox", async () => {
 });
 
 it.each([
-  { layout: "current", dropColumns: [] },
-  { layout: "version 5 with demo flags", dropColumns: ["events.actor_user"] },
+  { layout: "current", version: 7, dropColumns: [], hasOAuth: true },
+  {
+    layout: "version 5 with demo flags",
+    version: 5,
+    dropColumns: ["events.actor_user"],
+    hasOAuth: false,
+  },
   {
     layout: "version 5 with actor attribution",
+    version: 5,
     dropColumns: ["projects.demo", "items.demo"],
+    hasOAuth: false,
+  },
+  {
+    layout: "version 6 with onboarding",
+    version: 6,
+    dropColumns: [],
+    hasOAuth: false,
+  },
+  {
+    layout: "version 6 with OAuth",
+    version: 6,
+    dropColumns: ["projects.demo", "items.demo"],
+    hasOAuth: true,
   },
 ])(
   "preserves stored data when opening the $layout schema after eviction",
-  async ({ dropColumns }) => {
+  async ({ version, dropColumns, hasOAuth }) => {
     const stub = newWorkspace();
     await stub.setTimezone("Europe/Tallinn");
     const user = { id: "user", email: "user@example.com", name: "User" };
@@ -85,23 +109,41 @@ it.each([
       title: "Send invoice",
       project: project.id,
     });
+    const client = {
+      id: "client",
+      name: "MCP client",
+      redirectUris: ["https://client.example.com/callback"],
+      authMethod: "none" as const,
+      secretHash: null,
+      refresh: false,
+    };
+    if (hasOAuth) await stub.registerOAuthClient(client);
 
-    if (dropColumns.length) {
-      // Recreate the schema persisted by either branch before the merge.
+    if (version < 7) {
+      // Recreate the schema persisted before the merge.
       await runInDurableObject(stub, (_, { storage: { sql } }) => {
         for (const path of dropColumns) {
           const [table, column] = path.split(".");
           sql.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
         }
+        if (!hasOAuth) {
+          sql.exec(`
+            DROP TABLE oauth_used_refresh_tokens;
+            DROP TABLE oauth_grants;
+            DROP TABLE oauth_consents;
+            DROP TABLE oauth_clients;
+          `);
+        }
         sql.exec(
-          "UPDATE settings SET value = '5' WHERE key = 'schema_version'",
+          "UPDATE settings SET value = ? WHERE key = 'schema_version'",
+          String(version),
         );
       });
     }
     await evictDurableObject(stub);
 
     expect(await stub.getSettings()).toEqual({
-      schema_version: 6,
+      schema_version: 7,
       onboarding_dismissed: false,
       timezone: "Europe/Tallinn",
       ...guidance,
@@ -117,6 +159,9 @@ it.each([
         actor: dropColumns.includes("events.actor_user") ? user.name : user,
       },
     ]);
+    expect(await stub.findOAuthClient(client.id)).toEqual(
+      hasOAuth ? client : null,
+    );
   },
 );
 

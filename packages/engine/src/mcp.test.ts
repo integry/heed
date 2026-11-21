@@ -261,11 +261,15 @@ it("reports validation and scope errors with guidance and acknowledges ignored f
   });
 });
 
-it("rejects GET and DELETE for the stateless endpoint", async () => {
+it("rejects authenticated GET and DELETE for the stateless endpoint", async () => {
+  const { token } = await workspace.createToken("Reader");
   for (const method of ["GET", "DELETE"]) {
     const response = await fetchOpen(
-      new Request("https://heed.test/mcp", { method }),
-      env,
+      new Request("https://heed.test/mcp", {
+        method,
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      bindings,
     );
     expect(response.status).toBe(405);
     expect(response.headers.get("Allow")).toBe("POST");

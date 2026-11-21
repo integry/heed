@@ -236,6 +236,7 @@ it.each([true, false])(
   "recovers the built-in sign-in methods after a token request returns 401 (development: %s)",
   async (devLoginEnabled) => {
     fetchSession.mockImplementation(async (path: string) => {
+      if (path === "/api/connected-apps") return Response.json([]);
       if (path === "/api/tokens") return new Response(null, { status: 401 });
       return Response.json({ devLoginEnabled }, { status: 401 });
     });
@@ -257,6 +258,7 @@ it.each([true, false])(
     ).toBe(devLoginEnabled ? "/auth/dev-login" : undefined);
     expect(fetchSession.mock.calls.map(([path]) => path)).toEqual([
       "/api/me",
+      "/api/connected-apps",
       "/api/tokens",
       "/api/me",
     ]);
@@ -314,6 +316,7 @@ it("ignores an expiry lookup that finishes after a workspace switch", async () =
     .mockResolvedValueOnce(
       Response.json({ email: "user@example.test", workspaceId: "launch" }),
     )
+    .mockResolvedValueOnce(Response.json([]))
     .mockResolvedValueOnce(new Response(null, { status: 401 }))
     .mockResolvedValueOnce(expired)
     .mockResolvedValueOnce(
@@ -323,7 +326,7 @@ it("ignores an expiry lookup that finishes after a workspace switch", async () =
   const app = mountHost({ headerStart: ({ workspaceId }) => workspaceId });
   fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
   await waitFor(() => expect(readConfig).toHaveBeenCalledOnce());
-  const lookupSignal = fetchSession.mock.calls[2][1].signal as AbortSignal;
+  const lookupSignal = fetchSession.mock.calls[3][1].signal as AbortSignal;
 
   act(() => app.onWorkspaceChange());
   await screen.findByText("research");

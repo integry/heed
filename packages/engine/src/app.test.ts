@@ -12,7 +12,7 @@ import type { AppSeams, UsageEvent } from "./index";
 import { issueSession } from "./auth";
 import { hostLimits } from "./test-host";
 import type { HostedWorkspace } from "./test-host";
-import { newTokenSecret, tokenParts } from "./token-secrets";
+import { hashSecret, newTokenSecret, tokenParts } from "./token-secrets";
 import { fetchOpen } from "./worker-test-helpers";
 
 const origin = "https://heed.test";
@@ -142,6 +142,14 @@ function setupHost(limits = hostLimits) {
       },
       async handleAuthRoute(request) {
         return Response.json({ handled: new URL(request.url).pathname });
+      },
+      signIn(_request, returnTo) {
+        return new Response(null, {
+          status: 303,
+          headers: {
+            Location: `/auth/sign-in?returnTo=${encodeURIComponent(returnTo)}`,
+          },
+        });
       },
       async workspaceForToken(token) {
         const workspaceId = tokenParts(token)?.workspaceId;
@@ -702,7 +710,7 @@ it("preserves the open request Durable Object lookup and RPC budgets", async () 
       ["reserveCommandQuota"],
     ],
     [signed("/ws", undefined, { Upgrade: "websocket" }), 101, ["fetch"]],
-    [rpc(token, "get_canvas"), 200, ["verifyToken", "getCanvas"]],
+    [rpc(token, "get_canvas"), 200, ["mcp"]],
     [report(token, item_id), 200, ["verifyToken", "reportProgress"]],
     [report(`heed_other_${newTokenSecret()}`, item_id), 401, []],
   ] as const) {
@@ -717,4 +725,294 @@ it("preserves the open request Durable Object lookup and RPC budgets", async () 
       response.webSocket.close(1000);
     }
   }
+});
+
+it("connects a registered MCP client to the active hosted workspace and revokes its credentials", async () => {
+  const { alpha, beta, fetch, human, workspace } = setupHost();
+  const issuer = "https://heed.test";
+  const resource = issuer + "/mcp";
+  const redirectUri = "https://client.example.test/callback";
+  const challengeResponse = await fetch(new Request(resource));
+  expect(challengeResponse.status).toBe(401);
+  const metadataUrl = /resource_metadata="([^"]+)"/.exec(
+    challengeResponse.headers.get("WWW-Authenticate")!,
+  )![1];
+  expect(await (await fetch(new Request(metadataUrl))).json()).toMatchObject({
+    resource,
+    authorization_servers: [issuer],
+    scopes_supported: ["report", "steer"],
+  });
+  const metadata = await (
+    await fetch(new Request(issuer + "/.well-known/oauth-authorization-server"))
+  ).json<{
+    registration_endpoint: string;
+    authorization_endpoint: string;
+    token_endpoint: string;
+  }>();
+  expect(metadata).toMatchObject({
+    issuer,
+    code_challenge_methods_supported: ["S256"],
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    authorization_response_iss_parameter_supported: true,
+  });
+
+  const registration = (redirect: string) =>
+    fetch(
+      new Request(metadata.registration_endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_name: "Example MCP Client <preview>",
+          redirect_uris: [redirect],
+          token_endpoint_auth_method: "none",
+          grant_types: ["authorization_code", "refresh_token"],
+        }),
+      }),
+    );
+  expect(await (await registration(redirectUri + "#fragment")).json()).toEqual({
+    error: "invalid_redirect_uri",
+  });
+  const registered = await registration(redirectUri);
+  expect(registered.status).toBe(201);
+  const { client_id } = await registered.json<{ client_id: string }>();
+
+  const verifier = newTokenSecret();
+  const auth = new URL(metadata.authorization_endpoint);
+  auth.search = new URLSearchParams({
+    client_id,
+    redirect_uri: redirectUri,
+    resource,
+    response_type: "code",
+    code_challenge: await hashSecret(verifier),
+    code_challenge_method: "S256",
+    state: "example-state",
+  }).toString();
+  const path = (url: URL) => url.pathname + url.search;
+  const signIn = await fetch(new Request(auth));
+  expect(signIn.status).toBe(303);
+  const signInUrl = new URL(signIn.headers.get("Location")!, issuer);
+  expect(signInUrl.pathname).toBe("/auth/sign-in");
+  expect(signInUrl.searchParams.get("returnTo")).toBe(path(auth));
+  const modified = new URL(auth);
+  modified.searchParams.set("redirect_uri", redirectUri + "/");
+  const redirectMismatch = await fetch(human(alpha, path(modified)));
+  expect(redirectMismatch.status).toBe(400);
+  expect(redirectMismatch.headers.get("Location")).toBeNull();
+  modified.searchParams.set("redirect_uri", redirectUri);
+  modified.searchParams.set("code_challenge_method", "plain");
+  const plain = await fetch(human(alpha, path(modified)));
+  expect(plain.status).toBe(400);
+  expect(await plain.json()).toEqual({ error: "invalid_request" });
+  expect(plain.headers.get("Location")).toBeNull();
+
+  async function startConsent(workspaceId: string) {
+    const consent = await fetch(human(workspaceId, path(auth)));
+    expect(consent.status).toBe(200);
+    const html = await consent.text();
+    expect(html).toContain("Example MCP Client &lt;preview&gt;");
+    expect(html).toContain('value="report" checked');
+    expect(html).toContain(workspaceId);
+    return {
+      csrf: /name="csrf" value="([^"]+)"/.exec(html)![1],
+      cookie: consent.headers.get("Set-Cookie")!.split(";")[0],
+    };
+  }
+
+  const consent = await startConsent(alpha);
+  const decide = (
+    workspaceId: string,
+    { csrf, cookie }: typeof consent,
+    decision = "approve",
+    requestOrigin = issuer,
+    scope = "report",
+  ) =>
+    fetch(
+      new Request(metadata.authorization_endpoint, {
+        method: "POST",
+        headers: {
+          Origin: requestOrigin,
+          Cookie: cookie,
+          "X-Test-Workspace": workspaceId,
+        },
+        body: new URLSearchParams({
+          csrf,
+          decision,
+          label: "Review agent",
+          scope,
+        }),
+      }),
+    );
+  expect((await decide(beta, consent, "deny")).status).toBe(403);
+  expect(
+    (await decide(alpha, consent, "approve", "https://other.test")).status,
+  ).toBe(403);
+  expect((await decide(alpha, { ...consent, cookie: "" })).status).toBe(403);
+  const denied = await decide(alpha, await startConsent(alpha), "deny");
+  expect(
+    new URL(denied.headers.get("Location")!).searchParams.get("error"),
+  ).toBe("access_denied");
+  expect((await decide(beta, await startConsent(beta))).status).toBe(429);
+
+  const approved = await decide(alpha, consent);
+  expect(approved.status).toBe(303);
+  const callback = new URL(approved.headers.get("Location")!);
+  expect(callback.searchParams.get("state")).toBe("example-state");
+  expect(callback.searchParams.get("iss")).toBe(issuer);
+  expect((await decide(alpha, consent)).status).toBe(403);
+
+  const exchange = (params: Record<string, string>, origin = issuer) =>
+    fetch(
+      new Request(new URL(new URL(metadata.token_endpoint).pathname, origin), {
+        method: "POST",
+        body: new URLSearchParams({
+          client_id,
+          resource: origin + "/mcp",
+          ...params,
+        }),
+      }),
+    );
+  const codeGrant = {
+    grant_type: "authorization_code",
+    code: callback.searchParams.get("code")!,
+    redirect_uri: redirectUri,
+    code_verifier: verifier,
+  };
+  for (const fields of [
+    { code_verifier: newTokenSecret() },
+    { redirect_uri: redirectUri + "/" },
+    { code: codeGrant.code.replace(alpha, beta) },
+  ]) {
+    expect(await (await exchange({ ...codeGrant, ...fields })).json()).toEqual({
+      error: "invalid_grant",
+    });
+  }
+  expect(
+    await (await exchange(codeGrant, "https://alternate.test")).json(),
+  ).toEqual({ error: "invalid_grant" });
+  const getCredentials = async (response: Response, scope = "report") => {
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    const credentials = await response.json<{
+      access_token: string;
+      refresh_token: string;
+    }>();
+    expect(credentials).toMatchObject({
+      token_type: "Bearer",
+      scope,
+      expires_in: 3600,
+    });
+    expect(tokenParts(credentials.access_token)?.workspaceId).toBe(alpha);
+    return credentials;
+  };
+  const credentials = await getCredentials(await exchange(codeGrant));
+  expect(await (await exchange(codeGrant)).json()).toEqual({
+    error: "invalid_grant",
+  });
+  const tool = (token: string, name: string, args: object = {}) =>
+    fetch(rpc(token, name, args));
+  const refused = await tool(credentials.access_token, "set_guidance", {
+    text: "Change guidance",
+  });
+  expect(refused.status).toBe(403);
+  expect(refused.headers.get("WWW-Authenticate")).toContain(
+    'scope="steer", error="insufficient_scope"',
+  );
+
+  await workspace(beta).addItem(
+    { kind: "human" },
+    { title: "Beta private item" },
+  );
+  const created = await tool(credentials.access_token, "add_item", {
+    title: "Alpha review item",
+  });
+  expect((await toolResult(created)).isError).toBeUndefined();
+  const canvas = await toolResult(
+    await tool(credentials.access_token, "get_canvas"),
+  );
+  expect(JSON.stringify(canvas)).toContain("Alpha review item");
+  expect(JSON.stringify(canvas)).toContain("Review agent");
+  expect(JSON.stringify(canvas)).not.toContain("Beta private item");
+  expect(
+    (await tool(credentials.access_token.replace(alpha, beta), "get_canvas"))
+      .status,
+  ).toBe(401);
+  expect(
+    (await fetch(report(credentials.access_token, "missing"))).status,
+  ).toBe(401);
+
+  const refresh = (refresh_token: string) =>
+    exchange({ grant_type: "refresh_token", refresh_token });
+  const rotated = await getCredentials(
+    await refresh(credentials.refresh_token),
+  );
+  expect(rotated.refresh_token).not.toBe(credentials.refresh_token);
+  const grantList = (id: string) => fetch(human(id, "/api/connected-apps"));
+  expect(await (await grantList(beta)).json()).toEqual([]);
+  const grants = await (await grantList(alpha)).json<{ id: string }[]>();
+  expect(grants).toEqual([
+    {
+      id: expect.any(String),
+      scope: "report",
+      client_name: "Example MCP Client <preview>",
+      label: "Review agent",
+      last_used_at: expect.any(String),
+    },
+  ]);
+  expect(await (await fetch(human(alpha, "/api/tokens"))).json()).toEqual([]);
+  const socket = await openSocket(
+    await fetch(human(alpha, "/ws", undefined, { Upgrade: "websocket" })),
+  );
+  expect(await socket.next()).toMatchObject({ type: "SNAPSHOT" });
+  socket.socket.send(
+    JSON.stringify({
+      type: "REVOKE_CONNECTED_APP",
+      requestId: "revoke",
+      input: { grant_id: grants[0].id },
+    }),
+  );
+  expect(await socket.next()).toMatchObject({
+    type: "ACK",
+    requestId: "revoke",
+  });
+  expect((await tool(rotated.access_token, "get_canvas")).status).toBe(401);
+  expect(await (await refresh(rotated.refresh_token)).json()).toEqual({
+    error: "invalid_grant",
+  });
+  expect(await (await grantList(alpha)).json()).toEqual([]);
+
+  const replayConsent = await decide(alpha, await startConsent(alpha));
+  const replayCode = new URL(
+    replayConsent.headers.get("Location")!,
+  ).searchParams.get("code")!;
+  const first = await getCredentials(
+    await exchange({ ...codeGrant, code: replayCode }),
+  );
+  const second = await getCredentials(await refresh(first.refresh_token));
+  expect(await (await refresh(first.refresh_token)).json()).toEqual({
+    error: "invalid_grant",
+  });
+  expect((await tool(second.access_token, "get_canvas")).status).toBe(401);
+
+  const steered = await decide(
+    alpha,
+    await startConsent(alpha),
+    "approve",
+    issuer,
+    "steer",
+  );
+  const steerCode = new URL(steered.headers.get("Location")!).searchParams.get(
+    "code",
+  )!;
+  const steer = await getCredentials(
+    await exchange({ ...codeGrant, code: steerCode }),
+    "steer",
+  );
+  const changed = await tool(steer.access_token, "set_guidance", {
+    text: "Review release blockers first.",
+  });
+  expect((await toolResult(changed)).isError).toBeUndefined();
+
+  const pasted = await workspace(alpha).createToken("Pasted token");
+  expect((await tool(pasted.token, "get_canvas")).status).toBe(200);
 });

@@ -20,12 +20,33 @@ export function bearerUnauthorized(): Response {
 
 export async function requireAgent(
   request: Request,
-  { auth, limits, workspace: getWorkspace }: AppContext,
+  app: AppContext,
   handle: (
     actor: Extract<Actor, { kind: "agent" }>,
     workspace: ReturnType<typeof getWorkspaceStub>,
     workspaceId: string,
   ) => Response | Promise<Response>,
+): Promise<Response> {
+  return requireAgentToken(
+    request,
+    app,
+    async (secret, workspace, workspaceId) => {
+      const actor = await workspace.verifyToken(secret);
+      return actor
+        ? handle(actor, workspace, workspaceId)
+        : bearerUnauthorized();
+    },
+  );
+}
+
+export async function requireAgentToken(
+  request: Request,
+  { auth, limits, workspace: getWorkspace }: AppContext,
+  handle: (
+    secret: string,
+    workspace: ReturnType<typeof getWorkspaceStub>,
+    workspaceId: string,
+  ) => Promise<Response>,
 ): Promise<Response> {
   const token = readBearer(request);
   const parts = token && tokenParts(token);
@@ -49,7 +70,5 @@ export async function requireAgent(
     return limitResponse(error);
   }
 
-  const workspace = getWorkspace(workspaceId);
-  const actor = await workspace.verifyToken(parts.secret);
-  return actor ? handle(actor, workspace, workspaceId) : bearerUnauthorized();
+  return handle(parts.secret, getWorkspace(workspaceId), workspaceId);
 }

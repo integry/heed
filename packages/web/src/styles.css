@@ -622,6 +622,9 @@ fieldset {
   margin: 0;
   font-size: 0.96rem;
 }
+.connected-apps {
+  margin-top: 16px;
+}
 .settings-row,
 .token-row {
   margin: 6px 0;

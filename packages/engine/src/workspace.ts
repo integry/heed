@@ -87,6 +87,15 @@ import type {
 } from "./web-push.js";
 import { basicPushCap } from "./basic-limits.js";
 import { migrateWorkspace } from "./workspace-migrations.js";
+import { OAuthStorage } from "./oauth-storage.js";
+import type {
+  OAuthAuthorization,
+  OAuthClient,
+  OAuthExchange,
+} from "./oauth-storage.js";
+import { handleMcp, mcpLimits } from "./mcp.js";
+import type { McpLimitCheck } from "./mcp.js";
+import type { Scope } from "@heedwork/core";
 import {
   checkLimit,
   LimitError,
@@ -227,9 +236,11 @@ function isCanvasItem(item: Item, now: number): boolean {
   return !isTerminalStatus(item.status) || isGhost(item, now);
 }
 
+export class SteerScopeError extends Error {}
+
 function requireSteering(actor: Actor, action: string): void {
   if (isReport(actor))
-    throw new Error(
+    throw new SteerScopeError(
       `Report scope cannot ${action}. Use a human or steer actor.`,
     );
 }
@@ -267,10 +278,12 @@ export class Workspace<
   #undoBroadcasts?: WorkspaceMessage[];
 
   readonly #sql: SqlStorage;
+  readonly #oauth: OAuthStorage;
 
   constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
+    this.#oauth = new OAuthStorage(ctx.storage, ctx.id.name);
     ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair("ping", "pong"),
     );
@@ -441,6 +454,10 @@ export class Workspace<
         case "REVOKE_TOKEN":
           if (!this.revokeToken(mutation.input.token_id))
             throw new Error("Token not found");
+          break;
+        case "REVOKE_CONNECTED_APP":
+          if (!this.revokeConnectedApp(mutation.input.grant_id))
+            throw new Error("Connected app not found");
           break;
       }
     } catch (cause) {
@@ -913,14 +930,18 @@ export class Workspace<
   listTokens(): TokenMetadata[] {
     return this.#sql
       .exec<TokenMetadata>(
-        `SELECT ${TOKEN_METADATA_COLUMNS} FROM tokens ORDER BY created_at, id`,
+        `SELECT ${TOKEN_METADATA_COLUMNS} FROM tokens
+          WHERE id NOT IN (SELECT id FROM oauth_grants) ORDER BY created_at, id`,
       )
       .toArray();
   }
 
   revokeToken(id: string): boolean {
     const revoked =
-      this.#sql.exec("DELETE FROM tokens WHERE id = ?", id).rowsWritten > 0;
+      this.#sql.exec(
+        "DELETE FROM tokens WHERE id = ? AND id NOT IN (SELECT id FROM oauth_grants)",
+        id,
+      ).rowsWritten > 0;
     if (revoked) this.#broadcastOnboarding();
     return revoked;
   }
@@ -928,12 +949,83 @@ export class Workspace<
   async verifyToken(
     secret: string,
   ): Promise<Extract<Actor, { kind: "agent" }> | null> {
+    return (await this.#verifyAgentToken(secret))?.actor ?? null;
+  }
+
+  registerOAuthClient(client: OAuthClient) {
+    this.#oauth.register(client);
+  }
+
+  findOAuthClient(id: string) {
+    return this.#oauth.findClient(id);
+  }
+
+  beginOAuthConsent(
+    csrf: string,
+    userId: string,
+    authorization: OAuthAuthorization,
+  ) {
+    return this.#oauth.beginConsent(csrf, userId, authorization);
+  }
+
+  finishOAuthConsent(
+    csrf: string,
+    userId: string,
+    resource: string,
+    decision: { label: string; scope: Scope } | null,
+  ) {
+    return this.#oauth.finishConsent(csrf, userId, resource, decision);
+  }
+
+  exchangeOAuthToken(input: OAuthExchange) {
+    return this.#oauth.exchange(input);
+  }
+
+  listConnectedApps() {
+    return this.#oauth.list();
+  }
+
+  revokeConnectedApp(id: string) {
+    return this.#oauth.revoke(id);
+  }
+
+  async mcp(request: Request, secret: string, check: McpLimitCheck) {
+    const resource = new URL("/mcp", request.url).href;
+    const verified = await this.#verifyAgentToken(secret, resource);
+    if (!verified)
+      return {
+        response: new Response("Unauthorized", { status: 401 }),
+        writes: [],
+      };
+    if (request.method !== "POST")
+      return {
+        response: new Response("Method not allowed", {
+          status: 405,
+          headers: { Allow: "POST" },
+        }),
+        writes: [],
+      };
+    const writes: string[] = [];
+    const response = await handleMcp(request, verified.actor, this, {
+      workspaceId: this.ctx.id.name!,
+      limits: mcpLimits(check),
+      recordWrite: (operation) => writes.push(operation),
+      oauth: verified.oauth,
+    });
+    return { response, writes };
+  }
+
+  async #verifyAgentToken(secret: string, resource?: string) {
     if (!isTokenSecret(secret)) return null;
     const hash = await hashSecret(secret);
     // Use the prefix for indexed lookup and compare the full digest in constant time.
     const token = this.#sql
-      .exec<Token>(
-        "SELECT * FROM tokens WHERE substr(secret_hash, 1, 16) = ?",
+      .exec<
+        Token & { resource: string | null; access_expires_at: number | null }
+      >(
+        `SELECT t.*, g.resource, g.access_expires_at FROM tokens t
+          LEFT JOIN oauth_grants g ON g.id = t.id
+          WHERE substr(t.secret_hash, 1, 16) = ?`,
         hash.slice(0, 16),
       )
       .toArray()
@@ -941,6 +1033,13 @@ export class Workspace<
     if (!token) return null;
 
     const now = Date.now();
+    if (
+      token.resource !== null &&
+      (token.resource !== resource ||
+        token.access_expires_at === null ||
+        token.access_expires_at <= now)
+    )
+      return null;
     if (
       token.last_used_at === null ||
       now - timestamp(token.last_used_at) >= TOKEN_USE_INTERVAL_MS
@@ -951,13 +1050,14 @@ export class Workspace<
         token.id,
       );
     }
-    return {
+    const actor: Extract<Actor, { kind: "agent" }> = {
       kind: "agent",
       name: token.label,
       token_id: token.id,
       scope: token.scope,
       default_project_id: token.default_project_id,
     };
+    return { actor, oauth: token.resource !== null };
   }
 
   setTimezone(timezone: string, initializeOnly = false): void {
