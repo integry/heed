@@ -6,6 +6,7 @@ import {
   JudgedDetailSchema,
   JudgeFeedbackDetailSchema,
   LockableFieldSchema,
+  UpdateItemSchema,
 } from "@heedwork/core";
 import type { LockableField, UpdateItemInput } from "@heedwork/core";
 import { effectiveSchedule, streamOrder } from "@heedwork/core";
@@ -27,15 +28,15 @@ import {
 } from "./workspace-controls";
 import type { SaveMutation } from "./workspace-controls";
 
-const lockLabels: Record<Exclude<LockableField, "acceptance">, string> = {
+const lockLabels: Record<LockableField, string> = {
   priority: "Priority",
   scheduled_on: "Schedule",
   sort_key: "Stream order",
   layout_pos: "Canvas position",
+  acceptance: "Acceptance criteria",
 };
 
-function eventSummary(event: Event) {
-  const detail = JSON.parse(event.detail ?? "null");
+function eventSummary(event: Event, detail: Record<string, unknown> | null) {
   switch (event.kind) {
     case "created":
       return "Created item";
@@ -77,56 +78,73 @@ function ShadowVerdict({
   const parsed = JudgedDetailSchema.safeParse(
     JSON.parse(event.detail ?? "null"),
   );
-  if (!parsed.success) return <span>Shadow verdict</span>;
+  if (!parsed.success) return null;
   const { criteria, probabilities, model, evidence_supplied } = parsed.data;
 
   return (
-    <div className="form-stack">
-      <strong>Shadow verdict</strong>
-      <small>
-        {model} ·{" "}
-        {evidence_supplied ? "Evidence supplied" : "No evidence supplied"}
-      </small>
-      <dl className="shadow-criteria">
-        {criteria.map((criterion, index) => (
-          <div key={index}>
-            <dt>{criterion}</dt>
-            <dd>{classifyJudgeProbability(probabilities[index])}</dd>
-          </div>
-        ))}
-      </dl>
-      <div className="inline-actions">
-        {[true, false].map((agrees) => (
-          <button
-            key={String(agrees)}
-            type="button"
-            className={feedback === agrees ? "primary" : "subtle"}
-            aria-pressed={feedback === agrees}
-            disabled={!live || busy}
-            onClick={() =>
-              void run(() =>
-                save(
-                  {
-                    type: "JUDGE_FEEDBACK",
-                    input: {
-                      item_id: event.item_id,
-                      judged_event_id: event.id,
-                      agrees,
+    <section
+      className="inspector-section"
+      aria-labelledby="shadow-verdict-heading"
+    >
+      <h3 id="shadow-verdict-heading">Shadow verdict</h3>
+      <div className="form-stack">
+        <small className="muted shadow-model">
+          {model} ·{" "}
+          {evidence_supplied ? "Evidence supplied" : "No evidence supplied"}
+        </small>
+        <dl className="shadow-criteria">
+          {criteria.map((criterion, index) => (
+            <div key={index}>
+              <dt>{criterion}</dt>
+              <dd>
+                {classifyJudgeProbability(probabilities[index])} ·{" "}
+                {probabilities[index] === null
+                  ? "No probability"
+                  : percent.format(probabilities[index])}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <p className="muted">Advisory only. This verdict changes nothing.</p>
+        <div className="inline-actions">
+          {[true, false].map((agrees) => (
+            <button
+              key={String(agrees)}
+              type="button"
+              className={feedback === agrees ? "primary" : "subtle"}
+              aria-pressed={feedback === agrees}
+              disabled={!live || busy}
+              onClick={() => {
+                if (feedback === agrees) return;
+                void run(() =>
+                  save(
+                    {
+                      type: "JUDGE_FEEDBACK",
+                      input: {
+                        item_id: event.item_id,
+                        judged_event_id: event.id,
+                        agrees,
+                      },
                     },
-                  },
-                  { callerReportsError: true },
-                ),
-              )
-            }
-          >
-            {agrees ? "Agree" : "Disagree"}
-          </button>
-        ))}
+                    { callerReportsError: true },
+                  ),
+                );
+              }}
+            >
+              {agrees ? "Agree" : "Disagree"}
+            </button>
+          ))}
+        </div>
+        {error && <p role="alert">{error}</p>}
       </div>
-      {error && <p role="alert">{error}</p>}
-    </div>
+    </section>
   );
 }
+
+const percent = new Intl.NumberFormat(undefined, {
+  style: "percent",
+  maximumFractionDigits: 2,
+});
 
 function Activity({
   item,
@@ -159,57 +177,223 @@ function Activity({
     eventFields,
   );
   const events = Array.isArray(data) ? data : undefined;
-  const feedback = new Map<number, boolean>();
+  // The activity endpoint returns the newest events first.
+  const verdict = events?.find((event) => event.kind === "judged");
+  let feedback: { id: number; agrees: boolean } | undefined;
   for (const event of events ?? []) {
-    if (event.kind !== "judge_feedback") continue;
+    if (
+      event.kind !== "judge_feedback" ||
+      (feedback && event.id <= feedback.id)
+    )
+      continue;
     const parsed = JudgeFeedbackDetailSchema.safeParse(
       JSON.parse(event.detail ?? "null"),
     );
-    if (parsed.success && !feedback.has(parsed.data.judged_event_id))
-      feedback.set(parsed.data.judged_event_id, parsed.data.agrees);
+    if (parsed.success && parsed.data.judged_event_id === verdict?.id)
+      feedback = { id: event.id, agrees: parsed.data.agrees };
   }
   const message =
     error?.message ??
     (data !== undefined && !events ? "Couldn’t load activity." : "");
 
   return (
-    <section className="inspector-section">
-      <h3>Activity</h3>
-      {message ? (
-        <div className="inline-actions">
-          <p role="alert">{message}</p>
-          <button type="button" className="subtle" onClick={reload}>
-            Retry
-          </button>
-        </div>
-      ) : !events ? (
-        <p className="muted">Loading activity…</p>
-      ) : events.length === 0 ? (
-        <p className="muted">No activity yet.</p>
-      ) : (
-        <ol className="activity-list">
-          {events.map((event) => (
-            <li key={event.id}>
-              {event.kind === "judged" ? (
-                <ShadowVerdict
-                  event={event}
-                  feedback={feedback.get(event.id)}
-                  live={live}
-                  save={save}
-                />
-              ) : (
-                <span>{eventSummary(event)}</span>
-              )}
-              <small>
-                {typeof event.actor === "string"
-                  ? event.actor
-                  : event.actor.name || event.actor.email}{" "}
-                · <time>{dateLabel(event.at, timezone)}</time>
-              </small>
-            </li>
-          ))}
-        </ol>
+    <>
+      {verdict && (
+        <ShadowVerdict
+          key={verdict.id}
+          event={verdict}
+          feedback={feedback?.agrees}
+          live={live}
+          save={save}
+        />
       )}
+      <section className="inspector-section">
+        <h3>Activity</h3>
+        {message ? (
+          <div className="inline-actions">
+            <p role="alert">{message}</p>
+            <button type="button" className="subtle" onClick={reload}>
+              Retry
+            </button>
+          </div>
+        ) : !events ? (
+          <p className="muted">Loading activity…</p>
+        ) : events.length === 0 ? (
+          <p className="muted">No activity yet.</p>
+        ) : (
+          <ol className="activity-list">
+            {events.map((event) => {
+              const detail = JSON.parse(event.detail ?? "null");
+              const evidence =
+                event.kind === "status" &&
+                detail?.new === "done" &&
+                typeof detail.evidence === "string"
+                  ? detail.evidence
+                  : undefined;
+              return (
+                <li key={event.id}>
+                  <span>{eventSummary(event, detail)}</span>
+                  {evidence && (
+                    <details className="activity-evidence">
+                      <summary>Evidence</summary>
+                      <pre tabIndex={0}>{evidence}</pre>
+                    </details>
+                  )}
+                  <small>
+                    {typeof event.actor === "string"
+                      ? event.actor
+                      : event.actor.name || event.actor.email}{" "}
+                    · <time>{dateLabel(event.at, timezone)}</time>
+                  </small>
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </section>
+    </>
+  );
+}
+
+function AcceptanceCriteria({
+  item,
+  disabled,
+  save,
+}: {
+  item: Item;
+  disabled: boolean;
+  save: SaveMutation;
+}) {
+  const [draft, setDraft] = useState<{ original: string; values: string[] }>();
+  const { run, busy, error } = useAction();
+  const stored = JSON.parse(item.acceptance) as string[];
+  const values = draft?.values ?? stored;
+  const input = UpdateItemSchema.safeParse({
+    item_id: item.id,
+    acceptance: values,
+  });
+  const changed =
+    input.success && JSON.stringify(input.data.acceptance) !== item.acceptance;
+  const conflict = !busy && draft && draft.original !== item.acceptance;
+  const unavailable = disabled || busy;
+
+  function edit(next: string[]) {
+    setDraft({ original: draft?.original ?? item.acceptance, values: next });
+  }
+
+  function move(index: number, direction: -1 | 1) {
+    const next = [...values];
+    const target = index + direction;
+    [next[index], next[target]] = [next[target], next[index]];
+    edit(next);
+  }
+
+  return (
+    <section className="inspector-section" aria-labelledby="acceptance-heading">
+      <h3 id="acceptance-heading">Acceptance criteria</h3>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (unavailable || conflict || !changed) return;
+          void run(async () => {
+            await save(
+              { type: "UPDATE_ITEM", input: input.data },
+              { callerReportsError: true },
+            );
+            setDraft(undefined);
+          });
+        }}
+      >
+        <fieldset className="form-stack" disabled={unavailable}>
+          {values.length === 0 ? (
+            <p className="muted">No acceptance criteria yet.</p>
+          ) : (
+            <ol className="form-stack acceptance-list">
+              {values.map((criterion, index) => (
+                <li key={index}>
+                  <label className="form-field">
+                    Criterion {index + 1}
+                    <textarea
+                      rows={2}
+                      value={criterion}
+                      onChange={(event) =>
+                        edit(
+                          values.map((value, i) =>
+                            i === index ? event.target.value : value,
+                          ),
+                        )
+                      }
+                    />
+                  </label>
+                  <div className="inline-actions">
+                    <button
+                      type="button"
+                      className="subtle"
+                      aria-label={`Move criterion ${index + 1} up`}
+                      disabled={index === 0}
+                      onClick={() => move(index, -1)}
+                    >
+                      Move up
+                    </button>
+                    <button
+                      type="button"
+                      className="subtle"
+                      aria-label={`Move criterion ${index + 1} down`}
+                      disabled={index === values.length - 1}
+                      onClick={() => move(index, 1)}
+                    >
+                      Move down
+                    </button>
+                    <button
+                      type="button"
+                      className="subtle"
+                      aria-label={`Remove criterion ${index + 1}`}
+                      onClick={() => edit(values.filter((_, i) => i !== index))}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+          <div className="inline-actions">
+            <button
+              type="button"
+              className="subtle"
+              disabled={values.length >= 8 || Boolean(conflict)}
+              onClick={() => edit([...values, ""])}
+            >
+              Add criterion
+            </button>
+            {draft && (
+              <>
+                <button
+                  className="primary"
+                  disabled={!changed || Boolean(conflict)}
+                >
+                  Save criteria
+                </button>
+                <button
+                  type="button"
+                  className="subtle"
+                  onClick={() => setDraft(undefined)}
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+          </div>
+        </fieldset>
+        {conflict ? (
+          <p role="alert">
+            Criteria changed elsewhere. Cancel to load the latest version.
+          </p>
+        ) : !input.success ? (
+          <p className="muted">{input.error.issues[0].message}</p>
+        ) : null}
+        {error && <p role="alert">{error}</p>}
+      </form>
     </section>
   );
 }
@@ -308,9 +492,9 @@ export function Inspector({
   const terminal = item.status === "done" || item.status === "cancelled";
   const item_id = item.id;
   const project = projects.find(({ id }) => id === item.project_id);
-  const locks = LockableFieldSchema.array()
-    .parse(JSON.parse(item.locked_fields))
-    .filter((field) => field !== "acceptance");
+  const locks = LockableFieldSchema.array().parse(
+    JSON.parse(item.locked_fields),
+  );
   const blockers = dependencies.filter((edge) => edge.item_id === item_id);
   const choices = [...items.values()]
     .filter(
@@ -572,6 +756,7 @@ export function Inspector({
             </div>
           </form>
         )}
+        <AcceptanceCriteria item={item} disabled={disabled} save={save} />
         <section className="inspector-section">
           <h3>Details</h3>
           <form
