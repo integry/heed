@@ -14,7 +14,7 @@ import {
   RESET_WORKSPACE_CONFIRMATION,
   WORKSPACE_RESET_CLOSE_CODE,
 } from "@heedwork/core";
-import type { SocketMessage, SocketRequest } from "@heedwork/core";
+import type { Event, SocketMessage, SocketRequest } from "@heedwork/core";
 import { App } from "./App";
 import { onboardingCompletion } from "./Onboarding";
 import { mountApp, type MountedApp, type MountAppOptions } from "./index";
@@ -1909,6 +1909,218 @@ function inspect(title: string) {
   fireEvent.click(stream.getByRole("button", { name: title }));
   return within(screen.getByRole("complementary", { name: "Inspector" }));
 }
+
+it("edits, reorders and removes acceptance criteria within the limits", async () => {
+  await openWorkspace();
+  const inspector = inspect(goal.title);
+  const editor = within(
+    inspector.getByRole("region", { name: "Acceptance criteria" }),
+  );
+  expect(editor.getByText("No acceptance criteria yet.")).toBeTruthy();
+  expect(await inspector.findByText("No activity yet.")).toBeTruthy();
+  expect(
+    inspector.queryByRole("heading", { name: "Shadow verdict" }),
+  ).toBeNull();
+
+  const add = editor.getByRole<HTMLButtonElement>("button", {
+    name: "Add criterion",
+  });
+  for (let i = 1; i <= 8; i++) {
+    fireEvent.click(add);
+    fireEvent.change(editor.getByRole("textbox", { name: `Criterion ${i}` }), {
+      target: { value: `Check ${i}` },
+    });
+  }
+  expect(add.disabled).toBe(true);
+  expect(editor.getAllByRole("textbox")).toHaveLength(8);
+
+  const first = editor.getByRole("textbox", { name: "Criterion 1" });
+  const save = editor.getByRole<HTMLButtonElement>("button", {
+    name: "Save criteria",
+  });
+  const limit = "🙂".repeat(200);
+  fireEvent.change(first, { target: { value: limit + "🙂" } });
+  expect(save.disabled).toBe(true);
+  expect(editor.getByText(/at most 200 characters/)).toBeTruthy();
+  fireEvent.change(first, { target: { value: "   " } });
+  expect(save.disabled).toBe(true);
+  fireEvent.change(first, { target: { value: limit } });
+  expect(save.disabled).toBe(false);
+
+  fireEvent.click(editor.getByRole("button", { name: "Move criterion 2 up" }));
+  fireEvent.click(editor.getByRole("button", { name: "Remove criterion 3" }));
+  expect(add.disabled).toBe(false);
+  fireEvent.click(save);
+  const socket = TestSocket.current;
+  const acceptance = [
+    "Check 2",
+    limit,
+    "Check 4",
+    "Check 5",
+    "Check 6",
+    "Check 7",
+    "Check 8",
+  ];
+  expect(socket.latestRequest()).toMatchObject({
+    type: "UPDATE_ITEM",
+    input: { item_id: goal.id, acceptance },
+  });
+  socket.receive({
+    type: "ITEM_UPSERT",
+    item: {
+      ...goal,
+      acceptance: JSON.stringify(acceptance),
+      locked_fields: '["acceptance"]',
+    },
+    seq: 2,
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 3,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  expect(inspector.getByText("Acceptance criteria locked")).toBeTruthy();
+  fireEvent.click(
+    inspector.getByRole("button", { name: "Unlock acceptance criteria" }),
+  );
+  expect(socket.latestRequest()).toMatchObject({
+    type: "UPDATE_ITEM",
+    input: { item_id: goal.id, unlock: "acceptance" },
+  });
+});
+
+it("shows evidence and the latest shadow verdict in the mobile inspector and changes feedback over the socket", async () => {
+  mockViewport(false);
+  const evidence = "  Test suite\n    12 passed\n";
+  const baseEvent = { item_id: goal.id, at: goal.updated_at, actor: "Runner" };
+  const completion: Event = {
+    ...baseEvent,
+    id: 2,
+    kind: "status",
+    detail: JSON.stringify({ new: "done", evidence }),
+  };
+  const verdict: Event = {
+    ...baseEvent,
+    id: 3,
+    kind: "judged",
+    detail: JSON.stringify({
+      status_event_id: 2,
+      model: "judge/example",
+      criteria: [
+        "Unit tests pass",
+        "Load test passes",
+        "Review is complete",
+        "Docs published",
+      ],
+      probabilities: [0.7, 0.3, 0.51, null],
+      evidence_supplied: true,
+    }),
+  };
+  const older: Event = {
+    ...verdict,
+    id: 1,
+    detail: verdict.detail!.replace("judge/example", "judge/older"),
+  };
+  const events = [verdict, completion, older];
+  await openWorkspace(undefined, snapshot, () => Response.json(events));
+  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+  fireEvent.click(stream.getByRole("button", { name: /Payment reliability/ }));
+  const inspector = within(screen.getByRole("dialog", { name: "Inspector" }));
+  const result = within(
+    await inspector.findByRole("region", { name: "Shadow verdict" }),
+  );
+  expect(result.getByText("judge/example · Evidence supplied")).toBeTruthy();
+  expect(result.getByText("Likely met · 70%")).toBeTruthy();
+  expect(result.getByText("Likely not met · 30%")).toBeTruthy();
+  expect(result.getByText("Unclear · 51%")).toBeTruthy();
+  expect(result.getByText("Unclear · No probability")).toBeTruthy();
+  expect(result.getByText(/Advisory only/)).toBeTruthy();
+  expect(inspector.queryByText(/judge\/older/)).toBeNull();
+  const disclosure = inspector.getByText("Evidence").closest("details")!;
+  expect(disclosure.open).toBe(false);
+  expect(disclosure.querySelector("pre")?.textContent).toBe(evidence);
+
+  const agree = result.getByRole("button", { name: "Agree" });
+  const disagree = result.getByRole("button", { name: "Disagree" });
+  expect(agree.getAttribute("aria-pressed")).toBe("false");
+  expect(disagree.getAttribute("aria-pressed")).toBe("false");
+  const socket = TestSocket.current;
+  let seq = 1;
+  for (const [button, other, agrees] of [
+    [agree, disagree, true],
+    [disagree, agree, false],
+  ] as const) {
+    fireEvent.click(button);
+    const input = { item_id: goal.id, judged_event_id: verdict.id, agrees };
+    expect(socket.latestRequest()).toMatchObject({
+      type: "JUDGE_FEEDBACK",
+      input,
+    });
+    const feedback: Event = {
+      ...baseEvent,
+      id: seq + 3,
+      kind: "judge_feedback",
+      detail: JSON.stringify({ judged_event_id: verdict.id, agrees }),
+    };
+    events.unshift(feedback);
+    socket.receive({ type: "EVENT_APPEND", seq: ++seq, event: feedback });
+    await act(async () =>
+      socket.receive({
+        type: "ACK",
+        seq: ++seq,
+        requestId: socket.latestRequest().requestId,
+      }),
+    );
+    await waitFor(() =>
+      expect(button.getAttribute("aria-pressed")).toBe("true"),
+    );
+    expect(other.getAttribute("aria-pressed")).toBe("false");
+  }
+});
+
+it("shows optional judging in settings and refreshes counts and agreement as verdicts arrive", async () => {
+  let agreement = { verdicts: 0, reviewed: 0, agreed: 0 };
+  await openWorkspace(undefined, snapshot, (path) =>
+    Response.json(path === "/api/judge/agreement" ? agreement : []),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  const section = within(screen.getByRole("region", { name: "Shadow judge" }));
+  expect(
+    await section.findByText(/No verdicts yet.*optional.*host/),
+  ).toBeTruthy();
+
+  agreement = { verdicts: 3, reviewed: 0, agreed: 0 };
+  const socket = TestSocket.current;
+  const event = {
+    item_id: goal.id,
+    id: 2,
+    at: goal.updated_at,
+    actor: "Runner",
+    detail: null,
+  };
+  socket.receive({
+    type: "EVENT_APPEND",
+    seq: 2,
+    event: { ...event, kind: "judged" },
+  });
+  await section.findByText("Verdicts");
+  expect(
+    section.getAllByRole("definition").map((entry) => entry.textContent),
+  ).toEqual(["3", "0", "—"]);
+
+  agreement = { verdicts: 3, reviewed: 2, agreed: 1 };
+  socket.receive({
+    type: "EVENT_APPEND",
+    seq: 3,
+    event: { ...event, id: 3, kind: "judge_feedback" },
+  });
+  await section.findByText("50%");
+  expect(
+    section.getAllByRole("definition").map((entry) => entry.textContent),
+  ).toEqual(["3", "2", "50%"]);
+});
 
 it("sends the inspector actions and displays activity from the item endpoint", async () => {
   await openWorkspace();

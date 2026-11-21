@@ -61,6 +61,7 @@ export const LockableFieldSchema = z.enum([
   "scheduled_on",
   "sort_key",
   "layout_pos",
+  "acceptance",
 ]);
 
 const placement = {
@@ -72,6 +73,21 @@ const itemFields = {
   ...placement,
   title,
   tags: z.array(z.string()),
+  acceptance: z
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1, "Acceptance criteria must not be empty")
+        .refine(
+          (value) =>
+            value.length <= 200 ||
+            (value.length <= 400 && [...value].length <= 200),
+          "Each acceptance criterion must be at most 200 characters",
+        )
+        .meta({ maxLength: 200 }),
+    )
+    .max(8, "Provide at most 8 acceptance criteria"),
   ref_url: z.url().nullable(),
   priority: z.int().min(1).max(10),
   scheduled_on: z.iso.date().nullable(),
@@ -116,6 +132,16 @@ const progressFields = {
   ...assignment,
   status: StatusSchema.exclude(["queued"]).optional(),
   ref_url: itemFields.ref_url.optional(),
+  evidence: z
+    .string()
+    .refine(
+      (value) =>
+        value.length <= 4_000 ||
+        (value.length <= 8_000 && [...value].length <= 4_000),
+      "Evidence must be at most 4,000 characters",
+    )
+    .meta({ maxLength: 4_000 })
+    .optional(),
 };
 
 export const ReportProgressSchema = itemSelector.safeExtend(progressFields);
@@ -156,7 +182,7 @@ export interface ItemOperationResult {
   item_id: string;
   /** Changed rows, or the removed rows for deleteItem. */
   items: Item[];
-  ignored_fields: LockableField[];
+  ignored_fields: (LockableField | "evidence")[];
   guidance_updated_at: string | null;
 }
 

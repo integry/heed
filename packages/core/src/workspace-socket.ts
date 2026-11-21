@@ -9,6 +9,8 @@ import {
   SetStatusBodySchema,
   UpdateItemSchema,
 } from "./item-operations.js";
+import type { ItemOperationResult } from "./item-operations.js";
+import { JudgeFeedbackDetailSchema } from "./judge.js";
 import {
   GuidanceBodySchema,
   ResetWorkspaceBodySchema,
@@ -21,6 +23,7 @@ import {
 } from "./workspace.js";
 import type {
   Dependency,
+  Event,
   Item,
   Project,
   Settings,
@@ -58,6 +61,10 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
   mutation("REOPEN_ITEM", ReopenItemSchema),
   mutation("FLAG_HANDOFF", FlagHandoffSchema.omit({ notify: true })),
   mutation("CLEAR_HANDOFF", ItemIdSchema),
+  mutation(
+    "JUDGE_FEEDBACK",
+    ItemIdSchema.extend(JudgeFeedbackDetailSchema.shape),
+  ),
   mutation("SET_DEPENDENCY", SetDependencySchema),
   mutation(
     "SET_NOTE",
@@ -139,7 +146,13 @@ export type WorkspaceMessage = { onboarding?: OnboardingStatus } & (
   | { type: "PROJECT_REMOVE"; project_id: string }
   | { type: "DEPENDENCY_ADD" | "DEPENDENCY_REMOVE"; dependency: Dependency }
   | { type: "SETTINGS_UPDATE"; settings: Settings }
-  | { type: "ACK"; requestId: string; createdToken?: CreatedToken }
+  | { type: "EVENT_APPEND"; event: Event }
+  | {
+      type: "ACK";
+      requestId: string;
+      createdToken?: CreatedToken;
+      ignored_fields?: ItemOperationResult["ignored_fields"];
+    }
   | {
       type: "ERROR";
       requestId: string | null;

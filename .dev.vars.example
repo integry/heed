@@ -33,6 +33,11 @@ ALLOWED_EMAILS=
 # COMMAND_DAILY_LIMIT=100
 # TRANSCRIBE_DAILY_LIMIT=100
 
+# Optional shadow judge. Set all three and use a versioned model ID.
+# JUDGE_URL=https://api.typesafe.ai/v1/systemone
+# JUDGE_MODEL=jev-1.14.0
+# JUDGE_API_KEY=
+
 # Generate a separate key pair for each environment with npm run vapid:generate.
 # Keep these three values in Wrangler secrets in deployed environments.
 VAPID_PUBLIC_KEY=

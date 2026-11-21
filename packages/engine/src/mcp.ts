@@ -23,6 +23,7 @@ import type { Workspace } from "./workspace.js";
 import { checkLimit, LimitError, OpenPushAllowance } from "./seams.js";
 import type { LimitAction, Limits } from "./seams.js";
 import { mcpChallenge } from "./oauth.js";
+import type { JudgingInput } from "./judge.js";
 
 const instructions =
   "Heed is the user's live view of everything they and their agents are working on. It only stays accurate if you report to it. Whenever you do work for the user: find or create the matching item, mark it active when you start, report after each meaningful step, and mark it done, blocked or flagged for handoff when you stop. Heed does not assign work — never pick up items from it on your own initiative. The user's current guidance follows; it decides where items go, how important they are and when the user may be interrupted. Follow it over your own judgement.";
@@ -51,6 +52,7 @@ type McpContext = {
   workspaceId: string;
   limits: Limits;
   recordWrite: (operation: string) => void;
+  recordJudgingInput: (input: JudgingInput) => void;
   oauth: boolean;
 };
 
@@ -137,7 +139,7 @@ const tools = [
   ),
   defineTool(
     "add_item",
-    "Add work to the user's view. Use it when you start something that has no item yet, when you split a task into parts (pass parent_id), or when you discover follow-up work that should not be forgotten (leave it in the backlog). Call get_canvas first to avoid duplicates, and pass external_key (PR URL or repo#branch) so retries update the same item.",
+    'Add work to the user\'s view. Use it when you start something that has no item yet, when you split a task into parts (pass parent_id), or when you discover follow-up work that should not be forgotten (leave it in the backlog). Call get_canvas first to avoid duplicates, and pass external_key (PR URL or repo#branch) so retries update the same item. When the work has a clear finish line, pass acceptance: up to eight short, checkable "done when" statements.',
     AddItemSchema,
     async (workspace, actor, input, { limits, workspaceId }) =>
       itemResult(
@@ -152,10 +154,13 @@ const tools = [
   ),
   defineTool(
     "report_progress",
-    'Tell the user what you are working on. Call this (1) when you start work, with status "active"; (2) after each meaningful step, or at least every 10 minutes during long work, with a one-line note; (3) when you finish, with status "done" and the PR or issue link as ref_url; (4) when you cannot continue, with status "blocked" and the reason. If no item exists for the work yet, call add_item first. Always pass a stable agent_name.',
+    'Tell the user what you are working on. Call this (1) when you start work, with status "active"; (2) after each meaningful step, or at least every 10 minutes during long work, with a one-line note; (3) when you finish, with status "done", the PR or issue link as ref_url, and as evidence the actual output that shows the item\'s acceptance criteria are met (test summary, CI result), copied rather than paraphrased; (4) when you cannot continue, with status "blocked" and the reason. If no item exists for the work yet, call add_item first. Always pass a stable agent_name.',
     ReportProgressSchema,
-    async (workspace, actor, input) =>
-      itemResult(await workspace.reportProgress(actor, input)),
+    async (workspace, actor, input, context) => {
+      const result = await workspace.reportProgress(actor, input);
+      if (result.judgingInput) context.recordJudgingInput(result.judgingInput);
+      return itemResult(result);
+    },
   ),
   defineTool(
     "update_item",

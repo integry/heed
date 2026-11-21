@@ -535,6 +535,7 @@ function Workspace({
   const inspector = inspected && selectedItem?.inspectorOpen && (
     <Inspector
       key={inspected.id}
+      activityRevision={`${state.snapshotRevision}:${state.eventRevisions.get(inspected.id) ?? 0}`}
       drawer={!desktop}
       item={inspected}
       projects={projects}
@@ -935,6 +936,7 @@ function Workspace({
       )}
       {panel?.kind === "settings" && (
         <Settings
+          judgeAgreementRevision={state.judgeAgreementRevision}
           focus={panel.screen}
           openGuide={openGuide}
           demoLoaded={state.onboarding?.hasDemoData ?? false}

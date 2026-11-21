@@ -61,8 +61,16 @@ function tool<T extends z.ZodType>(
   };
 }
 
-function itemResult({ item_id, guidance_updated_at }: ItemOperationResult) {
-  return { item_id, guidance_updated_at };
+function itemResult({
+  item_id,
+  guidance_updated_at,
+  ignored_fields,
+}: ItemOperationResult) {
+  return {
+    item_id,
+    guidance_updated_at,
+    ...(ignored_fields.length > 0 && { ignored_fields }),
+  };
 }
 
 const CANVAS_PAGE_SIZE = 40;
@@ -70,7 +78,7 @@ const CANVAS_PAGE_SIZE = 40;
 export function compactCanvas(
   canvas: ReturnType<Workspace["getCanvas"]>,
   limit = CANVAS_PAGE_SIZE,
-  includeLinks = false,
+  includeDetails = false,
 ) {
   const { items, ...guidance } = canvas;
   return {
@@ -78,15 +86,27 @@ export function compactCanvas(
     // A full page can conceal another match. Ask for more specific filters.
     items: items
       .slice(0, limit)
-      .map(({ id, title, project, status, parent_id, band, ref_url }) => ({
-        id,
-        title,
-        project: project.slice(0, 120),
-        status,
-        parent_id,
-        band,
-        ...(includeLinks && ref_url && { ref_url }),
-      })),
+      .map(
+        ({
+          id,
+          title,
+          project,
+          status,
+          parent_id,
+          band,
+          ref_url,
+          acceptance,
+        }) => ({
+          id,
+          title,
+          project: project.slice(0, 120),
+          status,
+          parent_id,
+          band,
+          ...(includeDetails && ref_url && { ref_url }),
+          ...(includeDetails && acceptance && { acceptance }),
+        }),
+      ),
     may_have_more: items.length > limit,
   };
 }
@@ -107,7 +127,7 @@ export const commandTools = [
   ),
   tool(
     "add_item",
-    "Add an item or child. Use a project ID. An existing external_key updates its item.",
+    "Add an item or child. Use a project ID. An existing external_key updates its item. Use acceptance for up to eight short, checkable completion criteria.",
     AddItemSchema,
     (workspace, input, actor, allowItemCreation) => {
       const result = allowItemCreation
@@ -118,7 +138,7 @@ export const commandTools = [
   ),
   tool(
     "report_progress",
-    "Change status, note, assignment or reference link for an item. Status may be active, blocked, done or cancelled.",
+    "Change status, note, assignment or reference link for an item. Status may be active, blocked, done or cancelled. When changing status to done, include evidence such as actual test or CI output if available.",
     ReportProgressSchema,
     (workspace, input, actor) =>
       itemResult(workspace.reportProgress(actor, input)),

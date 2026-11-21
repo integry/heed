@@ -29,7 +29,13 @@ export interface SettingsScreen {
 }
 
 export type BuiltInScreenId =
-  "notifications" | "projects" | "tokens" | "account" | "model-keys" | "data";
+  | "notifications"
+  | "shadow-judge"
+  | "projects"
+  | "tokens"
+  | "account"
+  | "model-keys"
+  | "data";
 
 export interface MountAppOptions {
   signIn?: ComponentType<SignInProps>;

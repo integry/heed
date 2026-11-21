@@ -160,6 +160,12 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_oauth_used_refresh_grant ON oauth_used_refresh_tokens(grant_id);
     `);
   },
+  // Version 8
+  (sql: SqlStorage) => {
+    sql.exec(
+      "ALTER TABLE items ADD COLUMN acceptance TEXT NOT NULL DEFAULT '[]'",
+    );
+  },
 ];
 
 export function migrateWorkspace(storage: DurableObjectStorage): void {

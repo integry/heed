@@ -314,6 +314,51 @@ it("copies the complete reference URL from a canvas search to another item", asy
   ).toMatchObject([{ ref_url }]);
 });
 
+it("sets acceptance criteria and reports completion evidence through command tools", async () => {
+  const created = await workspace.executeCommandTool("add_item", {
+    title: "Deploy",
+    acceptance: ["Verify rollout"],
+  });
+  expect(created.isError).toBe(false);
+  const { item_id } = JSON.parse(created.content);
+  const acceptance = ["Verify the smoke tests"];
+  const updated = await workspace.executeCommandTool("update_item", {
+    item_id,
+    acceptance,
+  });
+  expect(updated.isError).toBe(false);
+  expect(await workspace.getItem({ item_id })).toMatchObject({
+    acceptance: JSON.stringify(acceptance),
+    locked_fields: '["acceptance"]',
+  });
+  const lookup = await workspace.executeCommandTool("get_canvas", {
+    query: "Deploy",
+  });
+  expect(JSON.parse(lookup.content)).toMatchObject({
+    items: [{ id: item_id, acceptance }],
+  });
+  const ignored = await workspace.executeCommandTool("report_progress", {
+    item_id,
+    evidence: "Tests running",
+  });
+  expect(JSON.parse(ignored.content)).toMatchObject({
+    ignored_fields: ["evidence"],
+  });
+  const evidence = "Smoke tests: 6 passed";
+  const completed = await workspace.executeCommandTool("report_progress", {
+    item_id,
+    status: "done",
+    evidence,
+  });
+  expect(completed.isError).toBe(false);
+  expect(await workspace.getItemEvents({ item_id })).toContainEqual(
+    expect.objectContaining({
+      kind: "status",
+      detail: JSON.stringify({ old: "queued", new: "done", evidence }),
+    }),
+  );
+});
+
 it("returns a tool error without partial links when the canvas result exceeds its size limit", async () => {
   const firstUrl = `https://docs.example.test/first?share=${"a".repeat(10_000)}&view=review`;
   const secondUrl = `https://docs.example.test/second?share=${"b".repeat(10_000)}&view=review`;

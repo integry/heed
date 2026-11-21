@@ -175,12 +175,33 @@ it("creates tokens through the guarded bootstrap and uses their scope on reports
     { kind: "human" },
     { title: "Backlog", scheduled_on: null },
   );
-  const body = { item_id, status: "active" };
+  const body = { item_id, status: "active", evidence: "Build started" };
   const report = await fetchOpen(request("/api/report", token, body), bindings);
   expect(report.status).toBe(200);
   expect(await report.json()).toMatchObject({
     item_id,
-    ignored_fields: ["scheduled_on"],
+    ignored_fields: ["scheduled_on", "evidence"],
+  });
+  const evidence = "Tests: 12 passed";
+  const done = await fetchOpen(
+    request("/api/report", token, { item_id, status: "done", evidence }),
+    bindings,
+  );
+  expect(done.status).toBe(200);
+  expect(await done.json()).toMatchObject({ ignored_fields: [] });
+  expect(await stub.getItemEvents({ item_id })).toContainEqual(
+    expect.objectContaining({
+      kind: "status",
+      detail: JSON.stringify({ old: "active", new: "done", evidence }),
+    }),
+  );
+  const oversized = await fetchOpen(
+    request("/api/report", token, { item_id, evidence: "x".repeat(4_001) }),
+    bindings,
+  );
+  expect(oversized.status).toBe(400);
+  expect(await oversized.json()).toEqual({
+    error: "Evidence must be at most 4,000 characters",
   });
   expect(
     (

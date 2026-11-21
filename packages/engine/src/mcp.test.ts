@@ -97,9 +97,26 @@ it("initializes with current guidance and lists exactly the eight behavioural to
       additionalProperties: false,
     });
   }
-  expect(
-    tools.find(({ name }) => name === "report_progress")?.description,
-  ).toContain("at least every 10 minutes");
+  expect(tools.find(({ name }) => name === "add_item")).toMatchObject({
+    description:
+      'Add work to the user\'s view. Use it when you start something that has no item yet, when you split a task into parts (pass parent_id), or when you discover follow-up work that should not be forgotten (leave it in the backlog). Call get_canvas first to avoid duplicates, and pass external_key (PR URL or repo#branch) so retries update the same item. When the work has a clear finish line, pass acceptance: up to eight short, checkable "done when" statements.',
+    inputSchema: {
+      properties: {
+        acceptance: {
+          type: "array",
+          maxItems: 8,
+          items: { type: "string", minLength: 1, maxLength: 200 },
+        },
+      },
+    },
+  });
+  expect(tools.find(({ name }) => name === "report_progress")).toMatchObject({
+    description:
+      'Tell the user what you are working on. Call this (1) when you start work, with status "active"; (2) after each meaningful step, or at least every 10 minutes during long work, with a one-line note; (3) when you finish, with status "done", the PR or issue link as ref_url, and as evidence the actual output that shows the item\'s acceptance criteria are met (test summary, CI result), copied rather than paraphrased; (4) when you cannot continue, with status "blocked" and the reason. If no item exists for the work yet, call add_item first. Always pass a stable agent_name.',
+    inputSchema: {
+      properties: { evidence: { type: "string", maxLength: 4_000 } },
+    },
+  });
 });
 
 it("serves discovery and tool calls over the 2026 per-request protocol in JSON", async () => {
@@ -162,13 +179,22 @@ it("executes each tool through the authenticated workspace RPC", async () => {
   const { item_id } = await run("add_item", {
     title: "Initial",
     external_key: "billing",
+    acceptance: ["Invoice can be paid"],
   });
-  await run("update_item", { item_id, title: "Billing integration" });
-  await run("report_progress", {
-    external_key: "billing",
-    status: "active",
-    agent_name: "Build agent",
+  const acceptance = ["Invoice can be paid", "Payment receipt is sent"];
+  await run("update_item", {
+    item_id,
+    title: "Billing integration",
+    acceptance,
   });
+  expect(
+    await run("report_progress", {
+      external_key: "billing",
+      status: "active",
+      agent_name: "Build agent",
+      evidence: "Build started",
+    }),
+  ).toMatchObject({ ignored_fields: ["evidence"] });
   expect(
     await run("get_canvas", {
       project: "Inbox",
@@ -184,6 +210,7 @@ it("executes each tool through the authenticated workspace RPC", async () => {
         status: "active",
         agent_name: "Build agent",
         band: "today",
+        acceptance,
       },
     ],
   });
@@ -202,7 +229,14 @@ it("executes each tool through the authenticated workspace RPC", async () => {
     item_id,
     note: "Please approve the billing changes",
   });
-  await run("report_progress", { item_id, status: "done" });
+  const evidence = "Payment tests: 8 passed";
+  await run("report_progress", { item_id, status: "done", evidence });
+  expect(await workspace.getItemEvents({ item_id: item_id! })).toContainEqual(
+    expect.objectContaining({
+      kind: "status",
+      detail: JSON.stringify({ old: "active", new: "done", evidence }),
+    }),
+  );
   expect(await run("get_canvas", { query: "billing" })).toMatchObject({
     items: [],
   });
@@ -217,6 +251,24 @@ it("executes each tool through the authenticated workspace RPC", async () => {
   });
   expect(await run("get_canvas", { query: "billing" })).toMatchObject({
     items: [{ id: item_id, status: "queued" }],
+  });
+});
+
+it("keeps canvas responses bounded when criteria make a page too large", async () => {
+  const { token } = await workspace.createToken("Reader");
+  const acceptance = Array<string>(8).fill("🙂".repeat(200));
+  for (let index = 0; index < 21; index++) {
+    await workspace.addItem(human, { title: `Release ${index}`, acceptance });
+  }
+  expect(await call(token, "get_canvas")).toMatchObject({
+    isError: true,
+    structuredContent: {
+      error:
+        "Canvas result is too large. Narrow the filters or lower the limit.",
+    },
+  });
+  expect(await call(token, "get_canvas", { limit: 1 })).toMatchObject({
+    structuredContent: { items: [{ acceptance }] },
   });
 });
 

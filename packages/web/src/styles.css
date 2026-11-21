@@ -610,6 +610,58 @@ fieldset {
   display: block;
   color: var(--muted);
 }
+.activity-evidence {
+  margin: 4px 0;
+}
+.activity-evidence summary {
+  cursor: pointer;
+}
+.activity-evidence pre {
+  max-height: 10rem;
+  overflow: auto;
+  margin: 4px 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--page);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.acceptance-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.acceptance-list .inline-actions {
+  margin-top: 4px;
+}
+.shadow-model {
+  overflow-wrap: anywhere;
+}
+.shadow-criteria {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.shadow-criteria dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.judge-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 0;
+}
+.judge-totals dt {
+  color: var(--muted);
+}
+.judge-totals dd {
+  margin: 0;
+  font-weight: 650;
+}
 .form-field + .inline-actions a,
 .inspector a {
   color: var(--accent);

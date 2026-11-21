@@ -6,6 +6,13 @@ import type { CommandChange } from "@heedwork/core";
 import { commandTools, compactCanvas } from "./command-tools.js";
 import { HistoryQuerySchema } from "@heedwork/core";
 import type { HistoryItem, HistoryPage, HistoryQuery } from "@heedwork/core";
+import { JudgedDetailSchema } from "@heedwork/core";
+import type {
+  JudgeAgreement,
+  JudgedDetail,
+  JudgeFeedbackDetail,
+} from "@heedwork/core";
+import type { JudgingInput } from "./judge.js";
 import {
   ActorSchema,
   AddItemSchema,
@@ -27,7 +34,6 @@ import type {
   HandoffOperationResult,
   ItemIdInput,
   ItemOperationResult,
-  LockableField,
   ReopenItemInput,
   ReportProgressInput,
   SetDependencyInput,
@@ -116,6 +122,7 @@ type CanvasRow = Pick<
   | "parent_id"
   | "ref_url"
   | "agent_name"
+  | "acceptance"
   | "scheduled_on"
   | "time_at"
   | "completed_at"
@@ -222,10 +229,11 @@ type Mutation = {
   actor: Actor;
   now: Date;
   timezone: string;
+  guidance: string;
   changes: ItemChange[];
   throttledHeartbeat?: Item;
   removedDependencies?: Dependency[];
-  ignored: Set<LockableField>;
+  ignored: Set<ItemOperationResult["ignored_fields"][number]>;
   pruneEvents: boolean;
 };
 
@@ -372,6 +380,14 @@ export class Workspace<
       user: typeof attachment === "object" ? attachment?.user : undefined,
     };
     const { requestId } = request.data;
+    if (request.data.type === "JUDGE_FEEDBACK" && !actor.user) {
+      this.#send(socket, {
+        type: "ERROR",
+        requestId,
+        error: { code: "forbidden", message: "A browser session is required." },
+      });
+      return;
+    }
     if (
       request.data.type === "RESET_WORKSPACE" &&
       (typeof attachment !== "object" || !attachment?.owner)
@@ -387,6 +403,7 @@ export class Workspace<
       return;
     }
     let createdToken: CreatedToken | undefined;
+    let ignoredFields: ItemOperationResult["ignored_fields"] | undefined;
     try {
       const mutation = request.data;
       const limit = SOCKET_CREATE_LIMITS[mutation.type];
@@ -434,6 +451,9 @@ export class Workspace<
         case "SET_DEPENDENCY":
           this.setDependency(actor, mutation.input);
           break;
+        case "JUDGE_FEEDBACK":
+          this.#recordJudgeFeedback(actor.user!, mutation.input);
+          break;
         case "SET_NOTE":
           this.reportProgress(actor, mutation.input);
           break;
@@ -441,7 +461,10 @@ export class Workspace<
           this.updateItem(actor, mutation.input);
           break;
         case "SET_STATUS":
-          this.reportProgress(actor, mutation.input);
+          ignoredFields = this.reportProgress(
+            actor,
+            mutation.input,
+          ).ignored_fields;
           break;
         case "REORDER_ITEMS":
           this.#mutateItems(actor, (transaction) => {
@@ -512,7 +535,12 @@ export class Workspace<
       return;
     }
     // Plaintext is returned only to the socket that created the token.
-    this.#send(socket, { type: "ACK", requestId, createdToken });
+    this.#send(socket, {
+      type: "ACK",
+      requestId,
+      createdToken,
+      ...(ignoredFields?.length && { ignored_fields: ignoredFields }),
+    });
   }
 
   #send(socket: WebSocket, message: WorkspaceMessage): void {
@@ -1077,13 +1105,15 @@ export class Workspace<
         writes: [],
       };
     const writes: string[] = [];
+    const judgingInputs: JudgingInput[] = [];
     const response = await handleMcp(request, verified.actor, this, {
       workspaceId: this.ctx.id.name!,
       limits: mcpLimits(check),
       recordWrite: (operation) => writes.push(operation),
+      recordJudgingInput: (input) => judgingInputs.push(input),
       oauth: verified.oauth,
     });
-    return { response, writes };
+    return { response, writes, judgingInputs };
   }
 
   async #verifyAgentToken(secret: string, resource?: string) {
@@ -1202,6 +1232,72 @@ export class Workspace<
       .map(readEvent);
   }
 
+  getJudgeAgreement(): JudgeAgreement {
+    return this.#sql
+      .exec<JudgeAgreement>(
+        `WITH latest_feedback AS (
+         SELECT MAX(id) AS id, json_extract(detail, '$.judged_event_id') AS judged_id
+         FROM events WHERE kind = 'judge_feedback'
+         GROUP BY judged_id
+       )
+       SELECT COUNT(*) AS verdicts, COUNT(feedback.id) AS reviewed,
+         COALESCE(SUM(json_extract(feedback.detail, '$.agrees')), 0) AS agreed
+       FROM events AS verdict
+       LEFT JOIN latest_feedback ON latest_feedback.judged_id = verdict.id
+       LEFT JOIN events AS feedback ON feedback.id = latest_feedback.id
+       WHERE verdict.kind = 'judged'`,
+      )
+      .one();
+  }
+
+  appendJudgedEvent(itemId: string, input: JudgedDetail): void {
+    const detail = parseInput(JudgedDetailSchema, input);
+    // The report may have been deleted or pruned while the judge was running.
+    const report = this.#sql
+      .exec(
+        "SELECT id FROM events WHERE id = ? AND item_id = ? AND kind = 'status' AND json_extract(detail, '$.new') = 'done'",
+        detail.status_event_id,
+        itemId,
+      )
+      .toArray()[0];
+    if (!report) return;
+    const event = this.#insertEvent(
+      itemId,
+      new Date(),
+      "Shadow judge",
+      "judged",
+      detail,
+    );
+    this.#broadcast({ type: "EVENT_APPEND", event });
+  }
+
+  #recordJudgeFeedback(
+    user: WorkspaceUser,
+    { item_id, ...detail }: ItemIdInput & JudgeFeedbackDetail,
+  ): void {
+    const verdict = this.#sql
+      .exec(
+        "SELECT id FROM events WHERE id = ? AND item_id = ? AND kind = 'judged'",
+        detail.judged_event_id,
+        item_id,
+      )
+      .toArray()[0];
+    if (!verdict) throw new Error("Verdict not found");
+    const now = new Date();
+    const event = this.ctx.storage.transactionSync(() => {
+      const event = this.#insertEvent(
+        item_id,
+        now,
+        user,
+        "judge_feedback",
+        detail,
+      );
+      this.#pruneEvents(now);
+      return event;
+    });
+    this.#broadcast({ type: "EVENT_APPEND", event });
+  }
+
   getCanvas(input: z.input<typeof CanvasQuerySchema> = {}) {
     const { project, parent_id, query, include_done, limit } = parseInput(
       CanvasQuerySchema,
@@ -1211,7 +1307,7 @@ export class Workspace<
     const items = this.#sql
       .exec<CanvasRow>(
         `SELECT i.id, i.title, i.status, i.parent_id, i.ref_url, i.scheduled_on,
-              i.time_at, i.completed_at, i.agent_name, p.name AS project
+              i.time_at, i.completed_at, i.agent_name, i.acceptance, p.name AS project
        FROM items i JOIN projects p ON p.id = i.project_id
        WHERE (?1 IS NULL OR p.id = ?1 OR p.name = ?1)
          AND (?2 OR i.parent_id IS ?3)
@@ -1259,7 +1355,16 @@ export class Workspace<
       guidance,
       guidance_updated_at,
       items: items.map(
-        ({ id, title, project, status, parent_id, ref_url, agent_name }) => ({
+        ({
+          id,
+          title,
+          project,
+          status,
+          parent_id,
+          ref_url,
+          agent_name,
+          acceptance,
+        }) => ({
           id,
           title,
           project,
@@ -1268,6 +1373,9 @@ export class Workspace<
           ref_url,
           agent_name,
           band: bands.get(id) ?? null,
+          ...(acceptance !== "[]" && {
+            acceptance: JSON.parse(acceptance) as string[],
+          }),
         }),
       ),
     };
@@ -1660,17 +1768,41 @@ export class Workspace<
   reportProgress(
     actor: Actor,
     input: ReportProgressInput,
-  ): ItemOperationResult {
+  ): ItemOperationResult & { judgingInput?: JudgingInput } {
     const data = parseInput(ReportProgressSchema, input);
-    return this.#mutateItems(actor, (mutation) => {
+    let judgingInput: JudgingInput | undefined;
+    const result = this.#mutateItems(actor, (mutation) => {
       const item = this.#requireItem(data);
       const patch = this.#editPatch(mutation, data, item);
       this.#applyStatus(mutation, patch, data.status, item);
-      this.#saveItem(mutation, item, patch, {
+      if (data.evidence !== undefined && patch.status !== "done") {
+        mutation.ignored.add("evidence");
+      }
+      const statusEventId = this.#saveItem(mutation, item, patch, {
         heartbeat: actor.kind === "agent",
+        evidence: patch.status === "done" ? data.evidence : undefined,
       });
+      if (
+        mutation.actor.kind === "agent" &&
+        patch.status === "done" &&
+        statusEventId !== undefined
+      ) {
+        const criteria = JSON.parse(item.acceptance) as string[];
+        if (criteria.length) {
+          judgingInput = {
+            item_id: item.id,
+            status_event_id: statusEventId,
+            title: item.title,
+            criteria,
+            evidence: data.evidence ?? null,
+            note: data.note ?? null,
+            guidance: mutation.guidance,
+          };
+        }
+      }
       return item.id;
     });
+    return judgingInput ? { ...result, judgingInput } : result;
   }
 
   async flagHandoff(
@@ -2059,11 +2191,12 @@ export class Workspace<
   ): ItemOperationResult {
     const actor = parseInput(ActorSchema, input);
     const { mutation, result } = this.ctx.storage.transactionSync(() => {
-      const { timezone, guidance_updated_at } = this.getSettings();
+      const { timezone, guidance, guidance_updated_at } = this.getSettings();
       const mutation: Mutation = {
         actor,
         now: new Date(),
         timezone,
+        guidance,
         changes: [],
         ignored: new Set(),
         pruneEvents: false,
@@ -2355,7 +2488,10 @@ export class Workspace<
         continue;
       }
       Object.assign(patch, {
-        [field]: field === "layout_pos" ? JSON.stringify(value) : value,
+        [field]:
+          field === "layout_pos" || field === "acceptance"
+            ? JSON.stringify(value)
+            : value,
       });
       if (!isReport(mutation.actor)) nextLocks.add(field);
     }
@@ -2433,8 +2569,13 @@ export class Workspace<
     mutation: Mutation,
     item: Item,
     patch: ItemPatch,
-    options: { heartbeat?: boolean; notify?: boolean; reopened?: boolean } = {},
-  ): void {
+    options: {
+      heartbeat?: boolean;
+      notify?: boolean;
+      reopened?: boolean;
+      evidence?: string;
+    } = {},
+  ): number | undefined {
     const changes = (Object.keys(patch) as (keyof ItemPatch)[]).filter(
       (field) => patch[field] !== item[field],
     );
@@ -2472,12 +2613,14 @@ export class Workspace<
     }
     if (meaningful || options.notify) mutation.pruneEvents = true;
 
-    if (item.status !== updated.status) {
-      this.#appendEvent(mutation, item.id, "status", {
-        old: item.status,
-        new: updated.status,
-      });
-    }
+    const statusEventId =
+      item.status !== updated.status
+        ? this.#appendEvent(mutation, item.id, "status", {
+            old: item.status,
+            new: updated.status,
+            evidence: options.evidence,
+          })
+        : undefined;
     if (item.note !== updated.note) {
       this.#appendEvent(mutation, item.id, "note", {
         old: item.note,
@@ -2514,6 +2657,7 @@ export class Workspace<
         ),
       );
     }
+    return statusEventId;
   }
 
   #appendEvent(
@@ -2521,20 +2665,40 @@ export class Workspace<
     id: string,
     kind: EventKind,
     detail: object,
-  ): void {
+  ): number {
     const { actor } = mutation;
-    const user = actor.kind === "agent" ? undefined : actor.user;
-    this.#sql.exec(
-      "INSERT INTO events (item_id, at, actor, kind, detail, actor_user) VALUES (?, ?, ?, ?, ?, ?)",
+    return this.#insertEvent(
       id,
-      mutation.now.toISOString(),
-      actor.kind === "agent"
-        ? actor.name
-        : user?.name || user?.email || "human",
+      mutation.now,
+      actor.kind === "agent" ? actor.name : (actor.user ?? "human"),
       kind,
-      JSON.stringify(detail),
-      user ? JSON.stringify(user) : null,
-    );
+      detail,
+    ).id;
+  }
+
+  #insertEvent(
+    item_id: string,
+    now: Date,
+    actor: Event["actor"],
+    kind: EventKind,
+    value: object,
+  ): Event {
+    const at = now.toISOString();
+    const detail = JSON.stringify(value);
+    const { id } = this.#sql
+      .exec<{ id: number }>(
+        "INSERT INTO events (item_id, at, actor, kind, detail, actor_user) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        item_id,
+        at,
+        typeof actor === "string"
+          ? actor
+          : actor.name || actor.email || "human",
+        kind,
+        detail,
+        typeof actor === "string" ? null : JSON.stringify(actor),
+      )
+      .one();
+    return { id, item_id, at, actor, kind, detail };
   }
 
   #pruneEvents(now: Date): void {

@@ -169,11 +169,18 @@ it("requires a signed session and a same-origin mutation before looking up the w
 
 it("exports workspace data and history without credentials or internal settings", async () => {
   const project = await workspace.createProject({ name: "Archive", hidden: 1 });
-  const active = await addItem('Release "α"');
-  const archived = await addItem("Archived", {
+  const acceptance = ["Publish the release", "Verify the smoke tests"];
+  const active = await addItem('Release "α"', { acceptance });
+  const archive = await addItem("Archived", {
     project: project.id,
-    status: "cancelled",
   });
+  const evidence = "Smoke tests: 8 passed\nRelease: https://ci.example.test/8";
+  const {
+    items: [archived],
+  } = await workspace.reportProgress(
+    { kind: "human" },
+    { item_id: archive.id, status: "done", evidence },
+  );
   const blocker = await addItem("Blocker");
   await workspace.setDependency(
     { kind: "human" },
@@ -223,6 +230,20 @@ it("exports workspace data and history without credentials or internal settings"
     ),
   });
   expect(data.items).toHaveLength(3);
+  expect(
+    JSON.parse(
+      data.items.find(({ id }: { id: string }) => id === active.id).acceptance,
+    ),
+  ).toEqual(acceptance);
+  const completion = data.events.find(
+    (event: { item_id: string; kind: string }) =>
+      event.item_id === archived.id && event.kind === "status",
+  );
+  expect(JSON.parse(completion.detail)).toEqual({
+    old: "queued",
+    new: "done",
+    evidence,
+  });
   expect(data.events.length).toBeGreaterThan(2);
   for (const secret of [
     token.token,

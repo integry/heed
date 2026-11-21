@@ -71,6 +71,20 @@ On each device, open **Settings → Notifications** and select **Enable notifica
 
 The command bar appears when a provider is configured. Heed sends the command, standing guidance, and a compact workspace view to that provider. Voice uses browser speech recognition where available, with Workers AI Whisper as a fallback when the `AI` binding is enabled. See [AI limits and costs](cost.md#optional-ai-usage).
 
+### Optional shadow judge
+
+The judge is off by default. Set both text variables and the secret to enable it.
+
+| Name            | Type          | Value                                         |
+| --------------- | ------------- | --------------------------------------------- |
+| `JUDGE_URL`     | Text variable | The full System One endpoint URL.             |
+| `JUDGE_MODEL`   | Text variable | The provider's model ID. There is no default. |
+| `JUDGE_API_KEY` | Secret        | The API key for the selected provider.        |
+
+For TypeSafe, use `https://api.typesafe.ai/v1/systemone` with a model ID such as `jev-1.14.0`. For OpenRouter, use `https://openrouter.ai/api/v1/systemone` with a model ID such as `typesafe/jev-1.14`. Pin a versioned model ID so that agreement data is comparable across reports.
+
+When an agent completes an item with acceptance criteria, Heed sends the item title, criteria, supplied evidence, report note, and workspace guidance to the configured endpoint. Signed-in users can review the shadow verdict in the inspector and see agreement with retained verdicts in Settings. See [judge costs](cost.md#optional-ai-usage).
+
 ## First sign-in and API token
 
 1. Open the deployed HTTPS origin, select **Sign in with Google**, and choose an account listed in `ALLOWED_EMAILS`. If Google reports `redirect_uri_mismatch`, check that the exact origin and `/auth/callback` path are registered.

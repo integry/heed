@@ -9,6 +9,7 @@ import type {
   ConnectedApp,
   CreatedToken,
   Item,
+  JudgeAgreement,
   Project,
   Scope,
   TokenMetadata,
@@ -817,7 +818,58 @@ function WorkspaceData({ live, save }: SettingsActions) {
   );
 }
 
+function ShadowJudgeAgreement({ revision }: { revision: number }) {
+  const { data, error, reload } = useResource<JudgeAgreement>(
+    revision > 0 ? "/api/judge/agreement" : null,
+    revision,
+  );
+  const agreement = data?.reviewed
+    ? new Intl.NumberFormat(undefined, {
+        style: "percent",
+        maximumFractionDigits: 1,
+      }).format(data.agreed / data.reviewed)
+    : "—";
+  return (
+    <section
+      className="settings-section"
+      aria-labelledby="judge-agreement-heading"
+    >
+      <h3 id="judge-agreement-heading">Shadow judge</h3>
+      {error ? (
+        <div className="inline-actions">
+          <p role="alert">Couldn’t load judge agreement.</p>
+          <button type="button" className="subtle" onClick={reload}>
+            Retry
+          </button>
+        </div>
+      ) : !data ? (
+        <p className="muted">Loading judge agreement…</p>
+      ) : !data.verdicts ? (
+        <p className="muted">
+          No verdicts yet. Judging is optional and configured by your host.
+        </p>
+      ) : (
+        <dl className="judge-totals">
+          <div>
+            <dt>Verdicts</dt>
+            <dd>{data.verdicts}</dd>
+          </div>
+          <div>
+            <dt>With feedback</dt>
+            <dd>{data.reviewed}</dd>
+          </div>
+          <div>
+            <dt>Agreement rate</dt>
+            <dd>{agreement}</dd>
+          </div>
+        </dl>
+      )}
+    </section>
+  );
+}
+
 export function Settings({
+  judgeAgreementRevision,
   projects,
   items,
   timezone,
@@ -833,6 +885,7 @@ export function Settings({
   openGuide,
   demoLoaded,
 }: SettingsActions & {
+  judgeAgreementRevision: number;
   projects: readonly Project[];
   items: ReadonlyMap<string, Item>;
   timezone: string;
@@ -868,6 +921,9 @@ export function Settings({
         </section>
       )}
       {show("notifications") && <PushSettings key={resetVersion} />}
+      {show("shadow-judge") && (
+        <ShadowJudgeAgreement revision={judgeAgreementRevision} />
+      )}
       {show("projects") && (
         <Projects projects={projects} items={items} live={live} save={save} />
       )}
