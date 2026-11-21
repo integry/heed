@@ -1,6 +1,6 @@
 # HEED (`heed.work`) — Product & Technical Specification
 
-**Version:** 1.8 (MVP Blueprint, revised after architecture review)
+**Version:** 2.0 (MVP Blueprint, revised after architecture review)
 
 **Model:** Open source (MIT, self-hostable). The hosted service (`heed.work`) is a separate private layer; see section 8.
 
@@ -26,6 +26,21 @@ Terminology: an **item** is anything shown in Heed (goal, task, sub-task, meetin
 ---
 
 ## 2. UI & Interaction Design (ASCII Wireframes)
+
+### 2.0 Direction: the attention field
+
+Heed is agent-first. Agents and the user's own words change things; the screen is for seeing. It must not look or behave like an admin dashboard. The approved visual reference is [design/attention-field.html](design/attention-field.html); where the wireframes and rules in 2.1 to 2.3 disagree with this section, this section wins.
+
+* **The radar is the screen.** It fills the page with no surrounding panels and is the first thing shown after sign-in, including for an empty workspace: the empty rings, the day sentence ("Nothing needs you. Nothing is scheduled.") and the text line. There is no onboarding screen, setup wizard or welcome dialog; demo items and first-run hints are removed.
+* **One sentence states the day**, over the field: what needs the user, how many agents are working, what is left today. It is derived in the browser.
+* **Handoffs are questions.** An item with a handoff shows as a question bubble on the field: who asks, the handoff note, up to four suggested replies as one-tap chips when the agent supplied them, and "Type a reply". Answering stores the reply for the agent (section 6, "Answers to handoffs"), clears the handoff and removes the bubble.
+* **One text line drives everything.** It is always visible at the bottom and focused on load on desktop. Text typed there is interpreted against the selected item if there is one ("done", "Friday", "make it urgent"), otherwise against the workspace ("move the SDK upgrade to Friday", "what is blocked?", "zoom into today", "from now on only notify me about billing"). A one-line reply appears above it. Voice uses the same line.
+* **solv.chat interprets free text.** Arbitrary input on the line is handled by a [solv.chat](https://github.com/integry/solv.chat) assistant, which drives the UI the way agents drive the workspace over MCP. The app loads the solv.chat widget and registers Heed's operations as page actions (select, zoom, lens, reschedule, set priority, mark done, reopen, cancel, add item, answer a question, set guidance, read the current canvas). They run in the browser as the signed-in user over the existing WebSocket, under the same authorization and lock rules as every other human entry point; no token or server-side integration is involved. The line sends its text to the assistant and shows the assistant's reply above it; the full conversation is available in the widget's panel. The assistant can live on any solv.chat engine: one the host runs itself with its own model credentials (solv.chat is open source and supports Anthropic, OpenAI and OpenRouter keys), or a hosted one. A host points Heed at it with a `mountApp` option, or `SOLV_WIDGET_URL` and `SOLV_ASSISTANT_KEY` vars in the open build. Heed does not embed the solv.chat engine, which needs its own database, vector index, storage and queue; nothing in the Heed engine depends on it. The line uses the widget element's `send(text)` method, which submits a message without opening the panel and resolves with the assistant's reply text.
+* **The line still works with nothing configured.** A small deterministic interpreter in the browser handles the common commands without a model: zoom and lens changes, show or hide, done, reopen, cancel, relative and weekday dates, priority words, replying to a question, adding an item ("add …"). It runs first, so these are instant. With no solv.chat assistant configured, other text goes to the built-in command model when one is configured (section 7), and otherwise the reply lists what the line understands.
+* **No forms.** There is no inspector form, no dropdown anywhere, and no settings screens made of fields. Selecting an item shows a short summary by the line (title, who, latest note, criteria with verdicts, link) and the item's recent activity in the side list. Changes are said, dragged, or left to defaults. The few things that must be entered (guidance text, a new token's label) are a single text field reached by saying so ("edit guidance", "new token for claude code").
+* **Sensible defaults.** Nothing asks the user to choose before they can act: timezone comes from the browser, new items go to Inbox and today, tokens default to `report` scope, lens defaults to radar.
+* **The stream is a plain list** in a quiet column beside the field (below it on a phone): Needs you, Working now, Today, Done, This week. Typographic rows, not cards. Other lenses (board, treemap, list) remain, reached by saying their name or by keyboard, not by a control that is always on screen.
+* **Visual language.** Follow the reference: a dark field by default with a light theme that follows the system, warm paper-white type, one signal colour reserved for "needs you", one for live agent work, a display face for the sentence, a monospace face for times and agent names. No card grids, pill-button toolbars or boxed panels.
 
 ### 2.1 Desktop Browser Layout (Split-Pane)
 
@@ -258,6 +273,9 @@ CREATE TABLE items (
   status TEXT NOT NULL DEFAULT 'queued',    -- 'queued' | 'active' | 'blocked' | 'done' | 'cancelled'
   handoff INTEGER NOT NULL DEFAULT 0,       -- needs a human decision or input; independent of status
   handoff_note TEXT,                        -- exactly what is needed
+  handoff_options TEXT NOT NULL DEFAULT '[]', -- JSON array of up to 4 suggested replies from the agent
+  handoff_answer TEXT,                      -- the human's reply, returned to the agent
+  handoff_answered_at TEXT,
   reopen_count INTEGER NOT NULL DEFAULT 0,  -- boomerang counter
   reopen_reason TEXT,
   agent_name TEXT,                          -- who is working on it; NULL = the human
@@ -296,7 +314,7 @@ CREATE TABLE events (                       -- append-only activity log, feeds t
   item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
   at TEXT NOT NULL DEFAULT (datetime('now')),
   actor TEXT NOT NULL,                      -- 'human' or the agent name
-  kind TEXT NOT NULL,                       -- 'created' | 'status' | 'note' | 'handoff' | 'reopened' | 'moved' | 'notified' | 'judged' | 'judge_feedback'
+  kind TEXT NOT NULL,                       -- 'created' | 'status' | 'note' | 'handoff' | 'reopened' | 'moved' | 'notified' | 'judged' | 'judge_feedback' | 'answered'
   detail TEXT                               -- JSON: old/new values, note text, push text
 );
 
@@ -360,7 +378,7 @@ Served at `/mcp` (Streamable HTTP). The same operations back `/api/command` and 
 | `report_progress` | `item_id` or `external_key`, `status?`, `note?`, `ref_url?`, `agent_name?`, `evidence?` | Heartbeat plus optional status change (`active`, `blocked`, `done`, `cancelled`). Without `status` it only refreshes the heartbeat and note. `evidence` (at most 4,000 characters) is accepted with `status: "done"` and stored on that status event. |
 | `update_item` | `item_id`, `title?`, `tags?`, `ref_url?`, `parent_id?`, `priority?`, `scheduled_on?`, `time_type?`, `time_at?`, `acceptance?`; steer-only: `project?`, `hidden?`, `sort_key?`, position, unlock | Edits an item. Writes to human-locked fields from a `report` token are ignored and reported back. |
 | `set_dependency` | `item_id`, `blocked_by_id`, `action: "add"｜"remove"` | Adds or removes a dependency edge. |
-| `flag_handoff` | `item_id`, `note`, `notify?` | Marks the item as needing a human decision or input and records exactly what is needed. With `notify: true` it also sends a push notification. Clearing the flag is steer-only. |
+| `flag_handoff` | `item_id`, `note`, `options?`, `notify?` | Marks the item as needing a human decision or input and records exactly what is needed. With `notify: true` it also sends a push notification. Clearing the flag is steer-only. |
 | `reopen_item` | `item_id` or `external_key`, `reason` | Brings a done item back (boomerang), at any age. |
 | `set_guidance` | `text` | Steer-only. Replaces the guidance text (used by the command bar: "from now on…"). |
 
@@ -388,6 +406,14 @@ The judge runs in **shadow mode** only:
 A failed, refused or rate-limited judge call is dropped silently and recorded nowhere; judging is never retried and never blocks a report. The model ID is pinned by configuration, since a moved alias would invalidate any threshold derived from past verdicts.
 
 Why shadow only: published evaluations find Jev well calibrated and close to frontier judges when a verdict can be read from the evidence, weaker when it must be derived (code, maths, logic), and markedly more easily swayed than generative judges by text addressed to the evaluator. In Heed the agent being judged writes the report, so a verdict cannot be trusted to mark work verified until a workspace's own agreement data says so. Acting on verdicts (a "disputed" state that feeds Needs me, and a `review_item` tool for reviewer agents) is deliberately left for a later revision.
+
+### Answers to handoffs
+
+A handoff is a question, and the answer has to reach the agent that asked.
+
+* `flag_handoff` accepts `options?`: up to four suggested replies of at most 60 characters each, shown as one-tap chips.
+* The human answers from the field, the text line or voice (a human or `steer` operation, `answer_handoff(item_id, text)`, at most 2,000 characters). It stores `handoff_answer` and `handoff_answered_at` on the item, clears `handoff`, sets the item back to `active` if it was `blocked`, and appends an `answered` event.
+* The answer is returned to agents as `handoff_answer` (with the original note) in the response to any `report_progress` or `update_item` on that item, and on that item in `get_canvas`, until the item is next flagged or completed. Heed does not push it: MCP stays request and response (section 9), so an agent that is waiting calls `report_progress` on the item, no more than once a minute.
 
 ### User guidance
 
@@ -423,7 +449,7 @@ Agents only report if the tool text tells them when to. The server `instructions
 
 **`flag_handoff`**
 
-> Use when the user must decide or provide something before the work can continue or be trusted: a decision, a review, a credential, a manual step. Say exactly what you need in the note, phrased so it can be answered in one line. Set notify to true only if the user's guidance says this kind of thing is worth interrupting them for; a notification reaches their phone immediately. When in doubt, flag without notifying.
+> Use when the user must decide or provide something before the work can continue or be trusted: a decision, a review, a credential, a manual step. Say exactly what you need in the note, phrased so it can be answered in one line. When there are obvious answers, pass up to four as options. The user's reply comes back as handoff_answer on your next report_progress for the item; while you wait, report on it no more than once a minute. Set notify to true only if the user's guidance says this kind of thing is worth interrupting them for; a notification reaches their phone immediately. When in doubt, flag without notifying.
 
 ---
 
@@ -531,4 +557,5 @@ For the hosted service the same workspace comes to roughly 20,000–30,000 reque
 4. **Phase 4 — Open core.** Package split and published `@heedwork/*` packages, extension seams (`createApp`, `mountApp`), first-run onboarding, MCP sign-in (OAuth), data export and workspace reset.
 5. **Phase 5 — Acceptance criteria and shadow judge.** Criteria on items, evidence on `done` reports, the optional `JudgeProvider` seam, shadow verdicts and human feedback in the inspector, agreement summary in settings.
 6. **Phase 6 — Read-first UI and time zoom.** Read-only inspector card with in-place edits and one "Edit details" disclosure, lens tabs, verdicts shown with their criteria, and the radar time zoom.
-7. **Hosted service.** Built in `heed-cloud` on the published packages: accounts, workspaces and members, plans, billing, landing site.
+7. **Phase 7 — The attention field.** Section 2.0: radar-first screen with no onboarding, the day sentence, handoffs as questions with answers returned to agents, the single text line with its built-in interpreter, removal of forms and dropdowns, the plain list, the new visual language, and the optional solv.chat page actions.
+8. **Hosted service.** Built in `heed-cloud` on the published packages: accounts, workspaces and members, plans, billing, landing site.

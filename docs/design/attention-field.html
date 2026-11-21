@@ -1,0 +1,946 @@
+<!-- Visual reference for spec section 2.0 (the attention field). A clickable mock-up with sample data, approved by the product owner on 2026-11-21. It is a reference for look, layout and tone, not production code: do not copy its script. Open it in a browser. -->
+<!doctype html><meta charset="utf-8" /><meta
+  name="viewport"
+  content="width=device-width, initial-scale=1"
+/>
+<title>Heed Attention Field</title>
+<meta name="claude:viewport-fit-sides" content="cover" />
+<link
+  rel="stylesheet"
+  href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+/>
+<style>
+  /* Layout: one screen. The field fills it; a sentence states the day; questions sit on the field; one line at the bottom drives everything. */
+  :root {
+    color-scheme: dark;
+    --ink: #0d1422;
+    --ink-2: #141d30;
+    --ring: #26324c;
+    --ring-soft: #1a2439;
+    --paper: #f1ece1;
+    --muted: #8e9ab3;
+    --faint: #5b6781;
+    --need: #ffb347;
+    --need-ink: #2a1a00;
+    --live: #5fd6c4;
+    --done: #55617c;
+    --line: #2a3550;
+    --display: "Bricolage Grotesque", "Trebuchet MS", sans-serif;
+    --body: "Hanken Grotesk", "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      color-scheme: light;
+      --ink: #f3efe6;
+      --ink-2: #e9e3d6;
+      --ring: #cfc7b6;
+      --ring-soft: #ddd6c7;
+      --paper: #151b2b;
+      --muted: #5d6679;
+      --faint: #8b8f99;
+      --need: #b85c00;
+      --need-ink: #fff6e8;
+      --live: #0f7f72;
+      --done: #a39d90;
+      --line: #cfc7b6;
+    }
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --ink: #f3efe6;
+    --ink-2: #e9e3d6;
+    --ring: #cfc7b6;
+    --ring-soft: #ddd6c7;
+    --paper: #151b2b;
+    --muted: #5d6679;
+    --faint: #8b8f99;
+    --need: #b85c00;
+    --need-ink: #fff6e8;
+    --live: #0f7f72;
+    --done: #a39d90;
+    --line: #cfc7b6;
+  }
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--body);
+    font-size: 15px;
+    line-height: 1.45;
+  }
+  .app {
+    height: 100%;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 12px;
+    gap: 8px;
+    box-sizing: border-box;
+  }
+  .top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .mark {
+    font-family: var(--display);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    font-size: 18px;
+  }
+  .meta {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .meta b {
+    color: var(--live);
+    font-weight: 500;
+  }
+  .sample {
+    color: var(--faint);
+  }
+  .stage {
+    position: relative;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 300px);
+    gap: 20px;
+  }
+  .field {
+    position: relative;
+    min-height: 0;
+    min-width: 0;
+  }
+  .field svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  .say {
+    position: absolute;
+    left: 0;
+    top: 0;
+    max-width: min(470px, 78%);
+    pointer-events: none;
+  }
+  .say h1 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(24px, 3.4vw, 42px);
+    line-height: 1.05;
+    letter-spacing: -0.025em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .say h1 em {
+    font-style: normal;
+    color: var(--need);
+  }
+  .say h1 span {
+    color: var(--muted);
+  }
+  .ask {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: min(330px, 100%);
+    display: grid;
+    gap: 10px;
+  }
+  .q {
+    background: var(--need);
+    color: var(--need-ink);
+    border-radius: 4px 18px 18px 18px;
+    padding: 12px 14px;
+  }
+  .q small {
+    font-family: var(--mono);
+    font-size: 11px;
+    opacity: 0.75;
+    display: block;
+  }
+  .q p {
+    margin: 2px 0 8px;
+    font-weight: 600;
+    font-size: 15px;
+  }
+  .q .row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .q button {
+    font: 500 13px var(--body);
+    background: transparent;
+    color: inherit;
+    border: 1.5px solid currentColor;
+    border-radius: 99px;
+    padding: 3px 11px;
+    cursor: pointer;
+  }
+  .q button:hover,
+  .q button:focus-visible {
+    background: var(--need-ink);
+    color: var(--need);
+    outline: none;
+  }
+  .q.answered {
+    background: transparent;
+    color: var(--muted);
+    border: 1px dashed var(--line);
+  }
+  .day {
+    min-width: 0;
+    overflow: auto;
+    font-size: 14px;
+    padding-top: 4px;
+  }
+  .day h2 {
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 16px 0 6px;
+  }
+  .day h2:first-child {
+    margin-top: 0;
+  }
+  .it {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 8px;
+    padding: 5px 0;
+    border-top: 1px solid var(--ring-soft);
+    cursor: pointer;
+  }
+  .it:hover b,
+  .it.sel b {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .it time {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    padding-top: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .it b {
+    font-weight: 500;
+  }
+  .it i {
+    font-style: normal;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    display: block;
+  }
+  .it.live i {
+    color: var(--live);
+  }
+  .it.need b {
+    color: var(--need);
+  }
+  .it.done b {
+    color: var(--done);
+    text-decoration: line-through;
+  }
+  .cmd {
+    display: grid;
+    gap: 6px;
+  }
+  .reply {
+    font-size: 14px;
+    color: var(--muted);
+    min-height: 1.45em;
+  }
+  .reply b {
+    color: var(--paper);
+    font-weight: 500;
+  }
+  .line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--ink-2);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 10px 14px;
+  }
+  .line:focus-within {
+    border-color: var(--paper);
+  }
+  .line span {
+    font-family: var(--mono);
+    color: var(--live);
+  }
+  .line input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: 0;
+    outline: 0;
+    color: var(--paper);
+    font: 400 16px var(--body);
+  }
+  .line input::placeholder {
+    color: var(--faint);
+  }
+  .hints {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .hints button {
+    font: 400 12.5px var(--mono);
+    color: var(--muted);
+    background: transparent;
+    border: 0;
+    padding: 2px 0;
+    margin-right: 12px;
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 4px;
+  }
+  .hints button:hover,
+  .hints button:focus-visible {
+    color: var(--paper);
+    outline: none;
+  }
+  svg text {
+    font-family: var(--mono);
+    fill: var(--muted);
+    font-size: 11px;
+  }
+  svg .lbl {
+    font-family: var(--body);
+    fill: var(--paper);
+    font-size: 12.5px;
+    font-weight: 500;
+  }
+  svg .ringname {
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    fill: var(--faint);
+    font-size: 10px;
+    cursor: pointer;
+  }
+  svg .ringname:hover {
+    fill: var(--paper);
+  }
+  .node {
+    cursor: pointer;
+  }
+  @keyframes pulse {
+    0% {
+      opacity: 0.7;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+  .pulse {
+    animation: pulse 2.2s ease-out infinite;
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse {
+      animation: none;
+      opacity: 0.35;
+    }
+  }
+  @media (max-width: 760px) {
+    .stage {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: minmax(300px, 46vh) auto;
+      overflow: auto;
+    }
+    .ask {
+      position: static;
+      width: 100%;
+      margin-top: 8px;
+    }
+    .field {
+      display: grid;
+      grid-template-rows: 1fr auto;
+    }
+    .say {
+      position: static;
+      max-width: 100%;
+      margin-bottom: 6px;
+    }
+    .field svg {
+      min-height: 240px;
+    }
+  }
+</style>
+
+<div class="app">
+  <div class="top">
+    <div class="mark">heed</div>
+    <div class="meta">
+      <span><b>●</b> 3 agents working</span><span>Sat 21 Nov · 14:05</span
+      ><span class="sample">design mock-up · sample data</span>
+    </div>
+  </div>
+
+  <div class="stage">
+    <div class="field">
+      <div class="say">
+        <h1 id="say">
+          <em>Two things need you.</em>
+          <span>Three agents are working. Four items left today.</span>
+        </h1>
+      </div>
+      <svg
+        id="svg"
+        viewBox="0 0 800 560"
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label="Attention field: items arranged by how soon they matter"
+      ></svg>
+      <div class="ask" id="ask"></div>
+    </div>
+    <div class="day" id="day"></div>
+  </div>
+
+  <div class="cmd">
+    <div class="reply" id="reply">
+      Say what you want. Nothing here needs a form.
+    </div>
+    <div class="line">
+      <span>›</span
+      ><input
+        id="cmd"
+        type="text"
+        autocomplete="off"
+        placeholder="move the SDK upgrade to Friday · what is blocked? · zoom into today"
+        aria-label="Tell Heed what to do"
+      />
+    </div>
+    <div class="hints" id="hints"></div>
+  </div>
+</div>
+
+<script>
+  const items = [
+    {
+      id: "copy",
+      t: "Approve pricing headline",
+      who: "claude-code",
+      ring: 0,
+      a: 205,
+      state: "need",
+      q: "Use “Pay for outcomes, not seats” as the pricing headline?",
+      opts: ["Yes", "No, keep the current one"],
+      time: "",
+    },
+    {
+      id: "key",
+      t: "Stripe restricted key",
+      who: "codex",
+      ring: 0,
+      a: 330,
+      state: "need",
+      q: "I need a restricted Stripe key with write access to Invoices. Paste it or tell me where it lives.",
+      opts: ["It's in 1Password, “Stripe ops”"],
+      time: "",
+    },
+    {
+      id: "sdk",
+      t: "Upgrade payment SDK",
+      who: "codex",
+      ring: 0,
+      a: 95,
+      state: "live",
+      note: "running checkout smoke test",
+      time: "now",
+    },
+    {
+      id: "inv",
+      t: "Fix invoice rounding",
+      who: "claude-code",
+      ring: 0,
+      a: 20,
+      state: "live",
+      note: "2 of 3 criteria met",
+      time: "now",
+    },
+    {
+      id: "csv",
+      t: "CSV export for reports",
+      who: "cursor",
+      ring: 0,
+      a: 150,
+      state: "live",
+      note: "writing tests",
+      time: "now",
+    },
+    {
+      id: "sync",
+      t: "Client sync call",
+      who: "you",
+      ring: 0,
+      a: 268,
+      state: "fixed",
+      note: "fixed time",
+      time: "16:00",
+    },
+    {
+      id: "notes",
+      t: "Write release notes",
+      who: "you",
+      ring: 0,
+      a: 300,
+      state: "next",
+      note: "",
+      time: "",
+    },
+    {
+      id: "auth",
+      t: "OAuth PKCE flow",
+      who: "claude-code",
+      ring: 0,
+      a: 60,
+      state: "done",
+      note: "verified by tests",
+      time: "10:15",
+    },
+    {
+      id: "soc",
+      t: "SOC2 exporter",
+      who: "—",
+      ring: 1,
+      a: 40,
+      state: "later",
+      note: "Tue",
+      time: "Tue",
+    },
+    {
+      id: "roll",
+      t: "Stripe rollout",
+      who: "codex",
+      ring: 1,
+      a: 170,
+      state: "later",
+      note: "Mon 16:00",
+      time: "Mon",
+    },
+    {
+      id: "onb",
+      t: "Onboarding emails",
+      who: "—",
+      ring: 1,
+      a: 290,
+      state: "later",
+      note: "Thu",
+      time: "Thu",
+    },
+    {
+      id: "q1",
+      t: "Q1 planning",
+      who: "you",
+      ring: 2,
+      a: 120,
+      state: "later",
+      note: "12 Jan",
+      time: "Jan",
+    },
+    {
+      id: "debt",
+      t: "Tidy old scripts",
+      who: "—",
+      ring: 3,
+      a: 240,
+      state: "later",
+      note: "backlog",
+      time: "",
+    },
+    {
+      id: "dash",
+      t: "Usage dashboard",
+      who: "—",
+      ring: 3,
+      a: 15,
+      state: "later",
+      note: "backlog",
+      time: "",
+    },
+  ];
+  const ringNames = ["today", "this week", "later", "someday"];
+  const svg = document.getElementById("svg"),
+    NS = "http://www.w3.org/2000/svg";
+  let zoom = null,
+    sel = null;
+  const el = (n, a, txt) => {
+    const e = document.createElementNS(NS, n);
+    for (const k in a) e.setAttribute(k, a[k]);
+    if (txt != null) e.textContent = txt;
+    return e;
+  };
+  const css = (v) =>
+    getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+  function radii() {
+    const base = [118, 178, 228, 270];
+    if (zoom === 0) return [215, 240, 258, 274];
+    if (zoom === 1) return [70, 225, 255, 274];
+    return base;
+  }
+  function draw() {
+    svg.replaceChildren();
+    const cx = 420,
+      cy = 285,
+      R = radii(),
+      col = {
+        need: css("--need"),
+        live: css("--live"),
+        done: css("--done"),
+        paper: css("--paper"),
+        ring: css("--ring"),
+        soft: css("--ring-soft"),
+        ink: css("--ink"),
+      };
+    R.slice()
+      .reverse()
+      .forEach((r, i) =>
+        svg.append(
+          el("circle", {
+            cx,
+            cy,
+            r,
+            fill: i % 2 ? col.ink : col.soft,
+            "fill-opacity": i % 2 ? 1 : 0.55,
+            stroke: col.ring,
+            "stroke-width": 1,
+          }),
+        ),
+      );
+    R.forEach((r, i) => {
+      const t = el(
+        "text",
+        {
+          x: cx,
+          y: cy - r + 15,
+          "text-anchor": "middle",
+          class: "ringname",
+          tabindex: 0,
+        },
+        ringNames[i],
+      );
+      t.addEventListener("click", () =>
+        run(zoom === i ? "fit" : "zoom " + ringNames[i]),
+      );
+      svg.append(t);
+    });
+    if (zoom === 0)
+      [
+        ["needs you", 62],
+        ["working now", 118],
+        ["next", 168],
+      ].forEach(([n, r]) => {
+        svg.append(
+          el("circle", {
+            cx,
+            cy,
+            r,
+            fill: "none",
+            stroke: col.ring,
+            "stroke-dasharray": "2 5",
+          }),
+        );
+        svg.append(
+          el("text", { x: cx, y: cy - r + 14, "text-anchor": "middle" }, n),
+        );
+      });
+    if (zoom === 1)
+      ["Mon", "Tue", "Wed", "Thu", "Fri"].forEach((d, i) => {
+        const r = 70 + (i + 1) * 31;
+        svg.append(
+          el("circle", {
+            cx,
+            cy,
+            r,
+            fill: "none",
+            stroke: col.ring,
+            "stroke-dasharray": "2 5",
+          }),
+        );
+        svg.append(el("text", { x: cx + 6, y: cy - r + 13 }, d));
+      });
+    for (const it of items) {
+      const inner = it.ring ? R[it.ring - 1] : 0;
+      let rr = inner + (R[it.ring] - inner) * (it.ring ? 0.55 : 0.62);
+      if (!it.ring)
+        rr =
+          zoom === 0
+            ? { need: 34, live: 92, next: 144, fixed: 144, done: 194 }[it.state]
+            : { need: 38, live: 70, next: 92, fixed: 92, done: 100 }[it.state];
+      if (it.ring === 1 && zoom === 1)
+        rr = 70 + { Mon: 1, Tue: 2, Thu: 4 }[it.time] * 31 - 15;
+      const rad = (it.a * Math.PI) / 180,
+        x = cx + rr * Math.cos(rad),
+        y = cy + rr * Math.sin(rad);
+      const big =
+        it.state === "need" ? 13 : it.state === "live" ? 10 : it.ring ? 6 : 8;
+      const g = el("g", {
+        class: "node",
+        tabindex: 0,
+        role: "button",
+        "aria-label": it.t,
+      });
+      if (it.state === "live")
+        g.append(
+          el("circle", {
+            cx: x,
+            cy: y,
+            r: big + 9,
+            fill: col.live,
+            class: "pulse",
+          }),
+        );
+      g.append(
+        el("circle", {
+          cx: x,
+          cy: y,
+          r: big,
+          fill:
+            it.state === "need"
+              ? col.need
+              : it.state === "live"
+                ? col.live
+                : it.state === "done"
+                  ? "none"
+                  : col.paper,
+          "fill-opacity": it.ring ? 0.45 : 1,
+          stroke:
+            it.state === "done" ? col.done : sel === it.id ? col.paper : "none",
+          "stroke-width": 2,
+        }),
+      );
+      const show =
+        !it.ring ||
+        zoom === it.ring ||
+        sel === it.id ||
+        (zoom == null && it.ring === 1);
+      if (show) {
+        const right = Math.cos(rad) >= 0;
+        g.append(
+          el(
+            "text",
+            {
+              x: x + (right ? big + 6 : -big - 6),
+              y: y + 4,
+              "text-anchor": right ? "start" : "end",
+              class: "lbl",
+              opacity: it.state === "done" ? 0.5 : 1,
+            },
+            it.t,
+          ),
+        );
+      }
+      if (zoom === 0 && it.state === "fixed") {
+        const ang = (16 / 24) * 2 * Math.PI - Math.PI / 2,
+          mx = cx + 215 * Math.cos(ang),
+          my = cy + 215 * Math.sin(ang);
+        svg.append(el("circle", { cx: mx, cy: my, r: 4, fill: col.paper }));
+        svg.append(
+          el("text", { x: mx - 10, y: my + 4, "text-anchor": "end" }, "16:00"),
+        );
+      }
+      g.addEventListener("click", () => pick(it.id));
+      g.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") pick(it.id);
+      });
+      svg.append(g);
+    }
+  }
+  function pick(id) {
+    sel = sel === id ? null : id;
+    const it = items.find((i) => i.id === sel);
+    say(
+      it
+        ? `<b>${it.t}</b> · ${it.who}${it.note ? " · " + it.note : ""}. Say what should change: “done”, “Friday”, “make it urgent”.`
+        : "Say what you want. Nothing here needs a form.",
+    );
+    draw();
+    list();
+  }
+  function say(html) {
+    document.getElementById("reply").innerHTML = html;
+  }
+  function list() {
+    const day = document.getElementById("day");
+    day.replaceChildren();
+    const groups = [
+      ["Needs you", (i) => i.state === "need"],
+      ["Working now", (i) => i.state === "live"],
+      ["Today", (i) => !i.ring && ["next", "fixed"].includes(i.state)],
+      ["Done", (i) => i.state === "done"],
+      ["This week", (i) => i.ring === 1],
+    ];
+    for (const [name, f] of groups) {
+      const rows = items.filter(f);
+      if (!rows.length) continue;
+      const h = document.createElement("h2");
+      h.textContent = name;
+      day.append(h);
+      for (const it of rows) {
+        const d = document.createElement("div");
+        d.className = "it " + it.state + (sel === it.id ? " sel" : "");
+        d.innerHTML = `<time>${it.time || "·"}</time><div><b></b><i></i></div>`;
+        d.querySelector("b").textContent = it.t;
+        d.querySelector("i").textContent =
+          it.who + (it.note ? " · " + it.note : "");
+        d.addEventListener("click", () => pick(it.id));
+        day.append(d);
+      }
+    }
+  }
+  function asks() {
+    const box = document.getElementById("ask");
+    box.replaceChildren();
+    for (const it of items.filter((i) => i.q)) {
+      const d = document.createElement("div");
+      d.className = "q" + (it.answer ? " answered" : "");
+      if (it.answer) {
+        d.innerHTML = "<small></small><p></p>";
+        d.querySelector("small").textContent = it.who + " has your answer";
+        d.querySelector("p").textContent = "“" + it.answer + "”";
+      } else {
+        d.innerHTML = "<small></small><p></p><div class='row'></div>";
+        d.querySelector("small").textContent = it.who + " asks";
+        d.querySelector("p").textContent = it.q;
+        for (const o of it.opts) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.textContent = o;
+          b.addEventListener("click", () => answer(it, o));
+          d.querySelector(".row").append(b);
+        }
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = "Type a reply…";
+        b.addEventListener("click", () => {
+          sel = it.id;
+          draw();
+          list();
+          const c = document.getElementById("cmd");
+          c.value = "";
+          c.placeholder = "Reply to " + it.who + "…";
+          c.focus();
+        });
+        d.querySelector(".row").append(b);
+      }
+      box.append(d);
+    }
+  }
+  function answer(it, text) {
+    it.answer = text;
+    it.state = "live";
+    it.note = "continuing with your answer";
+    it.time = "now";
+    it.a += 70;
+    const left = items.filter((i) => i.state === "need").length;
+    document.getElementById("say").innerHTML = left
+      ? `<em>One thing needs you.</em> <span>Four agents are working. Four items left today.</span>`
+      : `Nothing needs you. <span>Four agents are working. Four items left today.</span>`;
+    say(`Sent to <b>${it.who}</b>. It carries on without you.`);
+    sel = null;
+    asks();
+    draw();
+    list();
+  }
+  function run(text) {
+    const t = text.trim().toLowerCase();
+    if (!t) return;
+    const pending = items.find((i) => i.id === sel && i.q && !i.answer);
+    if (pending) return answer(pending, text.trim());
+    if (/fit|zoom out|everything/.test(t)) {
+      zoom = null;
+      say("Showing everything.");
+    } else if (/week|days/.test(t)) {
+      zoom = 1;
+      say("This week, split by day. Drop an item on a day to schedule it.");
+    } else if (/today|now/.test(t)) {
+      zoom = 0;
+      say(
+        "Today, by attention: what needs you, what is being worked on, what is next. Fixed times sit on the rim.",
+      );
+    } else if (/block|need|waiting/.test(t)) {
+      zoom = 0;
+      say(
+        "Two things are waiting on you: <b>the pricing headline</b> and <b>a Stripe key</b>. Nothing else is blocked.",
+      );
+    } else if (/friday|move|done|urgent/.test(t)) {
+      const it =
+        items.find((i) => i.id === sel) ||
+        items.find((i) => t.includes(i.t.toLowerCase().split(" ")[0]));
+      if (it) {
+        if (/done/.test(t)) {
+          it.state = "done";
+          it.note = "done by you";
+        } else if (/urgent/.test(t)) {
+          it.state = "next";
+          it.ring = 0;
+        } else {
+          it.ring = 1;
+          it.state = "later";
+          it.note = "Fri";
+          it.time = "Thu";
+        }
+        say(
+          `Done: <b>${it.t}</b> updated. Agents will see it on their next report.`,
+        );
+      } else say("Which item? Click one, or name it.");
+    } else
+      say(
+        "In the real app this goes to the assistant, which can change anything on the field. This mock-up understands: today, this week, what needs me, done, Friday.",
+      );
+    draw();
+    list();
+  }
+  const hints = [
+    "zoom into today",
+    "show this week by day",
+    "what needs me?",
+    "show everything",
+  ];
+  for (const h of hints) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = h;
+    b.addEventListener("click", () => run(h));
+    document.getElementById("hints").append(b);
+  }
+  document.getElementById("cmd").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      run(e.target.value);
+      e.target.value = "";
+      e.target.placeholder =
+        "move the SDK upgrade to Friday · what is blocked? · zoom into today";
+    }
+  });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+  new MutationObserver(draw).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
+  draw();
+  list();
+  asks();
+</script>
