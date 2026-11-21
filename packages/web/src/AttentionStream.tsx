@@ -156,10 +156,12 @@ export function AttentionStream({
   selectedId,
   select,
   radarSelection,
+  activity,
 }: Pick<RowProps, "items" | "now" | "selectedId" | "select"> & {
   groups: AttentionGroups;
   timezone: string;
   radarSelection: string | null;
+  activity?: React.ReactNode;
 }) {
   const list = useRef<HTMLElement>(null);
   const id = useId();
@@ -226,6 +228,7 @@ export function AttentionStream({
             </section>
           ),
       )}
+      {activity}
     </aside>
   );
 }

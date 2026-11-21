@@ -25,9 +25,11 @@ export function Microphone() {
 export function useCommandBar(
   save: SaveMutation,
   transcription: boolean,
-  visible: boolean,
+  model: boolean,
+  execute: (text: string) => Promise<string | undefined>,
 ) {
   const { postJson, requestJson } = useApi();
+  const line = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState("");
   const [summary, setSummary] = useState("");
   const [undoId, setUndoId] = useState<string>();
@@ -53,10 +55,6 @@ export function useCommandBar(
     },
     [],
   );
-
-  useEffect(() => {
-    if (!visible) recording.current?.cancelled.abort();
-  }, [visible]);
 
   function startVoice() {
     if (recording.current || action.busy) return;
@@ -110,26 +108,34 @@ export function useCommandBar(
     recording.current?.cancelled.abort();
   }
 
-  function submit() {
-    const input = draft.trim();
+  function submit(value = draft) {
+    const input = value.trim();
     if (!input || voice || action.busy) return;
-    const original = request?.original ?? input;
-    const replies = request
-      ? [
-          ...request.replies,
-          `Clarifying question: ${summary}\nUser's answer: ${input}`,
-        ]
-      : [];
-    const text = request
-      ? [`Original request: ${original}`, ...replies].join("\n")
-      : input;
-    if (request && text.length > COMMAND_TEXT_LIMIT) {
-      setClarificationTooLong(true);
-      return;
-    }
     void action.run(async () => {
       setClarificationTooLong(false);
       setVoiceError("");
+      const local = await execute(input);
+      if (local !== undefined) {
+        setDraft("");
+        setSummary(local);
+        setRequest(undefined);
+        return;
+      }
+      if (!model) return;
+      const original = request?.original ?? input;
+      const replies = request
+        ? [
+            ...request.replies,
+            `Clarifying question: ${summary}\nUser's answer: ${input}`,
+          ]
+        : [];
+      const text = request
+        ? [`Original request: ${original}`, ...replies].join("\n")
+        : input;
+      if (text.length > COMMAND_TEXT_LIMIT) {
+        setClarificationTooLong(true);
+        return;
+      }
       const result = await postJson<CommandResult>("/api/command", { text });
       setDraft("");
       setSummary(
@@ -167,6 +173,8 @@ export function useCommandBar(
   }
 
   return {
+    line,
+    setSummary,
     clarification: Boolean(request),
     clarificationTooLong,
     draft,
@@ -190,22 +198,22 @@ export function useCommandBar(
 export function CommandBar({
   command,
   live,
-  enabled,
+  replyName,
+  exitReply,
 }: {
   command: ReturnType<typeof useCommandBar>;
   live: boolean;
-  enabled: boolean;
+  replyName?: string;
+  exitReply: () => void;
 }) {
-  const input = useRef<HTMLTextAreaElement>(null);
+  const input = command.line;
   useEffect(() => {
     if (
-      live &&
-      enabled &&
       window.matchMedia?.("(min-width: 761px)").matches &&
       document.activeElement === document.body
     )
       input.current?.focus({ preventScroll: true });
-  }, [live, enabled]);
+  }, [input]);
   const { voice, action, undoing } = command;
   const busy = action.busy || Boolean(voice);
   const message = action.busy
@@ -224,10 +232,23 @@ export function CommandBar({
     <div className="command-bar">
       <div
         className="command-feedback"
-        hidden={!message && !error && !command.undoId}
+        hidden={!message && !error && !command.undoId && !replyName}
       >
-        {error && <p role="alert">{error}</p>}
-        <p role="status">{message}</p>
+        {error && (
+          <p role="alert" title={error}>
+            {error}
+          </p>
+        )}
+        {(!error || command.clarification) && (
+          <p role="status" title={message}>
+            {message}
+          </p>
+        )}
+        {replyName && (
+          <button type="button" className="text-control" onClick={exitReply}>
+            Exit reply
+          </button>
+        )}
         {command.clarification && (
           <button
             type="button"
@@ -242,7 +263,7 @@ export function CommandBar({
           <button
             type="button"
             className="subtle"
-            disabled={!enabled || !live || busy}
+            disabled={!live || busy}
             onClick={command.undo}
           >
             Undo
@@ -254,13 +275,13 @@ export function CommandBar({
         className="command-controls"
         onSubmit={(event) => {
           event.preventDefault();
-          if (live) command.submit();
+          command.submit();
         }}
       >
         <span className="command-prompt" aria-hidden="true">
           ›
         </span>
-        {enabled && command.microphone && (
+        {command.microphone && (
           <button
             type="button"
             className="subtle command-mic"
@@ -286,14 +307,13 @@ export function CommandBar({
             <Microphone />
           </button>
         )}
-        <textarea
+        <input
           ref={input}
           aria-label="Workspace command"
-          rows={1}
           enterKeyHint="send"
           placeholder={
-            !enabled
-              ? "Workspace commands unavailable"
+            replyName
+              ? `Reply to ${replyName}…`
               : command.clarification
                 ? "Answer the question…"
                 : "Tell Heed what to change…"
@@ -301,39 +321,43 @@ export function CommandBar({
           value={command.draft}
           maxLength={COMMAND_TEXT_LIMIT}
           autoComplete="off"
-          disabled={!enabled || !live || busy}
+          readOnly={busy}
           onChange={(event) => command.setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Escape" && !event.nativeEvent.isComposing) {
-              event.currentTarget.blur();
+              if (replyName) exitReply();
+              else event.currentTarget.blur();
             }
-            if (
-              event.key === "Enter" &&
-              !event.shiftKey &&
-              !event.nativeEvent.isComposing
-            ) {
+            if (event.key === "Enter" && event.nativeEvent.isComposing)
               event.preventDefault();
-              event.currentTarget.form?.requestSubmit();
-            }
           }}
         />
-        {enabled && (
-          <button
-            className="text-control command-send"
-            disabled={!live || busy || !command.draft.trim()}
-          >
-            Send
-          </button>
-        )}
+        <button
+          className="text-control command-send"
+          disabled={busy || !command.draft.trim()}
+        >
+          Send
+        </button>
       </form>
+      {!replyName && (
+        <div className="command-examples" aria-label="Example commands">
+          {[
+            "what needs me?",
+            "what is blocked?",
+            "zoom into today",
+            "edit guidance",
+          ].map((example) => (
+            <button
+              key={example}
+              type="button"
+              disabled={!live || busy}
+              onClick={() => command.submit(example)}
+            >
+              {example}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
-  );
-}
-
-export function ModelKeyHint() {
-  return (
-    <p className="muted">
-      Configure Workers AI or an Anthropic key to enable workspace commands.
-    </p>
   );
 }

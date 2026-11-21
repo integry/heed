@@ -12,7 +12,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   COMMAND_TEXT_LIMIT,
   RESET_WORKSPACE_CONFIRMATION,
-  WORKSPACE_RESET_CLOSE_CODE,
 } from "@heedwork/core";
 import type { Event, SocketMessage, SocketRequest } from "@heedwork/core";
 import { App } from "./App";
@@ -239,7 +238,8 @@ it("mounts host settings and header slots and drops workspace state on switch", 
   expect(
     await screen.findByText("user-1 / research / viewer / Team"),
   ).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  await sendCommand("sign out");
   expect(
     await screen.findByRole("heading", { name: "Host sign-in" }),
   ).toBeTruthy();
@@ -258,7 +258,7 @@ it.each([true, false])(
       Response.json({ email: "user@example.test", workspaceId: "default" }),
     );
     mountHost();
-    fireEvent.click(await findMenuAction("Settings"));
+    await sendHostCommand("list tokens");
     const socket = TestSocket.current;
     expect(
       (
@@ -272,7 +272,6 @@ it.each([true, false])(
     ).toBe(devLoginEnabled ? "/auth/dev-login" : undefined);
     expect(fetchSession.mock.calls.map(([path]) => path)).toEqual([
       "/api/me",
-      "/api/connected-apps",
       "/api/tokens",
       "/api/me",
     ]);
@@ -330,7 +329,6 @@ it("ignores an expiry lookup that finishes after a workspace switch", async () =
     .mockResolvedValueOnce(
       Response.json({ email: "user@example.test", workspaceId: "launch" }),
     )
-    .mockResolvedValueOnce(Response.json([]))
     .mockResolvedValueOnce(new Response(null, { status: 401 }))
     .mockResolvedValueOnce(expired)
     .mockResolvedValueOnce(
@@ -338,9 +336,9 @@ it("ignores an expiry lookup that finishes after a workspace switch", async () =
     );
 
   const app = mountHost({ headerStart: ({ workspaceId }) => workspaceId });
-  fireEvent.click(await findMenuAction("Settings"));
+  await sendHostCommand("list tokens");
   await waitFor(() => expect(readConfig).toHaveBeenCalledOnce());
-  const lookupSignal = fetchSession.mock.calls[3][1].signal as AbortSignal;
+  const lookupSignal = fetchSession.mock.calls[2][1].signal as AbortSignal;
 
   act(() => app.onWorkspaceChange());
   await screen.findByText("research");
@@ -353,86 +351,6 @@ it("ignores an expiry lookup that finishes after a workspace switch", async () =
   ).toBeNull();
   expect(socket.readyState).toBe(TestSocket.OPEN);
 });
-
-it.each([true, false])(
-  "honors hidden model key settings when managed is %s",
-  async (managed) => {
-    fetchSession.mockImplementation(async () =>
-      Response.json({
-        email: "user@example.test",
-        workspaceId: "default",
-        managed,
-      }),
-    );
-    mountHost({ hideScreens: ["model-keys", "tokens"] });
-    fireEvent.click(await findMenuAction("Settings"));
-    expect(screen.queryAllByText(/Configure Workers AI/)).toHaveLength(0);
-    expect(
-      within(screen.getByRole("dialog")).queryByRole("heading", {
-        name: "Model keys",
-      }),
-    ).toBeNull();
-  },
-);
-
-it.each([
-  {
-    open: "Add item",
-    region: "Add a goal",
-    field: "Title",
-    submit: "Add goal",
-    type: "ADD_ITEM",
-  },
-  {
-    open: "Settings",
-    region: "Projects",
-    field: "New project name",
-    submit: "Create project",
-    type: "CREATE_PROJECT",
-  },
-  {
-    open: "Settings",
-    region: "API tokens",
-    field: "Label",
-    submit: "Create token",
-    type: "CREATE_TOKEN",
-  },
-])(
-  "shows the limit refusal inline for $submit",
-  async ({ open, region, field, submit, type }) => {
-    await openWorkspace();
-    fireEvent.click(menuAction(open));
-    const form = within(
-      screen.getByRole(open === "Settings" ? "region" : "dialog", {
-        name: region,
-      }),
-    );
-    fireEvent.change(await form.findByLabelText(field), {
-      target: { value: "Launch" },
-    });
-    fireEvent.click(form.getByRole("button", { name: submit }));
-    const socket = TestSocket.current;
-    expect(socket.latestRequest().type).toBe(type);
-    await act(async () =>
-      socket.receive({
-        seq: 2,
-        type: "ERROR",
-        requestId: socket.latestRequest().requestId,
-        error: {
-          code: "limit_exceeded",
-          message: "Creation refused",
-          reason: "This workspace has reached its plan limit.",
-        },
-      }),
-    );
-    const alert = form.getByRole("alert");
-    expect(alert.textContent).toBe(
-      "This workspace has reached its plan limit.",
-    );
-    expect(screen.getAllByRole("alert")).toEqual([alert]);
-    expect(form.getByDisplayValue("Launch")).toBeTruthy();
-  },
-);
 
 function openMenu() {
   const summary = screen.getByLabelText("Heed workspace menu");
@@ -450,16 +368,30 @@ async function findMenuAction(name: string) {
   return menuAction(name);
 }
 
+function commandInput() {
+  return screen.getByRole<HTMLInputElement>("textbox", {
+    name: "Workspace command",
+  });
+}
+
+async function sendCommand(text: string) {
+  await act(async () => {
+    fireEvent.change(commandInput(), { target: { value: text } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  });
+}
+
+async function sendHostCommand(text: string) {
+  await screen.findByRole("banner");
+  TestSocket.current.receive(snapshot);
+  await sendCommand(text);
+}
+
 function switchLens(name: string) {
   const key = { Radar: "1", Board: "2", Detail: "2", Treemap: "3", List: "4" }[
     name
   ];
   fireEvent.keyDown(document.body, { key });
-}
-
-function openInspector() {
-  fireEvent.click(screen.getByRole("button", { name: "Open inspector" }));
-  return within(screen.getByRole("dialog", { name: "Inspector" }));
 }
 
 function openGraph() {
@@ -586,12 +518,14 @@ it("starts a fresh command after an ordinary result ending in a question mark", 
     }),
   );
 
-  send("Find my Ready? item");
+  send("Where is my Ready? item?");
   await screen.findByText(summary);
   expect(draft.placeholder).toBe("Tell Heed what to change…");
-  send("Move the billing review to Today");
+  send("Could you move the billing review to Today?");
   await screen.findByText("Moved the review to Today.");
-  expect(submit.mock.lastCall).toEqual(["Move the billing review to Today"]);
+  expect(submit.mock.lastCall).toEqual([
+    "Could you move the billing review to Today?",
+  ]);
 });
 
 it("keeps an oversized spoken clarification local and lets the user restate the request", async () => {
@@ -629,7 +563,7 @@ it("keeps an oversized spoken clarification local and lets the user restate the 
   fireEvent.click(screen.getByRole("button", { name: "Hold to speak" }));
   await waitFor(() => expect(draft.value).toBe("Billing"));
   send();
-  expect(screen.getByRole("alert").textContent).toContain(
+  expect((await screen.findByRole("alert")).textContent).toContain(
     "restate the complete request",
   );
   expect(submit.mock.calls).toEqual([[original]]);
@@ -690,7 +624,7 @@ it("discards the notification fallback when a reopened item enters the canvas", 
   expect(screen.queryByRole("region", selectedRegion)).toBeNull();
 });
 
-it("closes the notification inspector when an off-canvas item is removed", async () => {
+it("closes the notification summary when an off-canvas item is removed", async () => {
   const lookup = vi
     .fn(missingItem)
     .mockReturnValueOnce(Response.json(notificationItem));
@@ -1910,7 +1844,7 @@ it("offers a registered Dependencies lens for the focused goal", async () => {
   expect(screen.getByText("Dependencies for goal")).toBeTruthy();
 });
 
-it.each(["Radar", "Inspector"])(
+it.each(["Radar", "selection"])(
   "returns to the focused radar goal with touch controls after opening Dependencies from %s",
   async (entry) => {
     mockViewport(false);
@@ -1918,7 +1852,7 @@ it.each(["Radar", "Inspector"])(
     if (entry === "Radar") openGraph();
     else {
       fireEvent.click(
-        inspect(goal.title).getByRole("button", {
+        selectItem(goal.title).getByRole("button", {
           name: "Open dependency graph",
         }),
       );
@@ -2003,7 +1937,7 @@ it.each([false, true])(
   },
 );
 
-it("opens the goal graph from the inspector and highlights the leading blocker", async () => {
+it("opens the goal graph from the selection and highlights the leading blocker", async () => {
   const upstream = {
     ...goal,
     id: "vendor",
@@ -2020,9 +1954,9 @@ it("opens the goal graph from the inspector and highlights the leading blocker",
       { item_id: tomorrow.id, blocked_by_id: child.id },
     ],
   });
-  const inspector = inspect(goal.title);
+  const summary = selectItem(goal.title);
   fireEvent.click(
-    inspector.getByRole("button", { name: "Open dependency graph" }),
+    summary.getByRole("button", { name: "Open dependency graph" }),
   );
   const graph = within(
     screen.getByRole("region", { name: `Dependency graph for ${goal.title}` }),
@@ -2042,9 +1976,12 @@ it("opens the goal graph from the inspector and highlights the leading blocker",
 
   fireEvent.click(screen.getByRole("button", { name: "Change goal" }));
   expect(screen.getByText("Pick a goal to see its dependencies.")).toBeTruthy();
-  fireEvent.change(screen.getByRole("combobox", { name: "Goal" }), {
-    target: { value: goal.id },
-  });
+  fireEvent.click(
+    within(screen.getByRole("region", { name: "Dependencies" })).getByRole(
+      "button",
+      { name: goal.title },
+    ),
+  );
   expect(
     screen.getByRole("region", { name: `Dependency graph for ${goal.title}` }),
   ).toBeTruthy();
@@ -2245,9 +2182,12 @@ it.each([
     });
     openGraph();
     const pickGoal = (id: string) =>
-      fireEvent.change(screen.getByRole("combobox", { name: "Goal" }), {
-        target: { value: id },
-      });
+      fireEvent.click(
+        within(screen.getByRole("region", { name: "Dependencies" })).getByRole(
+          "button",
+          { name: id === goal.id ? goal.title : nextGoal.title },
+        ),
+      );
     const lens = within(screen.getByRole("region", { name: "Dependencies" }));
     const graph = within(
       lens.getByRole("region", { name: `Dependency graph for ${goal.title}` }),
@@ -2331,149 +2271,15 @@ it("opens the selected child's goal when switching from List to Radar", async ()
   ).toBe("true");
 });
 
-function inspect(title: string) {
+function selectItem(title: string) {
   const stream = within(
     screen.getByRole("complementary", { name: "Day stream" }),
   );
   fireEvent.click(stream.getByRole("button", { name: title }));
-  return openInspector();
+  return within(screen.getByRole("region", selectedRegion));
 }
 
-it("opens a read-only inspector and exposes additional field editors in one disclosure", async () => {
-  const item = {
-    ...goal,
-    note: "Confirm the rollback plan.",
-    ref_url: "https://example.test/plan",
-    locked_fields: '["priority","acceptance"]',
-  };
-  await openWorkspace(undefined, { ...snapshot, items: [item, child] });
-  const inspector = inspect(item.title);
-  const card = screen.getByRole("dialog", { name: "Inspector" });
-  expect(inspector.getByRole("heading", { name: item.title })).toBeTruthy();
-  expect(inspector.getByText(item.note)).toBeTruthy();
-  expect(
-    inspector.getByRole("link", { name: /Open link/ }).getAttribute("href"),
-  ).toBe(item.ref_url);
-  expect(inspector.getByRole("img", { name: "Priority locked" })).toBeTruthy();
-  expect(
-    inspector.getByRole("img", { name: "Acceptance criteria locked" }),
-  ).toBeTruthy();
-  for (const name of ["Mark done", "Flag handoff", "Hide", "Delete"])
-    expect(inspector.getByRole("button", { name })).toBeTruthy();
-  expect(card.querySelector("input, select, textarea")).toBeNull();
-  expect(await inspector.findByText("No activity yet.")).toBeTruthy();
-
-  const summary = inspector.getByText("Edit details");
-  expect(summary.closest("details")?.open).toBe(false);
-  fireEvent.click(summary);
-  expect(summary.closest("details")?.open).toBe(true);
-  for (const name of [
-    "Project",
-    "Priority",
-    "Schedule",
-    "Time type",
-    "New tag",
-    "Blocked by",
-    "Link",
-  ])
-    expect(inspector.getByLabelText(name)).toBeTruthy();
-  fireEvent.click(summary);
-  expect(card.querySelector("input, select, textarea")).toBeNull();
-});
-
-it("saves and cancels title and criterion edits in place, and adds and removes criteria", async () => {
-  const item = { ...goal, acceptance: '["Run smoke tests"]' };
-  await openWorkspace(undefined, { ...snapshot, items: [item, child] });
-  const inspector = inspect(item.title);
-  const editor = within(
-    inspector.getByRole("region", { name: "Acceptance criteria" }),
-  );
-  const socket = TestSocket.current;
-  let current = item;
-  let seq = 1;
-
-  async function confirm(
-    patch: Partial<typeof item>,
-    input: Record<string, unknown>,
-  ) {
-    expect(socket.latestRequest()).toMatchObject({
-      type: "UPDATE_ITEM",
-      input: { item_id: item.id, ...input },
-    });
-    current = { ...current, ...patch };
-    socket.receive({ type: "ITEM_UPSERT", item: current, seq: ++seq });
-    await act(async () =>
-      socket.receive({
-        type: "ACK",
-        seq: ++seq,
-        requestId: socket.latestRequest().requestId,
-      }),
-    );
-  }
-
-  const newTitle = "Payment rollout";
-  fireEvent.click(
-    inspector.getByRole("button", { name: `${item.title} — edit title` }),
-  );
-  fireEvent.change(inspector.getByRole("textbox", { name: "Title" }), {
-    target: { value: "Discard this" },
-  });
-  fireEvent.keyDown(inspector.getByRole("textbox", { name: "Title" }), {
-    key: "Escape",
-  });
-  expect(document.activeElement).toBe(
-    inspector.getByRole("button", { name: `${item.title} — edit title` }),
-  );
-  expect(socket.send).not.toHaveBeenCalled();
-  fireEvent.click(
-    inspector.getByRole("button", { name: `${item.title} — edit title` }),
-  );
-  fireEvent.change(inspector.getByRole("textbox", { name: "Title" }), {
-    target: { value: newTitle },
-  });
-  fireEvent.keyDown(inspector.getByRole("textbox", { name: "Title" }), {
-    key: "Enter",
-  });
-  await confirm({ title: newTitle }, { title: newTitle });
-  expect(inspector.getByRole("heading", { name: newTitle })).toBeTruthy();
-
-  fireEvent.click(editor.getByRole("button", { name: "Run smoke tests" }));
-  const first = editor.getByRole("textbox", { name: "Criterion 1" });
-  fireEvent.change(first, { target: { value: "Discard this too" } });
-  fireEvent.keyDown(first, { key: "Escape" });
-  expect(editor.queryByRole("textbox")).toBeNull();
-  expect(socket.send).toHaveBeenCalledTimes(1);
-  fireEvent.click(editor.getByRole("button", { name: "Run smoke tests" }));
-  const revised = editor.getByRole("textbox", { name: "Criterion 1" });
-  fireEvent.change(revised, { target: { value: "Smoke tests pass" } });
-  fireEvent.keyDown(revised, { key: "Enter" });
-  await confirm(
-    { acceptance: '["Smoke tests pass"]' },
-    { acceptance: ["Smoke tests pass"] },
-  );
-
-  fireEvent.click(editor.getByRole("button", { name: "Add criterion" }));
-  const addition = editor.getByRole("textbox", { name: "Criterion 2" });
-  fireEvent.change(addition, { target: { value: "Rollback verified" } });
-  fireEvent.keyDown(addition, { key: "Enter" });
-  await confirm(
-    { acceptance: '["Smoke tests pass","Rollback verified"]' },
-    { acceptance: ["Smoke tests pass", "Rollback verified"] },
-  );
-  expect(
-    editor.getByRole("button", { name: "Rollback verified" }),
-  ).toBeTruthy();
-
-  fireEvent.click(editor.getByRole("button", { name: "Remove criterion 1" }));
-  await confirm(
-    { acceptance: '["Rollback verified"]' },
-    { acceptance: ["Rollback verified"] },
-  );
-  expect(editor.queryByRole("button", { name: "Smoke tests pass" })).toBeNull();
-  expect(editor.queryByRole("button", { name: /^Move criterion/i })).toBeNull();
-});
-
-it("shows evidence and the latest shadow verdict in the mobile inspector and changes feedback over the socket", async () => {
+it("shows evidence and the latest shadow verdict in the mobile day stream and changes feedback over the socket", async () => {
   mockViewport(false);
   const evidence = "  Test suite\n    12 passed\n";
   const baseEvent = { item_id: goal.id, at: goal.updated_at, actor: "Runner" };
@@ -2506,38 +2312,34 @@ it("shows evidence and the latest shadow verdict in the mobile inspector and cha
     detail: verdict.detail!.replace("judge/example", "judge/older"),
   };
   const events = [verdict, completion, older];
-  const criteria = JSON.parse(verdict.detail!).criteria;
-  const judged = { ...goal, acceptance: JSON.stringify(criteria) };
+  const judged = {
+    ...goal,
+    acceptance: "[]",
+    status: "done",
+    completed_at: completion.at,
+  } as const;
   await openWorkspace(undefined, { ...snapshot, items: [judged, child] }, () =>
     Response.json(events),
   );
-  const inspector = inspect(goal.title);
+  const summary = selectItem(goal.title);
+  const stream = within(
+    screen.getByRole("complementary", { name: "Day stream" }),
+  );
   const result = within(
-    await inspector.findByRole("region", { name: "Shadow verdict" }),
+    await stream.findByRole("region", { name: "Shadow verdict" }),
   );
   expect(result.getByText("judge/example · Evidence supplied")).toBeTruthy();
-  const acceptance = within(
-    inspector.getByRole("region", { name: "Acceptance criteria" }),
-  );
-  for (const [criterion, score] of [
-    ["Unit tests pass", "Likely met · 70%"],
-    ["Load test passes", "Likely not met · 30%"],
-    ["Review is complete", "Unclear · 51%"],
-    ["Docs published", "Unclear · No probability"],
+  for (const score of [
+    "Likely met · 70%",
+    "Likely not met · 30%",
+    "Unclear · 51%",
+    "Unclear · No probability",
   ]) {
-    const row = acceptance
-      .getByRole("button", { name: criterion })
-      .closest("li")!;
-    expect(within(row).getByText(score)).toBeTruthy();
+    expect(result.getByText(score)).toBeTruthy();
   }
-  expect(
-    screen
-      .getByRole("dialog", { name: "Inspector" })
-      .querySelector("input, select, textarea"),
-  ).toBeNull();
   expect(result.getByText(/Advisory only/)).toBeTruthy();
-  expect(inspector.queryByText(/judge\/older/)).toBeNull();
-  const disclosure = inspector.getByText("Evidence").closest("details")!;
+  expect(stream.queryByText(/judge\/older/)).toBeNull();
+  const disclosure = stream.getByText("Evidence").closest("details")!;
   expect(disclosure.open).toBe(false);
   expect(disclosure.querySelector("pre")?.textContent).toBe(evidence);
 
@@ -2587,19 +2389,17 @@ it("shows evidence and the latest shadow verdict in the mobile inspector and cha
   });
   expect(result.getByText("Judged against earlier criteria")).toBeTruthy();
   expect(result.getByText("Likely met · 70%")).toBeTruthy();
-  const currentDocs = acceptance
-    .getByRole("button", { name: "Docs published" })
-    .closest("li")!;
+  const currentDocs = summary.getByText("Docs published").closest("li")!;
   expect(within(currentDocs).queryByText(/%|No probability/)).toBeNull();
 });
 
-it("shows optional judging in settings and refreshes counts and agreement as verdicts arrive", async () => {
+it("shows optional judging by command and refreshes counts and agreement as verdicts arrive", async () => {
   let agreement = { verdicts: 0, reviewed: 0, agreed: 0 };
   await openWorkspace(undefined, snapshot, (path) =>
     Response.json(path === "/api/judge/agreement" ? agreement : []),
   );
-  fireEvent.click(menuAction("Settings"));
-  const section = within(screen.getByRole("region", { name: "Shadow judge" }));
+  await sendCommand("shadow judge");
+  const section = within(screen.getByRole("dialog", { name: "Shadow judge" }));
   expect(
     await section.findByText(/No verdicts yet.*optional.*host/),
   ).toBeTruthy();
@@ -2635,342 +2435,9 @@ it("shows optional judging in settings and refreshes counts and agreement as ver
   ).toEqual(["3", "2", "50%"]);
 });
 
-it("sends the inspector actions and displays activity from the item endpoint", async () => {
-  await openWorkspace();
-  fetchSession.mockImplementation(async () =>
-    Response.json([
-      {
-        id: 1,
-        item_id: goal.id,
-        kind: "created",
-        actor: "human",
-        at: goal.created_at,
-        detail: null,
-      },
-    ]),
-  );
-  const socket = TestSocket.current;
-  const inspector = inspect(goal.title);
-  expect(await inspector.findByText("Created item")).toBeTruthy();
-  expect(fetchSession).toHaveBeenCalledWith(
-    `/api/items/${goal.id}/events`,
-    expect.anything(),
-  );
-
-  let seq = 1;
-  async function acknowledge(
-    message?: Omit<Extract<SocketMessage, { type: "ITEM_UPSERT" }>, "seq">,
-  ) {
-    if (message) socket.receive({ ...message, seq: ++seq });
-    await act(async () =>
-      socket.receive({
-        type: "ACK",
-        requestId: socket.latestRequest().requestId,
-        seq: ++seq,
-      }),
-    );
-  }
-  fireEvent.click(inspector.getByRole("button", { name: "Mark done" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "SET_STATUS",
-    input: { item_id: goal.id, status: "done" },
-  });
-  await acknowledge({
-    type: "ITEM_UPSERT",
-    item: { ...goal, status: "done", completed_at: "2024-04-03T12:00:00Z" },
-  });
-
-  fireEvent.click(inspector.getByRole("button", { name: "Reopen" }));
-  expect(
-    (
-      inspector.getByRole("button", {
-        name: "Reopen item",
-      }) as HTMLButtonElement
-    ).disabled,
-  ).toBe(true);
-  fireEvent.change(inspector.getByLabelText("Reason for reopening"), {
-    target: { value: "Check the rollback" },
-  });
-  fireEvent.click(inspector.getByRole("button", { name: "Reopen item" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "REOPEN_ITEM",
-    input: { item_id: goal.id, reason: "Check the rollback" },
-  });
-  await acknowledge({ type: "ITEM_UPSERT", item: goal });
-
-  fireEvent.click(inspector.getByRole("button", { name: "Flag handoff" }));
-  fireEvent.change(inspector.getByLabelText("What input do you need?"), {
-    target: { value: "Approve the rollback" },
-  });
-  fireEvent.click(inspector.getByRole("button", { name: "Save handoff" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "FLAG_HANDOFF",
-    input: { item_id: goal.id, note: "Approve the rollback" },
-  });
-  await acknowledge({
-    type: "ITEM_UPSERT",
-    item: { ...goal, handoff: 1, handoff_note: "Approve the rollback" },
-  });
-  fireEvent.click(inspector.getByRole("button", { name: "Clear handoff" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "CLEAR_HANDOFF",
-    input: { item_id: goal.id },
-  });
-  await acknowledge({ type: "ITEM_UPSERT", item: goal });
-
-  fireEvent.click(inspector.getByText("Edit details"));
-  fireEvent.change(inspector.getByLabelText("Blocked by"), {
-    target: { value: tomorrow.id },
-  });
-  fireEvent.click(inspector.getByRole("button", { name: "Add dependency" }));
-  const dependency = { item_id: goal.id, blocked_by_id: tomorrow.id };
-  expect(socket.latestRequest()).toMatchObject({
-    type: "SET_DEPENDENCY",
-    input: { ...dependency, action: "add" },
-  });
-  socket.receive({ type: "DEPENDENCY_ADD", seq: ++seq, dependency });
-  await acknowledge();
-  fireEvent.click(inspector.getByRole("button", { name: "Remove" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "SET_DEPENDENCY",
-    input: { ...dependency, action: "remove" },
-  });
-  socket.receive({ type: "DEPENDENCY_REMOVE", seq: ++seq, dependency });
-  await acknowledge();
-
-  fireEvent.click(inspector.getByRole("button", { name: "Hide" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: goal.id, hidden: true },
-  });
-  await acknowledge({ type: "ITEM_UPSERT", item: { ...goal, hidden: 1 } });
-  fireEvent.click(inspector.getByRole("button", { name: "Unhide" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: goal.id, hidden: false },
-  });
-  await acknowledge({ type: "ITEM_UPSERT", item: goal });
-
-  const confirm = vi
-    .spyOn(window, "confirm")
-    .mockReturnValueOnce(false)
-    .mockReturnValueOnce(true);
-  fireEvent.click(inspector.getByRole("button", { name: "Delete" }));
-  expect(socket.latestRequest().type).toBe("UPDATE_ITEM");
-  fireEvent.click(inspector.getByRole("button", { name: "Delete" }));
-  expect(confirm).toHaveBeenCalledTimes(2);
-  expect(socket.latestRequest()).toMatchObject({
-    type: "DELETE_ITEM",
-    input: { item_id: goal.id },
-  });
-  socket.receive({ type: "ITEM_REMOVE", seq: ++seq, item_id: goal.id });
-  await acknowledge();
-  expect(screen.queryByRole("complementary", { name: "Inspector" })).toBeNull();
-});
-
-it("unlocks only the chosen field and reflects the server update", async () => {
-  await openWorkspace();
-  const socket = TestSocket.current;
-  const item = { ...goal, locked_fields: '["priority","layout_pos"]' };
-  socket.receive({ type: "ITEM_UPSERT", seq: 2, item });
-  const inspector = inspect(goal.title);
-  fireEvent.click(inspector.getByText("Edit details"));
-  fireEvent.click(inspector.getByRole("button", { name: "Unlock priority" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: goal.id, unlock: "priority" },
-  });
-  socket.receive({
-    type: "ITEM_UPSERT",
-    seq: 3,
-    item: { ...goal, locked_fields: '["layout_pos"]' },
-  });
-  await act(async () =>
-    socket.receive({
-      type: "ACK",
-      seq: 4,
-      requestId: socket.latestRequest().requestId,
-    }),
-  );
-  expect(
-    inspector.queryByRole("button", { name: "Unlock priority" }),
-  ).toBeNull();
-  expect(
-    inspector.getByRole("button", { name: "Unlock canvas position" }),
-  ).toBeTruthy();
-});
-
-it("adds a goal with workspace-local time and explains the child depth cap", async () => {
-  await openWorkspace();
-  const socket = TestSocket.current;
-  const leaf = {
-    ...tomorrow,
-    title: "Verify the backlog",
-    parent_id: child.id,
-    depth: 3 as const,
-  };
-  socket.receive({
-    ...snapshot,
-    seq: 2,
-    items: [goal, child, leaf],
-    settings: { ...snapshot.settings, timezone: "America/New_York" },
-  });
-  const inspector = inspect(leaf.title);
-  expect(
-    inspector.getByText(
-      "This item is a sub-task. Add another sub-task under its parent.",
-    ),
-  ).toBeTruthy();
-  expect(
-    inspector.queryByRole("button", { name: "Add child item" }),
-  ).toBeNull();
-
-  fireEvent.click(inspector.getByRole("button", { name: "Close" }));
-  fireEvent.click(menuAction("Add item"));
-  const dialog = within(screen.getByRole("dialog", { name: "Add a goal" }));
-  fireEvent.change(dialog.getByLabelText("Title"), {
-    target: { value: "Plan the rollout" },
-  });
-  fireEvent.change(dialog.getByLabelText("Schedule"), {
-    target: { value: "2024-04-04" },
-  });
-  fireEvent.change(dialog.getByLabelText("Time type"), {
-    target: { value: "fixed" },
-  });
-  fireEvent.change(dialog.getByLabelText("Fixed time (America/New_York)"), {
-    target: { value: "2024-04-04T09:15" },
-  });
-  fireEvent.click(dialog.getByRole("button", { name: "Add goal" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "ADD_ITEM",
-    input: {
-      title: "Plan the rollout",
-      project: "inbox",
-      scheduled_on: "2024-04-04",
-      time_type: "fixed",
-      time_at: "2024-04-04T13:15:00.000Z",
-    },
-  });
-  await act(async () =>
-    socket.receive({
-      type: "ACK",
-      seq: 3,
-      requestId: socket.latestRequest().requestId,
-    }),
-  );
-
-  const parent = inspect(child.title);
-  fireEvent.click(parent.getByRole("button", { name: "Add child item" }));
-  const childForm = within(
-    screen.getByRole("dialog", { name: "Add child item" }),
-  );
-  fireEvent.change(childForm.getByLabelText("Title"), {
-    target: { value: "Check retry metrics" },
-  });
-  fireEvent.click(childForm.getByRole("button", { name: "Add child" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "ADD_ITEM",
-    input: { title: "Check retry metrics", parent_id: child.id },
-  });
-  await act(async () =>
-    socket.receive({
-      type: "ACK",
-      seq: 4,
-      requestId: socket.latestRequest().requestId,
-    }),
-  );
-});
-
-it("adds children to a hidden parent and blocks creation once it is removed", async () => {
-  await openWorkspace(undefined, {
-    ...snapshot,
-    items: [{ ...goal, hidden: 1 }],
-  });
-  function openChildForm() {
-    fireEvent.click(menuAction("Hidden items"));
-    const hidden = within(screen.getByRole("dialog", { name: "Hidden items" }));
-    fireEvent.click(hidden.getByRole("button", { name: goal.title }));
-    const inspector = within(screen.getByRole("dialog", { name: "Inspector" }));
-    fireEvent.click(inspector.getByRole("button", { name: "Add child item" }));
-    return within(screen.getByRole("dialog", { name: "Add child item" }));
-  }
-
-  const form = openChildForm();
-  expect(form.getByText(`Under ${goal.title}`)).toBeTruthy();
-  fireEvent.change(form.getByLabelText("Title"), {
-    target: { value: "Check retry metrics" },
-  });
-  fireEvent.click(form.getByRole("button", { name: "Add child" }));
-  const socket = TestSocket.current;
-  const request = socket.latestRequest();
-  expect(request).toMatchObject({
-    type: "ADD_ITEM",
-    input: { title: "Check retry metrics", parent_id: goal.id },
-  });
-  expect(screen.getByRole("dialog", { name: "Add child item" })).toBeTruthy();
-  await act(async () =>
-    socket.receive({ type: "ACK", seq: 2, requestId: request.requestId }),
-  );
-  expect(screen.queryByRole("dialog", { name: "Add child item" })).toBeNull();
-
-  const pendingForm = openChildForm();
-  expect(pendingForm.getByRole("button", { name: "Add child" })).toBeTruthy();
-  socket.receive({ type: "ITEM_REMOVE", seq: 3, item_id: goal.id });
-  expect(
-    pendingForm.getByText("The parent item is no longer available."),
-  ).toBeTruthy();
-  expect(pendingForm.queryByRole("button", { name: "Add child" })).toBeNull();
-});
-
-it.each([
-  { dialogName: "Add a goal", openName: "Add item", submitName: "Add goal" },
-  {
-    dialogName: "Add child item",
-    openName: "Add child item",
-    submitName: "Add child",
-  },
-])(
-  "keeps a reopened $dialogName draft when the first save completes",
-  async ({ dialogName, openName, submitName }) => {
-    await openWorkspace();
-    if (submitName === "Add child") inspect(goal.title);
-    const open = () =>
-      fireEvent.click(
-        submitName === "Add child"
-          ? screen.getByRole("button", { name: openName })
-          : menuAction(openName),
-      );
-    open();
-    const first = within(screen.getByRole("dialog", { name: dialogName }));
-    fireEvent.change(first.getByLabelText("Title"), {
-      target: { value: "First draft" },
-    });
-    fireEvent.click(first.getByRole("button", { name: submitName }));
-    const socket = TestSocket.current;
-    const request = socket.latestRequest();
-    expect(request).toMatchObject({
-      type: "ADD_ITEM",
-      input: { title: "First draft" },
-    });
-
-    fireEvent.click(first.getByRole("button", { name: "Close" }));
-    if (submitName === "Add child") openInspector();
-    open();
-    const reopened = screen.getByRole("dialog", { name: dialogName });
-    fireEvent.change(within(reopened).getByLabelText("Title"), {
-      target: { value: "New draft" },
-    });
-    await act(async () =>
-      socket.receive({ type: "ACK", seq: 2, requestId: request.requestId }),
-    );
-    expect(screen.getByRole("dialog", { name: dialogName })).toBe(reopened);
-    expect(within(reopened).getByDisplayValue("New draft")).toBeTruthy();
-  },
-);
-
 it("enforces the guidance limit and applies settings broadcasts to an open editor", async () => {
   await openWorkspace();
-  fireEvent.click(menuAction("Guidance"));
+  await sendCommand("edit guidance");
   const editor = within(screen.getByRole("dialog", { name: "Guidance" }));
   const textarea = editor.getByLabelText("Instructions for your agents");
   const save = editor.getByRole("button", {
@@ -3021,206 +2488,6 @@ it("enforces the guidance limit and applies settings broadcasts to an open edito
     }),
   );
   expect(editor.getByText("Guidance saved.")).toBeTruthy();
-});
-
-it("locks the timezone draft until its save is acknowledged", async () => {
-  await openWorkspace();
-  fireEvent.click(menuAction("Settings"));
-  const account = within(
-    screen.getByRole("region", { name: "Workspace and account" }),
-  );
-  const input = account.getByLabelText(
-    "Workspace timezone",
-  ) as HTMLInputElement;
-  fireEvent.change(input, { target: { value: "Europe/Tallinn" } });
-  fireEvent.click(account.getByRole("button", { name: "Save timezone" }));
-  const socket = TestSocket.current;
-  const request = socket.latestRequest();
-  expect(request).toMatchObject({
-    type: "SET_TIMEZONE",
-    input: { timezone: "Europe/Tallinn" },
-  });
-  expect(input.disabled).toBe(true);
-  socket.receive({
-    type: "SETTINGS_UPDATE",
-    seq: 2,
-    settings: { ...snapshot.settings, timezone: "Europe/Tallinn" },
-  });
-  expect(input.disabled).toBe(true);
-  await act(async () =>
-    socket.receive({ type: "ACK", seq: 3, requestId: request.requestId }),
-  );
-  expect(input.disabled).toBe(false);
-  expect(input.value).toBe("Europe/Tallinn");
-});
-
-it("offers export and requires the exact reset phrase before sending a socket mutation", async () => {
-  await openWorkspace();
-  fireEvent.click(menuAction("Settings"));
-  const data = within(screen.getByRole("region", { name: "Data" }));
-  expect(data.getByRole("link", { name: "Export" }).getAttribute("href")).toBe(
-    "/api/export",
-  );
-  fireEvent.click(data.getByRole("button", { name: "Reset workspace" }));
-  expect(
-    data
-      .getByRole("link", { name: "Export before resetting" })
-      .hasAttribute("download"),
-  ).toBe(true);
-  const input = data.getByLabelText(
-    `Type ${RESET_WORKSPACE_CONFIRMATION} to confirm`,
-  );
-  const submit = data.getByRole("button", {
-    name: "Permanently reset workspace",
-  }) as HTMLButtonElement;
-  fireEvent.change(input, { target: { value: "reset workspace" } });
-  expect(submit.disabled).toBe(true);
-  fireEvent.change(input, { target: { value: RESET_WORKSPACE_CONFIRMATION } });
-  expect(submit.disabled).toBe(false);
-  fireEvent.click(submit);
-  const socket = TestSocket.current;
-  const request = socket.latestRequest();
-  expect(request).toMatchObject({
-    type: "RESET_WORKSPACE",
-    input: { confirmation: RESET_WORKSPACE_CONFIRMATION },
-  });
-  expect(data.getByRole("button", { name: "Resetting…" })).toBeTruthy();
-  await act(async () => {
-    socket.receive({ type: "ACK", seq: 2, requestId: request.requestId });
-    socket.close(WORKSPACE_RESET_CLOSE_CODE);
-  });
-  expect(data.getByRole("status").textContent).toContain(
-    "Your Inbox is now empty.",
-  );
-  expect(screen.queryByRole("button", { name: goal.title })).toBeNull();
-});
-
-it("locks the new project name until creation succeeds or fails", async () => {
-  await openWorkspace();
-  fireEvent.click(menuAction("Settings"));
-  const projects = within(screen.getByRole("region", { name: "Projects" }));
-  const input = projects.getByLabelText("New project name") as HTMLInputElement;
-  const submit = projects.getByRole("button", { name: "Create project" });
-  fireEvent.change(input, { target: { value: "Release planning" } });
-  fireEvent.click(submit);
-  const socket = TestSocket.current;
-  const request = socket.latestRequest();
-  expect(request).toMatchObject({
-    type: "CREATE_PROJECT",
-    input: { name: "Release planning" },
-  });
-  expect(input.disabled).toBe(true);
-  await act(async () =>
-    socket.receive({
-      type: "ERROR",
-      seq: 2,
-      requestId: request.requestId,
-      error: { code: "invalid_input", message: "Try a different name." },
-    }),
-  );
-  expect(input.disabled).toBe(false);
-  expect(input.value).toBe("Release planning");
-
-  fireEvent.change(input, { target: { value: "Launch planning" } });
-  fireEvent.click(submit);
-  const retry = socket.latestRequest();
-  expect(input.disabled).toBe(true);
-  socket.receive({
-    type: "PROJECT_UPSERT",
-    seq: 3,
-    project: { ...project, id: "launch", name: "Launch planning", sort: 1 },
-  });
-  await act(async () =>
-    socket.receive({ type: "ACK", seq: 4, requestId: retry.requestId }),
-  );
-  expect(input.disabled).toBe(false);
-  expect(input.value).toBe("");
-});
-
-it("shows the token and MCP config once and lists only metadata afterward", async () => {
-  await openWorkspace();
-  const writeText = vi.fn().mockResolvedValue(undefined);
-  vi.stubGlobal(
-    "navigator",
-    Object.assign({}, navigator, { clipboard: { writeText } }),
-  );
-  fireEvent.click(menuAction("Settings"));
-  let settings = within(screen.getByRole("dialog", { name: "Settings" }));
-  await settings.findByText("No API tokens yet.");
-  fireEvent.change(settings.getByLabelText("Label"), {
-    target: { value: "Build reporter" },
-  });
-  fireEvent.change(settings.getByLabelText("Scope"), {
-    target: { value: "steer" },
-  });
-  fireEvent.change(settings.getByLabelText("Default project"), {
-    target: { value: project.id },
-  });
-  fireEvent.click(settings.getByRole("button", { name: "Create token" }));
-  const socket = TestSocket.current;
-  expect(socket.latestRequest()).toMatchObject({
-    type: "CREATE_TOKEN",
-    input: {
-      label: "Build reporter",
-      scope: "steer",
-      default_project_id: project.id,
-    },
-  });
-  const metadata = {
-    id: "token-id",
-    label: "Build reporter",
-    scope: "steer",
-    default_project_id: project.id,
-    last_used_at: null,
-    created_at: goal.created_at,
-  } as const;
-  const token = "example-plaintext-for-test";
-  await act(async () =>
-    socket.receive({
-      type: "ACK",
-      seq: 2,
-      requestId: socket.latestRequest().requestId,
-      createdToken: { ...metadata, token },
-    }),
-  );
-  expect(settings.getByDisplayValue(token)).toBeTruthy();
-  const config = settings.getByLabelText(
-    /Claude Code MCP config/,
-  ) as HTMLTextAreaElement;
-  expect(JSON.parse(config.value).mcpServers.heed).toMatchObject({
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  fireEvent.click(settings.getByRole("button", { name: "Copy token" }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith(token));
-  await settings.findByText("Token copied.");
-  const client = settings.getByLabelText("MCP client");
-  fireEvent.change(client, { target: { value: "cursor" } });
-  const cursor = settings.getByLabelText(
-    /Cursor MCP config/,
-  ) as HTMLTextAreaElement;
-  expect(JSON.parse(cursor.value).mcpServers.heed).toEqual({
-    url: new URL("/mcp", location.origin).href,
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  fireEvent.change(client, { target: { value: "codex" } });
-  const codex = settings.getByLabelText(
-    /Codex MCP config/,
-  ) as HTMLTextAreaElement;
-  expect(codex.value).toContain("[mcp_servers.heed]");
-  expect(codex.value).toContain(`Authorization = "Bearer ${token}"`);
-  fireEvent.click(settings.getByRole("button", { name: "Copy MCP config" }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith(codex.value));
-  fireEvent.click(settings.getByRole("button", { name: "Done" }));
-  expect(settings.queryByDisplayValue(token)).toBeNull();
-  expect(settings.getByText(metadata.label)).toBeTruthy();
-
-  fireEvent.click(settings.getByRole("button", { name: "Close" }));
-  fetchSession.mockImplementation(async () => Response.json([metadata]));
-  fireEvent.click(menuAction("Settings"));
-  settings = within(screen.getByRole("dialog", { name: "Settings" }));
-  expect(await settings.findByText(metadata.label)).toBeTruthy();
-  expect(settings.queryByDisplayValue(token)).toBeNull();
-  expect(settings.queryByLabelText(/Claude Code MCP config/)).toBeNull();
 });
 
 it("orders fixed, manual and priority work, and shows quiet time metadata", async () => {
@@ -3304,9 +2571,7 @@ it("searches and pages through history, then reopens an item with a reason", asy
     target: { value: "incident" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Search" }));
-  fireEvent.change(screen.getByRole("combobox", { name: "Project" }), {
-    target: { value: project.id },
-  });
+  fireEvent.click(screen.getByRole("button", { name: project.name }));
   fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
   await screen.findByText(older.title);
   expect(Object.fromEntries(requests.at(-1)!.searchParams)).toEqual({
@@ -3520,8 +2785,7 @@ it("places top-level Board cards by project and Radar band with Stream ordering 
       .getByRole("button", { name: goal.title })
       .getAttribute("aria-pressed"),
   ).toBe("true");
-  const inspector = openInspector();
-  fireEvent.click(inspector.getByRole("button", { name: tomorrow.title }));
+  selectItem(tomorrow.title);
   expect(screen.getByRole("heading", { name: tomorrow.title })).toBeTruthy();
   fireEvent.click(menuAction("Hide completed ghosts"));
   expect(board.queryByRole("button", { name: ghost.title })).toBeNull();
@@ -3635,16 +2899,16 @@ function mockViewport(desktop: boolean) {
   };
 }
 
-it("keeps the mobile Radar priority handle usable before and after inspecting", async () => {
+it("keeps the mobile Radar priority handle usable while the summary is visible", async () => {
   mockViewport(false);
   await openWorkspace();
   const radar = within(screen.getByRole("region", { name: "Attention field" }));
   fireEvent.click(radar.getByRole("button", { name: goal.title }));
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
   const bubble = radar.getByRole("button", { name: tomorrow.title });
   fireEvent.click(bubble);
   expect(bubble.getAttribute("aria-pressed")).toBe("true");
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
 
   const priorityHandle = () =>
     radar.getByRole("slider", { name: `Priority for ${tomorrow.title}` });
@@ -3680,11 +2944,11 @@ it("keeps the mobile Radar priority handle usable before and after inspecting", 
     input: { item_id: tomorrow.id, priority: 10 },
   });
 
-  fireEvent.click(screen.getByRole("button", { name: "Open inspector" }));
-  const drawer = within(screen.getByRole("dialog", { name: "Inspector" }));
-  expect(drawer.getByRole("heading", { name: tomorrow.title })).toBeTruthy();
-  fireEvent.click(drawer.getByRole("button", { name: "Close" }));
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  expect(
+    within(screen.getByRole("region", selectedRegion)).getByRole("heading", {
+      name: tomorrow.title,
+    }),
+  ).toBeTruthy();
   expect(bubble.getAttribute("aria-pressed")).toBe("true");
   expect(priorityHandle()).toBeTruthy();
 });
@@ -3714,21 +2978,18 @@ it("lets a second mobile Treemap tap zoom into the selected parent", async () =>
   expect(breadcrumb.querySelector("[aria-current]")?.textContent).toBe(
     "All projects",
   );
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
 
   tap(250);
   expect(breadcrumb.querySelector("[aria-current]")?.textContent).toBe(
     goal.title,
   );
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Open inspector" }));
-  const drawer = screen.getByRole("dialog", { name: "Inspector" });
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(
-    within(drawer).getByRole("heading", { name: goal.title }),
+    within(screen.getByRole("region", selectedRegion)).getByRole("heading", {
+      name: goal.title,
+    }),
   ).toBeTruthy();
-  fireEvent(drawer, new Event("cancel", { cancelable: true }));
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Open inspector" })).toBeTruthy();
 });
 
 it("opens the empty attention field directly after sign-in", async () => {
@@ -3879,7 +3140,7 @@ it("shows only the selected completion's verdict as item updates and verdicts ar
     releaseRefresh = () => resolve(Response.json(history));
   });
   socket.receive({ type: "ITEM_UPSERT", seq: 3, item: completedAgain });
-  expect(readActivity).toHaveBeenCalledTimes(2);
+  expect(readActivity).toHaveBeenCalledTimes(3);
   expect(summary().queryByText(/Likely met/)).toBeNull();
 
   await act(async () => releaseRefresh());
@@ -3890,7 +3151,7 @@ it("shows only the selected completion's verdict as item updates and verdicts ar
   });
   activity = Response.json(history);
   await act(async () => select());
-  expect(readActivity).toHaveBeenCalledTimes(3);
+  expect(readActivity).toHaveBeenCalledTimes(4);
   expect(summary().getByText(criteria[0])).toBeTruthy();
   expect(summary().queryByText(/Likely met/)).toBeNull();
 
@@ -3955,24 +3216,19 @@ it.each(["suggestion", "typed reply"])(
     const radar = within(
       screen.getByRole("region", { name: "Attention field" }),
     );
-    fireEvent.click(radar.getByRole("button", { name: item.title }));
     const question = within(
-      radar.getByRole("region", { name: "Handoff question" }),
+      radar.getByRole("region", { name: `Question about ${item.title}` }),
     );
-    expect(question.getByText("Release agent asks")).toBeTruthy();
+    expect(question.getByText(/Release agent asks/)).toBeTruthy();
     expect(question.getByText(item.handoff_note)).toBeTruthy();
     const text = method === "suggestion" ? "Staging" : "Use a canary first";
     if (method === "suggestion") {
       fireEvent.click(question.getByRole("button", { name: text }));
     } else {
       fireEvent.click(question.getByRole("button", { name: "Type a reply" }));
-      fireEvent.change(
-        question.getByRole("textbox", { name: "Handoff reply" }),
-        {
-          target: { value: text },
-        },
-      );
-      fireEvent.click(question.getByRole("button", { name: "Send reply" }));
+      expect(commandInput().placeholder).toBe("Reply to Release agent…");
+      expect(document.activeElement).toBe(commandInput());
+      await sendCommand(text);
     }
     const socket = TestSocket.current;
     expect(socket.latestRequest()).toMatchObject({
@@ -3992,7 +3248,127 @@ it.each(["suggestion", "typed reply"])(
       }),
     );
     expect(
-      radar.queryByRole("region", { name: "Handoff question" }),
+      radar.queryByRole("region", { name: `Question about ${item.title}` }),
     ).toBeNull();
   },
 );
+
+it("applies built-in commands before handing unknown input to the host", async () => {
+  const freeText = vi.fn(async () => ({ text: "Host reply" }));
+  fetchSession.mockImplementation(async (path: string) =>
+    path === "/api/me"
+      ? Response.json({
+          workspaceId: "default",
+          email: "person@example.test",
+          capabilities: { command: true },
+        })
+      : Response.json([]),
+  );
+  mountHost({ freeText });
+  await screen.findByRole("banner");
+  const socket = TestSocket.current;
+  socket.receive(snapshot);
+  await sendCommand("zoom into today");
+  expect(screen.getByText(/^Today split/)).toBeTruthy();
+  expect(freeText).not.toHaveBeenCalled();
+  await sendCommand("fit");
+  expect(screen.getAllByText("Whole radar.")).toHaveLength(2);
+  await sendCommand("add Check billing logs");
+  expect(socket.latestRequest()).toMatchObject({
+    type: "ADD_ITEM",
+    input: {
+      title: "Check billing logs",
+      project: "inbox",
+      scheduled_on: "2024-04-03",
+    },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 2,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  await sendCommand("Please summarize last quarter");
+  expect(freeText).toHaveBeenCalledWith(
+    "Please summarize last quarter",
+    expect.objectContaining({
+      timezone: "UTC",
+      items: expect.arrayContaining([goal]),
+    }),
+  );
+  expect(screen.getByText("Host reply")).toBeTruthy();
+  expect(fetchSession.mock.calls.map(([path]) => path)).not.toContain(
+    "/api/command",
+  );
+});
+
+it("creates a report token with one field and discards its secret when closed", async () => {
+  await openWorkspace();
+  await sendCommand("new token");
+  const label = within(screen.getByRole("dialog", { name: "New API token" }));
+  fireEvent.change(label.getByRole("textbox", { name: "Token label" }), {
+    target: { value: "Build agent" },
+  });
+  fireEvent.click(label.getByRole("button", { name: "Create token" }));
+  const socket = TestSocket.current;
+  expect(socket.latestRequest()).toMatchObject({
+    type: "CREATE_TOKEN",
+    input: { label: "Build agent", scope: "report" },
+  });
+  const createdToken = {
+    id: "token",
+    label: "Build agent",
+    scope: "report",
+    default_project_id: null,
+    created_at: goal.created_at,
+    last_used_at: null,
+    token: "example-once-only-secret",
+  } as const;
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 2,
+      requestId: socket.latestRequest().requestId,
+      createdToken,
+    }),
+  );
+  const secret = within(screen.getByRole("dialog", { name: "Token created" }));
+  expect(secret.getByDisplayValue(createdToken.token)).toBeTruthy();
+  expect(secret.getByRole("button", { name: "Copy token" })).toBeTruthy();
+  fireEvent.click(secret.getByRole("button", { name: "Close" }));
+  expect(screen.queryByDisplayValue(createdToken.token)).toBeNull();
+  expect(document.querySelector("select")).toBeNull();
+});
+
+it("requires a separate typed confirmation for workspace reset", async () => {
+  await openWorkspace();
+  const socket = TestSocket.current;
+  await sendCommand(RESET_WORKSPACE_CONFIRMATION);
+  const confirm = within(
+    screen.getByRole("dialog", { name: "Reset workspace" }),
+  );
+  const input = confirm.getByRole("textbox", {
+    name: `Type ${RESET_WORKSPACE_CONFIRMATION} to confirm`,
+  });
+  const button = confirm.getByRole<HTMLButtonElement>("button", {
+    name: "Confirm",
+  });
+  expect(socket.send).not.toHaveBeenCalled();
+  fireEvent.change(input, { target: { value: "reset workspace" } });
+  expect(button.disabled).toBe(true);
+  fireEvent.change(input, { target: { value: RESET_WORKSPACE_CONFIRMATION } });
+  fireEvent.click(button);
+  expect(socket.latestRequest()).toMatchObject({
+    type: "RESET_WORKSPACE",
+    input: { confirmation: RESET_WORKSPACE_CONFIRMATION },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 2,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  expect(screen.queryByRole("dialog")).toBeNull();
+});

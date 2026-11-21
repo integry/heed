@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { TimeTypeSchema } from "@heedwork/core";
-import type { Project, TimeType } from "@heedwork/core";
 import type { createWorkspaceConnection } from "./workspace-connection";
 
 export type SaveMutation = ReturnType<typeof createWorkspaceConnection>["save"];
@@ -33,11 +31,13 @@ export function Panel({
   title,
   close,
   className,
+  busy = false,
   children,
 }: {
   title: string;
   close: () => void;
   className?: string;
+  busy?: boolean;
   children: ReactNode;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -49,26 +49,25 @@ export function Panel({
       ref={dialog}
       className={className}
       onClose={close}
+      onCancel={(event) => {
+        if (busy) event.preventDefault();
+      }}
       aria-labelledby="panel-title"
     >
       <div className="panel-heading">
         <h2 id="panel-title">{title}</h2>
-        <button type="button" className="subtle" onClick={close}>
+        <button
+          type="button"
+          className="subtle"
+          disabled={busy}
+          onClick={close}
+        >
           Close
         </button>
       </div>
       {children}
     </dialog>
   );
-}
-
-export function ProjectOptions({ projects }: { projects: readonly Project[] }) {
-  return projects.map(({ id, name, hidden }) => (
-    <option key={id} value={id}>
-      {name}
-      {hidden ? " (hidden)" : ""}
-    </option>
-  ));
 }
 
 function parseInstant(value: string) {
@@ -105,14 +104,6 @@ function localTime(instant: number, formatter: Intl.DateTimeFormat) {
   return formatter.format(instant).replace(" ", "T");
 }
 
-export function timeInputValue(value: string | null, timezone: string) {
-  if (!value) return "";
-  const instant = parseInstant(value);
-  return Number.isFinite(instant)
-    ? localTime(instant, timeFormatter(timezone)).slice(0, 16)
-    : "";
-}
-
 export function timeInputInstant(value: string, timezone: string) {
   const wallTime = Date.parse(value + "Z");
   if (!Number.isFinite(wallTime)) throw new Error("Enter a date and time.");
@@ -126,55 +117,4 @@ export function timeInputInstant(value: string, timezone: string) {
       return new Date(instant).toISOString();
   }
   throw new Error("That time falls in a clock change. Choose another time.");
-}
-
-export const timeLabels: Record<TimeType, string> = {
-  flexible: "Flexible",
-  fixed: "Fixed time",
-  deadline: "Deadline",
-};
-
-export function TimeFields({
-  type,
-  setType,
-  at,
-  setAt,
-  timezone,
-}: {
-  type: TimeType;
-  setType: (type: TimeType) => void;
-  at: string;
-  setAt: (at: string) => void;
-  timezone: string;
-}) {
-  return (
-    <>
-      <label className="form-field">
-        Time type
-        <select
-          value={type}
-          onChange={(event) =>
-            setType(TimeTypeSchema.parse(event.target.value))
-          }
-        >
-          {TimeTypeSchema.options.map((option) => (
-            <option key={option} value={option}>
-              {timeLabels[option]}
-            </option>
-          ))}
-        </select>
-      </label>
-      {type !== "flexible" && (
-        <label className="form-field time-value">
-          {timeLabels[type]} ({timezone})
-          <input
-            type="datetime-local"
-            required
-            value={at}
-            onChange={(event) => setAt(event.target.value)}
-          />
-        </label>
-      )}
-    </>
-  );
 }

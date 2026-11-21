@@ -260,21 +260,26 @@ export function StreamHistory({ close, ...props }: HistoryProps) {
         <button className="subtle" type="submit">
           Search
         </button>
-        <label>
-          Project
-          <select
-            value={project}
-            onChange={(event) => setProject(event.target.value)}
-          >
-            <option value="">All projects</option>
-            {props.projects.map(({ id, name }) => (
-              <option key={id} value={id}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </label>
       </form>
+      <div
+        className="inline-actions history-projects"
+        role="group"
+        aria-label="Filter history by project"
+      >
+        {[{ id: "", name: "All projects" }, ...props.projects].map(
+          ({ id, name }) => (
+            <button
+              key={id}
+              type="button"
+              className="subtle"
+              aria-pressed={id === project}
+              onClick={() => setProject(id)}
+            >
+              {name}
+            </button>
+          ),
+        )}
+      </div>
       <HistoryResults
         key={JSON.stringify([query, project])}
         query={query}

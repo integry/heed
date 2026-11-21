@@ -4,7 +4,7 @@ import {
   type Event,
   type Item,
 } from "@heedwork/core";
-import { useResource } from "./api";
+import type { Resource } from "./api";
 
 export function safeLink(value: string) {
   const url = URL.parse(value);
@@ -36,22 +36,17 @@ export function verdictMatches(
 
 export function SelectedItem({
   item,
-  revision,
-  inspect,
+  activity,
+  openGraph,
   close,
 }: {
   item: Item;
-  revision: string;
-  inspect: () => void;
+  activity: Resource<Event[]>;
+  openGraph?: () => void;
   close: () => void;
 }) {
   const criteria = JSON.parse(item.acceptance) as string[];
-  const { data, loading } = useResource<Event[]>(
-    criteria.length && item.status === "done"
-      ? `/api/items/${encodeURIComponent(item.id)}/events`
-      : null,
-    JSON.stringify([revision, item.completed_at, item.reopen_count]),
-  );
+  const { data, loading } = activity;
   // The item and its activity arrive independently. Use the status event only
   // once the activity has caught up with the selected item's completion.
   const events = !loading && Array.isArray(data) ? data : [];
@@ -81,9 +76,6 @@ export function SelectedItem({
       <p className="selected-owner">
         {item.agent_name ?? (item.created_by === "human" ? "you" : "Agent")}
       </p>
-      {item.handoff === 1 && item.handoff_note && (
-        <p className="selected-note">{item.handoff_note}</p>
-      )}
       {item.note && <p className="selected-note">{item.note}</p>}
       {criteria.length > 0 && (
         <ul aria-label="Acceptance criteria">
@@ -106,9 +98,11 @@ export function SelectedItem({
             Open link ↗
           </a>
         )}
-        <button className="text-control" type="button" onClick={inspect}>
-          Open inspector
-        </button>
+        {openGraph && (
+          <button className="text-control" type="button" onClick={openGraph}>
+            Open dependency graph
+          </button>
+        )}
       </div>
     </section>
   );

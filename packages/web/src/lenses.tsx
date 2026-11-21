@@ -1,6 +1,6 @@
 import type { ComponentType } from "react";
 import type { StreamRow } from "@heedwork/core";
-import type { CanvasItem } from "@heedwork/core";
+import type { CanvasItem, RadarBand } from "@heedwork/core";
 import type { Dependency, Project } from "@heedwork/core";
 import { itemStatus } from "./workspace-view";
 import { DependenciesLens } from "./DependenciesLens";
@@ -21,7 +21,7 @@ export interface LensProps {
   savingDependency: boolean;
   selectedId: string | null;
   save: SaveMutation;
-  inspectItem: (id: string) => void;
+  radarZoom?: { band: RadarBand | null };
   now: number;
   timezone: string;
   live: boolean;

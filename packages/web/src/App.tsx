@@ -1,31 +1,83 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import type { CommandCapabilities, Dependency, Item } from "@heedwork/core";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import {
+  COMMAND_HELP,
+  RESET_WORKSPACE_CONFIRMATION,
+  interpretCommand,
+  effectiveSchedule,
+  progress,
+  isBlocked,
+  matchCommandName,
+  needsMe,
+  type CommandCapabilities,
+  type ConnectedApp,
+  type CreatedToken,
+  type Dependency,
+  type Event,
+  type HistoryPage,
+  type Item,
+  type RadarBand,
+  type TokenMetadata,
+} from "@heedwork/core";
 import { CommandBar, useCommandBar } from "./CommandBar";
 import { AttentionStream } from "./AttentionStream";
 import { SelectedItem } from "./SelectedItem";
 import { isDescendant } from "./dependency-graph";
 import { Guidance } from "./Guidance";
-import { Inspector } from "./Inspector";
-import { QuickAdd } from "./QuickAdd";
-import { Settings } from "./Settings";
+import {
+  ConfirmCommand,
+  ShadowJudgeAgreement,
+  TokenLabel,
+  TokenSecret,
+} from "./CommandPanels";
+import { QuestionBubble } from "./QuestionBubble";
+import { ItemActivity } from "./ItemActivity";
+import { EnableNotifications, runPushCommand } from "./push-commands";
 import { lensRegistry, resolveLens, type Lens } from "./lenses";
 import { isRadarRowVisible } from "./RadarLens";
 import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
-import { Panel, useAction } from "./workspace-controls";
+import {
+  dateLabel,
+  Panel,
+  timeInputInstant,
+  useAction,
+} from "./workspace-controls";
 import { ApiContext, createApi, useApi, useResource } from "./api";
-import type { AppUser, MountAppOptions } from "./web-options";
+import type { AppUser, BuiltInScreenId, MountAppOptions } from "./web-options";
 import { workspaceView, type MutationInput } from "./workspace-state";
 import { selectWorkspace } from "./workspace-view";
 
-type PanelKind =
-  | "guidance"
-  | "settings"
-  | "goal"
-  | "child"
-  | "history"
-  | "hidden"
-  | "inspector";
+type PanelState =
+  | {
+      kind:
+        | "guidance"
+        | "host"
+        | "history"
+        | "hidden"
+        | "token-label"
+        | "judge"
+        | "push";
+    }
+  | { kind: "token"; created: CreatedToken }
+  | {
+      kind: "list";
+      title: string;
+      rows: { id: string; title: string; detail?: string }[];
+    }
+  | {
+      kind: "confirm";
+      title: string;
+      phrase: string;
+      description: string;
+      mutation: MutationInput;
+      result: string;
+    };
 
 type Session =
   | { status: "loading" }
@@ -102,16 +154,29 @@ function Workspace({
   onWorkspaceChange: () => void;
 }) {
   const { user, workspaceId, role, managed, capabilities } = session;
-  const { getJson, postJson } = useApi();
+  const workspaceApi = useApi();
+  const { getJson, postJson } = workspaceApi;
   const api = useMemo(
     () => ({ getJson, postJson, useResource }),
     [getJson, postJson],
   );
   const screenProps = { user, workspaceId, role, api };
   const slotProps = { ...screenProps, onWorkspaceChange };
+  const shell = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const node = shell.current;
+    if (!viewport || !node) return;
+    function resize() {
+      if (viewport && viewport.scale === 1)
+        node?.style.setProperty("--attention-height", `${viewport.height}px`);
+    }
+    resize();
+    viewport.addEventListener("resize", resize);
+    return () => viewport.removeEventListener("resize", resize);
+  }, []);
   const HeaderStart = options?.headerStart;
   const HeaderEnd = options?.headerEnd;
-  const showModelKeyHint = managed === false && !capabilities.command;
   const signOut = options?.onSignOut;
   const [lensId, setLensId] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] = useState<{
@@ -140,18 +205,16 @@ function Workspace({
   );
   const dependencyEdit = useAction();
   const [showGhosts, setShowGhosts] = useState(true);
-  const [activePanel, setActivePanel] = useState<{ kind: PanelKind } | null>(
-    null,
-  );
+  const [activePanel, setActivePanel] = useState<PanelState | null>(null);
   const panel = activePanel?.kind;
-  function openPanel(kind: PanelKind) {
-    setActivePanel({ kind });
-  }
+  const [radarZoom, setRadarZoom] = useState<{ band: RadarBand | null }>();
+  const [replyId, setReplyId] = useState<string>();
   const clock = useMinuteClock();
   const command = useCommandBar(
     connection.save,
     capabilities.transcription,
     capabilities.command,
+    executeCommand,
   );
   const view = useMemo(() => workspaceView(state), [state]);
   const derived = useMemo(() => {
@@ -200,17 +263,14 @@ function Workspace({
     linkedItem.item.id === linkedId
       ? linkedItem.item
       : undefined;
-  const inspected = selectedItem?.fromNotification
-    ? (selected ?? fallback)
-    : selected &&
-        (panel === "inspector" ||
-          panel === "child" ||
-          derived.visibleIds.has(selected.id))
-      ? selected
+  const inspected = selected ?? fallback;
+  const replyTarget =
+    replyId && inspected?.id === replyId && inspected.handoff === 1
+      ? inspected
       : undefined;
   useEffect(() => {
-    if (panel === "inspector" && !inspected) setActivePanel(null);
-  }, [panel, inspected]);
+    if (replyId && !replyTarget) setReplyId(undefined);
+  }, [replyId, replyTarget]);
   const dependencies = useMemo(
     () => [...view.dependencies.values()],
     [view.dependencies],
@@ -306,6 +366,7 @@ function Workspace({
   }
 
   function selectStreamItem(id: string) {
+    setReplyId(undefined);
     setSelectedItem({ id });
     setRadarSelection(null);
     if (lens.id === "dependencies") {
@@ -345,6 +406,16 @@ function Workspace({
     return `${state.snapshotRevision}:${state.eventRevisions.get(id) ?? 0}`;
   }
 
+  const activity = useResource<Event[]>(
+    inspected ? `/api/items/${encodeURIComponent(inspected.id)}/events` : null,
+    inspected &&
+      JSON.stringify([
+        eventRevision(inspected.id),
+        inspected.completed_at,
+        inspected.reopen_count,
+      ]),
+  );
+
   const hiddenItems =
     panel === "hidden"
       ? [...view.items.values()]
@@ -362,14 +433,383 @@ function Workspace({
     inspectedGoal &&
     (lens.id !== "dependencies" || focusedGoal !== inspectedGoal)
       ? () => {
-          closePanel();
           focusGoal(inspectedGoal);
           setLensId(dependenciesLens.id);
         }
       : undefined;
 
+  const visibleItems = [...view.items.values()].filter(
+    (item) =>
+      derived.visibleIds.has(item.id) &&
+      item.status !== "done" &&
+      item.status !== "cancelled",
+  );
+  const questions: Item[] = visibleItems.filter(({ handoff }) => handoff === 1);
+  if (
+    inspected?.handoff === 1 &&
+    selectedItem?.fromNotification &&
+    !questions.some(({ id }) => id === inspected.id)
+  )
+    questions.push(inspected);
+
+  function allowed(screen: BuiltInScreenId) {
+    if (options?.hideScreens?.includes(screen))
+      throw new Error("This command is unavailable in this workspace.");
+  }
+
+  async function saveCommand(mutation: MutationInput, result: string) {
+    const ack = await connection.save(mutation, { callerReportsError: true });
+    if (mutation.type === "CREATE_TOKEN") {
+      if (!ack.createdToken)
+        throw new Error(
+          "The token response was missing. Check the token list.",
+        );
+      setActivePanel({ kind: "token", created: ack.createdToken });
+    }
+    if (mutation.type === "RESET_WORKSPACE") {
+      setSelectedItem(null);
+      setRadarSelection(null);
+      setReplyId(undefined);
+      focusGoal(null);
+      setLensId(null);
+      setRadarZoom(undefined);
+    }
+    return ack.ignored_fields?.length
+      ? `Skipped ${ack.ignored_fields.join(", ")}.`
+      : result;
+  }
+
+  function confirmMutation(mutation: MutationInput, result: string) {
+    const details = (() => {
+      switch (mutation.type) {
+        case "RESET_WORKSPACE":
+          return {
+            title: "Reset workspace",
+            phrase: RESET_WORKSPACE_CONFIRMATION,
+            description:
+              "Permanently delete workspace data, revoke tokens and connected apps, and remove push subscriptions. The workspace starts over with an empty Inbox.",
+          };
+        case "DELETE_ITEM":
+          return {
+            title: "Delete item",
+            phrase: "DELETE ITEM",
+            description: result
+              .replace(/^Deleted /, "Permanently delete ")
+              .replace(/\.$/, "?"),
+          };
+        case "DELETE_PROJECT":
+          return {
+            title: "Delete project",
+            phrase: "DELETE PROJECT",
+            description: result
+              .replace(/^Deleted /, "Permanently delete ")
+              .replace(/\.$/, "?"),
+          };
+        default:
+          return {
+            title: "Revoke access",
+            phrase: "REVOKE ACCESS",
+            description: result
+              .replace(/^Revoked /, "Revoke ")
+              .replace(/\.$/, "?"),
+          };
+      }
+    })();
+    setActivePanel({ kind: "confirm", ...details, mutation, result });
+  }
+
+  async function answerQuestion(id: string, text: string) {
+    const item = connection.getSnapshot().items.get(id) ?? inspected;
+    const result = await saveCommand(
+      { type: "ANSWER_HANDOFF", input: { item_id: id, text } },
+      `Answered “${item?.title ?? "question"}”.`,
+    );
+    if (replyId === id) {
+      setReplyId(undefined);
+      command.setDraft("");
+    }
+    command.setSummary(result);
+  }
+
+  async function executeCommand(text: string): Promise<string | undefined> {
+    const context = {
+      selected: inspected,
+      items:
+        inspected && !view.items.has(inspected.id)
+          ? [...view.items.values(), inspected]
+          : [...view.items.values()],
+      replyTo: replyTarget,
+      today: Date.now(),
+      timezone,
+      projects,
+      lenses: registry,
+    };
+    const intent = interpretCommand(text, context);
+    switch (intent.type) {
+      case "unknown":
+        if (options?.freeText)
+          return (await options.freeText(text, context)).text;
+        return capabilities.command ? undefined : COMMAND_HELP;
+      case "message":
+        return intent.text;
+      case "select":
+        selectStreamItem(intent.id);
+        return `Selected “${context.items.find(({ id }) => id === intent.id)?.title}”.`;
+      case "details": {
+        const canvasItem = view.items.get(intent.id);
+        const item = canvasItem ?? inspected;
+        if (!item) return "That item is unavailable.";
+        const project =
+          view.projects.get(item.project_id)?.name ?? item.project_id;
+        const schedule = effectiveSchedule(item, view.items) ?? "Unscheduled";
+        const time =
+          item.time_type !== "flexible" && item.time_at
+            ? `${item.time_type === "deadline" ? "Due" : "Fixed"} ${dateLabel(item.time_at, timezone)}`
+            : undefined;
+        const tags = JSON.parse(item.tags) as string[];
+        const locks = JSON.parse(item.locked_fields) as string[];
+        const children =
+          canvasItem?.progress ?? progress(item, [...view.items.values()]);
+        return [
+          item.title,
+          item.status,
+          project,
+          schedule,
+          time,
+          `Priority ${item.priority}`,
+          tags.length ? `Tags ${tags.join(", ")}` : undefined,
+          locks.length ? `Locked ${locks.join(", ")}` : undefined,
+          children.total
+            ? `${children.done} of ${children.total} children complete`
+            : undefined,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+      }
+      case "lens":
+        if (intent.id === "dependencies" && inspectedGoal)
+          focusGoal(inspectedGoal);
+        setLensId(intent.id);
+        return `${registry.find(({ id }) => id === intent.id)?.label} lens.`;
+      case "zoom":
+        if (!radarLens) return "Radar is unavailable.";
+        focusGoal(null);
+        setLensId(radarLens.id);
+        setRadarZoom({ band: intent.band });
+        return intent.band
+          ? `Zoomed into ${intent.band.replace("-", " ")}.`
+          : "Whole radar.";
+      case "time":
+        return saveCommand(
+          {
+            type: "UPDATE_ITEM",
+            input: {
+              item_id: intent.id,
+              scheduled_on: intent.date,
+              time_type: intent.kind,
+              time_at: timeInputInstant(
+                `${intent.date}T${intent.time}`,
+                timezone,
+              ),
+            },
+          },
+          `Updated the time for “${intent.title}”.`,
+        );
+      case "mutate":
+        if (intent.mutation.type === "CREATE_TOKEN") allowed("tokens");
+        if (
+          [
+            "CREATE_PROJECT",
+            "UPDATE_PROJECT",
+            "MOVE_PROJECT",
+            "DELETE_PROJECT",
+          ].includes(intent.mutation.type)
+        )
+          allowed("projects");
+        if (intent.mutation.type === "SET_TIMEZONE") allowed("account");
+        if (intent.confirm) {
+          confirmMutation(intent.mutation, intent.text);
+          return "";
+        }
+        return saveCommand(intent.mutation, intent.text);
+      case "reopen-history": {
+        const query = new URLSearchParams({
+          q: intent.name.startsWith('"')
+            ? intent.name.replace(/^"(.+)"$/, "$1")
+            : intent.name.replace(/^the /i, ""),
+          limit: "100",
+        });
+        const page = await getJson<HistoryPage>(`/api/history?${query}`);
+        const matches = matchCommandName(intent.name, page.items);
+        if (page.next_before)
+          return "Use a more specific item name or open history.";
+        if (matches.length !== 1)
+          return matches.length
+            ? `Matches ${matches.map(({ title }) => title).join(", ")}.`
+            : `No match for “${intent.name}”.`;
+        const [{ id, title }] = matches;
+        return saveCommand(
+          {
+            type: "REOPEN_ITEM",
+            input: { item_id: id, reason: intent.reason },
+          },
+          `Reopened “${title}”.`,
+        );
+      }
+      case "revoke": {
+        allowed("tokens");
+        const rows =
+          intent.kind === "token"
+            ? (await getJson<TokenMetadata[]>("/api/tokens")).map(
+                ({ id, label }) => ({ id, title: label }),
+              )
+            : (await getJson<ConnectedApp[]>("/api/connected-apps")).map(
+                ({ id, client_name, label }) => ({
+                  id,
+                  title: `${client_name} · ${label}`,
+                }),
+              );
+        const matches = matchCommandName(intent.name, rows);
+        if (matches.length !== 1)
+          return matches.length
+            ? `Matches ${matches.map(({ title }) => title).join(", ")}.`
+            : `No match for “${intent.name}”.`;
+        const [{ id, title }] = matches;
+        confirmMutation(
+          intent.kind === "token"
+            ? { type: "REVOKE_TOKEN", input: { token_id: id } }
+            : { type: "REVOKE_CONNECTED_APP", input: { grant_id: id } },
+          `Revoked “${title}”.`,
+        );
+        return "";
+      }
+      case "workspace":
+        switch (intent.command) {
+          case "what needs me":
+          case "what is blocked": {
+            const needs = intent.command === "what needs me";
+            const matches = visibleItems.filter((item) =>
+              needs
+                ? needsMe(item, now)
+                : isBlocked(item, view.items, dependencies),
+            );
+            if (!matches.length)
+              return needs ? "Nothing needs you." : "Nothing is blocked.";
+            return `${needs ? "Needs you" : "Blocked"} · ${matches.map(({ title }) => title).join(", ")}`;
+          }
+          case "edit guidance":
+            if (!state.settings)
+              return "Guidance will be available when the workspace connects.";
+            setActivePanel({ kind: "guidance" });
+            return "";
+          case "new token":
+            allowed("tokens");
+            setActivePanel({ kind: "token-label" });
+            return "";
+          case "history":
+          case "hidden items":
+            setActivePanel({
+              kind: intent.command === "history" ? "history" : "hidden",
+            });
+            return "";
+          case "show completed ghosts":
+          case "hide completed ghosts":
+            setShowGhosts(intent.command === "show completed ghosts");
+            return intent.command === "show completed ghosts"
+              ? "Showing completed ghosts."
+              : "Completed ghosts hidden.";
+          case "enable notifications":
+            allowed("notifications");
+            setActivePanel({ kind: "push" });
+            return "";
+          case "disable notifications":
+          case "test notification":
+            allowed("notifications");
+            return runPushCommand(workspaceApi, intent.command);
+          case "export workspace": {
+            allowed("data");
+            const link = document.createElement("a");
+            link.href = "/api/export";
+            link.download = "";
+            link.click();
+            return "Workspace export requested.";
+          }
+          case "reset workspace":
+            allowed("data");
+            confirmMutation(
+              {
+                type: "RESET_WORKSPACE",
+                input: { confirmation: RESET_WORKSPACE_CONFIRMATION },
+              },
+              "Workspace reset. Your Inbox is now empty.",
+            );
+            return "";
+          case "list projects":
+            allowed("projects");
+            setActivePanel({
+              kind: "list",
+              title: "Projects",
+              rows: projects.map(({ id, name, hidden }) => ({
+                id,
+                title: name,
+                detail: hidden ? "Hidden" : undefined,
+              })),
+            });
+            return "";
+          case "list tokens":
+          case "connected apps": {
+            allowed("tokens");
+            const tokens = intent.command === "list tokens";
+            const rows = tokens
+              ? (await getJson<TokenMetadata[]>("/api/tokens")).map(
+                  ({ id, label, scope, default_project_id, last_used_at }) => ({
+                    id,
+                    title: label,
+                    detail: `${scope} · ${projects.find(({ id }) => id === default_project_id)?.name ?? "Inbox"} · ${last_used_at ? `Last used ${new Date(last_used_at).toLocaleString()}` : "Never used"}`,
+                  }),
+                )
+              : (await getJson<ConnectedApp[]>("/api/connected-apps")).map(
+                  ({ id, label, client_name, scope, last_used_at }) => ({
+                    id,
+                    title: `${client_name} · ${label}`,
+                    detail: `${scope} · ${last_used_at ? `Last used ${new Date(last_used_at).toLocaleString()}` : "Never used"}`,
+                  }),
+                );
+            setActivePanel({
+              kind: "list",
+              title: tokens ? "API tokens" : "Connected apps",
+              rows,
+            });
+            return "";
+          }
+          case "shadow judge":
+            allowed("shadow-judge");
+            setActivePanel({ kind: "judge" });
+            return "";
+          case "model keys":
+            allowed("model-keys");
+            if (capabilities.command) return "A command model is configured.";
+            return managed === false
+              ? "Configure Workers AI or an Anthropic key to enable model-assisted commands."
+              : "Model availability is managed by your host.";
+          case "account":
+            allowed("account");
+            return `Signed in as ${user.email} · Workspace timezone ${timezone}.`;
+          case "sign out":
+            if (signOut) await signOut();
+            else {
+              const response = await fetch("/auth/logout", { method: "POST" });
+              if (!response.ok)
+                throw new Error("Couldn’t sign out. Try again.");
+            }
+            onSessionExpired();
+            return "";
+        }
+    }
+  }
+
   return (
-    <div className="attention-app">
+    <div className="attention-app" ref={shell}>
       <header className="attention-header">
         <details className="wordmark-menu">
           <summary aria-label="Heed workspace menu">
@@ -398,7 +838,10 @@ function Workspace({
             <button
               className="text-control"
               type="button"
-              onClick={() => openPanel("goal")}
+              onClick={() => {
+                command.setDraft("add ");
+                command.line.current?.focus({ preventScroll: true });
+              }}
               disabled={!live}
             >
               Add item
@@ -406,14 +849,14 @@ function Workspace({
             <button
               className="text-control"
               type="button"
-              onClick={() => openPanel("history")}
+              onClick={() => setActivePanel({ kind: "history" })}
             >
               History
             </button>
             <button
               className="text-control"
               type="button"
-              onClick={() => openPanel("hidden")}
+              onClick={() => setActivePanel({ kind: "hidden" })}
             >
               Hidden items
             </button>
@@ -427,18 +870,20 @@ function Workspace({
             <button
               className="text-control"
               type="button"
-              onClick={() => openPanel("guidance")}
+              onClick={() => setActivePanel({ kind: "guidance" })}
               disabled={!state.settings}
             >
               Guidance
             </button>
-            <button
-              className="text-control"
-              type="button"
-              onClick={() => openPanel("settings")}
-            >
-              Settings
-            </button>
+            {!!options?.extraSettingsScreens?.length && (
+              <button
+                className="text-control"
+                type="button"
+                onClick={() => setActivePanel({ kind: "host" })}
+              >
+                Settings
+              </button>
+            )}
             {HeaderEnd && <HeaderEnd {...slotProps} />}
           </div>
         </details>
@@ -494,15 +939,12 @@ function Workspace({
               select={(id) => {
                 if (lens.id === "list" && id) selectStreamItem(id);
                 else {
+                  setReplyId(undefined);
                   setSelectedItem(id ? { id } : null);
                   setRadarSelection(id);
                 }
               }}
-              inspectItem={(id) => {
-                setSelectedItem({ id });
-                setRadarSelection(id);
-                openPanel("inspector");
-              }}
+              radarZoom={radarZoom}
               save={connection.save}
               move={connection.mutate}
               reschedule={(id, date) => updateItem(id, { scheduled_on: date })}
@@ -519,15 +961,37 @@ function Workspace({
               {dependencyError}
             </p>
           )}
+          {questions.length > 0 && (
+            <div className="field-questions">
+              {questions.map((item) => (
+                <QuestionBubble
+                  key={item.id}
+                  item={item}
+                  disabled={!live || command.action.busy}
+                  answer={(text) => answerQuestion(item.id, text)}
+                  typeReply={() => {
+                    if (item.id !== selectedId) selectStreamItem(item.id);
+                    setReplyId(item.id);
+                    command.setDraft("");
+                    command.setSummary(
+                      `Replying to ${item.agent_name ?? item.title}.`,
+                    );
+                    command.line.current?.focus({ preventScroll: true });
+                  }}
+                />
+              ))}
+            </div>
+          )}
           {inspected && (
             <SelectedItem
               key={inspected.id}
               item={inspected}
-              revision={eventRevision(inspected.id)}
-              inspect={() => openPanel("inspector")}
+              activity={activity}
+              openGraph={openGraph}
               close={() => {
                 setSelectedItem(null);
                 setRadarSelection(null);
+                setReplyId(undefined);
               }}
             />
           )}
@@ -540,6 +1004,18 @@ function Workspace({
           selectedId={selectedId}
           radarSelection={radarSelection}
           select={selectStreamItem}
+          activity={
+            inspected && (
+              <ItemActivity
+                key={inspected.id}
+                item={inspected}
+                activity={activity}
+                timezone={timezone}
+                live={live}
+                save={connection.save}
+              />
+            )
+          }
         />
       </main>
 
@@ -561,35 +1037,15 @@ function Workspace({
         <CommandBar
           command={command}
           live={live}
-          enabled={capabilities.command}
+          replyName={replyTarget?.agent_name ?? replyTarget?.title}
+          exitReply={() => {
+            setReplyId(undefined);
+            command.setDraft("");
+            command.setSummary("");
+          }}
         />
       </footer>
 
-      {panel === "inspector" && inspected && (
-        <Inspector
-          key={inspected.id}
-          activityRevision={eventRevision(inspected.id)}
-          drawer
-          item={inspected}
-          projects={projects}
-          items={state.items}
-          dependencies={dependencies}
-          timezone={timezone}
-          live={live}
-          save={connection.save}
-          close={closePanel}
-          addChild={() => openPanel("child")}
-          openDependencies={openGraph}
-          selectChild={
-            lens.id === "board"
-              ? (id) => {
-                  selectStreamItem(id);
-                  closePanel();
-                }
-              : undefined
-          }
-        />
-      )}
       {panel === "hidden" && (
         <Panel title="Hidden items" close={closePanel}>
           {hiddenItems.length === 0 ? (
@@ -602,8 +1058,8 @@ function Workspace({
                     className="text-control"
                     type="button"
                     onClick={() => {
-                      setSelectedItem({ id: item.id });
-                      openPanel("inspector");
+                      selectStreamItem(item.id);
+                      closePanel();
                     }}
                   >
                     {item.title}
@@ -641,38 +1097,78 @@ function Workspace({
           close={closePanel}
         />
       )}
-      {panel === "settings" && (
-        <Settings
-          judgeAgreementRevision={state.judgeAgreementRevision}
-          projects={projects}
-          items={state.items}
-          timezone={timezone}
-          screenProps={screenProps}
-          options={options}
-          showModelKeyHint={showModelKeyHint}
-          resetVersion={state.resetVersion}
-          onSignOut={
-            signOut &&
-            (async () => {
-              await signOut();
-              onSessionExpired();
-            })
-          }
-          live={live}
-          save={connection.save}
+      {panel === "push" && (
+        <Panel title="Notifications" close={closePanel}>
+          <EnableNotifications
+            finish={(message) => {
+              command.setSummary(message);
+              closePanel();
+            }}
+          />
+        </Panel>
+      )}
+      {panel === "token-label" && (
+        <TokenLabel
           close={closePanel}
+          create={async (label) => {
+            await saveCommand(
+              { type: "CREATE_TOKEN", input: { label, scope: "report" } },
+              "",
+            );
+          }}
         />
       )}
-      {(panel === "goal" || panel === "child") && (
-        <QuickAdd
-          parent={panel === "child" ? inspected : undefined}
-          parentMissing={panel === "child" && !inspected}
-          projects={projects}
-          timezone={timezone}
-          live={live}
-          save={connection.save}
-          close={closePanel}
-        />
+      {activePanel?.kind === "token" && (
+        <Panel title="Token created" close={closePanel}>
+          <TokenSecret created={activePanel.created} />
+        </Panel>
+      )}
+      {activePanel?.kind === "confirm" && (
+        <Panel title={activePanel.title} close={closePanel}>
+          <ConfirmCommand
+            phrase={activePanel.phrase}
+            description={activePanel.description}
+            confirm={async () => {
+              command.setSummary(
+                await saveCommand(activePanel.mutation, activePanel.result),
+              );
+              closePanel();
+            }}
+          />
+        </Panel>
+      )}
+      {activePanel?.kind === "list" && (
+        <Panel title={activePanel.title} close={closePanel}>
+          {activePanel.rows.length ? (
+            <ul className="item-list">
+              {activePanel.rows.map(({ id, title, detail }) => (
+                <li key={id}>
+                  <strong>{title}</strong>
+                  {detail && <p className="muted">{detail}</p>}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">Nothing to show.</p>
+          )}
+        </Panel>
+      )}
+      {panel === "judge" && (
+        <Panel title="Shadow judge" close={closePanel}>
+          <ShadowJudgeAgreement revision={state.judgeAgreementRevision} />
+        </Panel>
+      )}
+      {panel === "host" && (
+        <Panel title="Settings" close={closePanel}>
+          {options?.extraSettingsScreens?.map(
+            ({ id, label, component: Screen }) => (
+              <section key={id} aria-label={label}>
+                <h3>{label}</h3>
+                <Screen {...screenProps} />
+              </section>
+            ),
+          )}
+        </Panel>
       )}
     </div>
   );
