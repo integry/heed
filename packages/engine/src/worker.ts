@@ -6,16 +6,20 @@ import { basicLimits } from "./basic-limits.js";
 import type { BasicLimitsEnv } from "./basic-limits.js";
 import { envKeys } from "./command-provider.js";
 import type { EnvKeysEnv } from "./command-provider.js";
-import { noUsage } from "./seams.js";
+import { envJudge, noUsage } from "./seams.js";
+import type { JudgeEnv } from "./seams.js";
 
 export { Workspace } from "./workspace.js";
 
-export default createApp<AppEnv & AuthEnv & BasicLimitsEnv & EnvKeysEnv>(
+export default createApp<
+  AppEnv & AuthEnv & BasicLimitsEnv & EnvKeysEnv & JudgeEnv
+>(
   (env, context) => ({
     auth: googleAllowlistAuth(env),
     limits: basicLimits(env, context),
     usage: noUsage,
     keys: envKeys(env),
+    judge: envJudge(env),
   }),
   openAuthOptions,
 );

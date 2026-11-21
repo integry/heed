@@ -2,6 +2,7 @@ import { ReportProgressSchema } from "@heedwork/core";
 import { apiError, limitResponse } from "./api-response.js";
 import { requireAgent, requireAgentToken } from "./agent-auth.js";
 import { handleHumanApi } from "./human-api.js";
+import { scheduleJudge } from "./judge.js";
 import { handleOAuth, mcpChallenge } from "./oauth.js";
 import { requireSession } from "./session.js";
 import { handleTokenBootstrap } from "./token-admin.js";
@@ -133,12 +134,18 @@ async function route<Bindings extends AppEnv>(
         );
       }
       try {
-        const result = await workspace.reportProgress(actor, input.data);
+        const { judgingInput, ...result } = await workspace.reportProgress(
+          actor,
+          input.data,
+        );
         recordUsage(ctx, app.usage, workspaceId, {
           type: "agent.write",
           operation: "report_progress",
         });
-        return Response.json(result);
+        const response = Response.json(result);
+        if (judgingInput)
+          scheduleJudge(app, workspaceId, workspace, judgingInput);
+        return response;
       } catch (error) {
         if (error instanceof Error) {
           if (error.message === "Item not found") {
@@ -162,7 +169,7 @@ async function route<Bindings extends AppEnv>(
       request,
       app,
       async (secret, workspace, workspaceId) => {
-        const { response, writes } = await workspace.mcp(
+        const { response, writes, judgingInputs } = await workspace.mcp(
           request,
           secret,
           async (action) => {
@@ -182,6 +189,8 @@ async function route<Bindings extends AppEnv>(
             type: "agent.write",
             operation,
           });
+        for (const input of judgingInputs ?? [])
+          scheduleJudge(app, workspaceId, workspace, input);
         return response;
       },
     );

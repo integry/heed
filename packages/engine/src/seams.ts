@@ -1,4 +1,10 @@
-import type { WorkspaceUser } from "@heedwork/core";
+import { JudgeConfigurationSchema } from "@heedwork/core";
+import type {
+  JudgeConfiguration,
+  JudgeLimitAction,
+  JudgeUsage,
+  WorkspaceUser,
+} from "@heedwork/core";
 import type { CommandProvider } from "./command-provider.js";
 
 export interface WorkspaceSession {
@@ -26,6 +32,7 @@ export type LimitAction =
   | "token.create"
   | "command"
   | "transcribe"
+  | JudgeLimitAction
   | "push"
   | "connect";
 
@@ -44,6 +51,7 @@ export type UsageEvent =
       outputTokens: number | null;
     }
   | { type: "transcribe"; seconds: number }
+  | JudgeUsage
   | { type: "push"; count: number }
   | { type: "agent.write"; operation: string };
 
@@ -67,11 +75,36 @@ export interface KeyProvider {
   commandProvider(workspaceId: string): Promise<CommandKeys>;
 }
 
+export interface JudgeProvider {
+  judge(
+    workspaceId: string,
+  ): JudgeConfiguration | undefined | Promise<JudgeConfiguration | undefined>;
+}
+
+export interface JudgeEnv {
+  JUDGE_URL?: string;
+  JUDGE_API_KEY?: string;
+  JUDGE_MODEL?: string;
+}
+
+export function envJudge(env: JudgeEnv): JudgeProvider {
+  return {
+    judge() {
+      return JudgeConfigurationSchema.safeParse({
+        url: env.JUDGE_URL,
+        apiKey: env.JUDGE_API_KEY,
+        model: env.JUDGE_MODEL,
+      }).data;
+    },
+  };
+}
+
 export interface AppSeams {
   auth: AuthProvider;
   limits: Limits;
   usage: UsageSink;
   keys: KeyProvider;
+  judge?: JudgeProvider;
 }
 
 /** Self-hosted deployments do not meter usage. */

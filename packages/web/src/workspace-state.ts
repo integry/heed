@@ -24,6 +24,9 @@ export interface WorkspaceData {
 export interface WorkspaceState extends WorkspaceData {
   onboarding?: OnboardingStatus;
   seq: number;
+  eventRevisions: ReadonlyMap<string, number>;
+  snapshotRevision: number;
+  judgeAgreementRevision: number;
   connection: "connecting" | "live" | "syncing" | "reconnecting";
   pending: ReadonlyMap<string, MutationInput>;
   error: string | null;
@@ -36,6 +39,9 @@ export function initialWorkspaceState(): WorkspaceState {
     items: new Map(),
     dependencies: new Map(),
     seq: 0,
+    eventRevisions: new Map(),
+    snapshotRevision: 0,
+    judgeAgreementRevision: 0,
     connection: "connecting",
     pending: new Map(),
     error: null,
@@ -103,6 +109,9 @@ export function receiveMessage(
       ...state,
       ...replaceCanvas(state, message),
       seq: message.seq,
+      eventRevisions: new Map(),
+      snapshotRevision: state.snapshotRevision + 1,
+      judgeAgreementRevision: state.judgeAgreementRevision + 1,
       connection: "live",
       pending: new Map(),
       settings: message.settings,
@@ -133,7 +142,11 @@ export function receiveMessage(
   };
   switch (message.type) {
     case "CANVAS_REPLACE":
-      return { ...next, ...replaceCanvas(state, message) };
+      return {
+        ...next,
+        ...replaceCanvas(state, message),
+        judgeAgreementRevision: state.judgeAgreementRevision + 1,
+      };
     case "ONBOARDING_UPDATE":
       return next;
     case "ITEM_UPSERT":
@@ -146,7 +159,11 @@ export function receiveMessage(
         ),
       };
     case "ITEM_REMOVE":
-      return { ...next, items: removeEntry(state.items, message.item_id) };
+      return {
+        ...next,
+        items: removeEntry(state.items, message.item_id),
+        judgeAgreementRevision: state.judgeAgreementRevision + 1,
+      };
     case "PROJECT_UPSERT":
       return {
         ...next,
@@ -176,6 +193,16 @@ export function receiveMessage(
       };
     case "SETTINGS_UPDATE":
       return { ...next, settings: message.settings };
+    case "EVENT_APPEND":
+      return {
+        ...next,
+        eventRevisions: setEntry(
+          state.eventRevisions,
+          message.event.item_id,
+          message.event.id,
+        ),
+        judgeAgreementRevision: state.judgeAgreementRevision + 1,
+      };
     case "ACK":
       return {
         ...next,

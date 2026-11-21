@@ -14,12 +14,14 @@ export type {
   ToolReply,
 } from "./command-provider.js";
 export type { ToolDefinition } from "./command-tools.js";
-export { noUsage } from "./seams.js";
+export { envJudge, noUsage } from "./seams.js";
 export type {
   AppSeams,
   AuthProvider,
   CommandConfiguration,
   CommandKeys,
+  JudgeEnv,
+  JudgeProvider,
   KeyProvider,
   LimitAction,
   LimitDecision,

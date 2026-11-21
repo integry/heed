@@ -1,7 +1,12 @@
 import { DemoBadge } from "./item-markers";
 import { useResource } from "./api";
 import { useEffect, useRef, useState } from "react";
-import { LockableFieldSchema } from "@heedwork/core";
+import {
+  classifyJudgeProbability,
+  JudgedDetailSchema,
+  JudgeFeedbackDetailSchema,
+  LockableFieldSchema,
+} from "@heedwork/core";
 import type { LockableField, UpdateItemInput } from "@heedwork/core";
 import { effectiveSchedule, streamOrder } from "@heedwork/core";
 import type {
@@ -48,13 +53,98 @@ function eventSummary(event: Event) {
       return "Updated placement";
     case "notified":
       return "Sent a notification";
+    case "judged":
+      return "Shadow verdict";
+    case "judge_feedback":
+      return detail?.agrees
+        ? "Agreed with shadow verdict"
+        : "Disagreed with shadow verdict";
   }
 }
 
-function Activity({ item, timezone }: { item: Item; timezone: string }) {
+function ShadowVerdict({
+  event,
+  feedback,
+  live,
+  save,
+}: {
+  event: Event;
+  feedback: boolean | undefined;
+  live: boolean;
+  save: SaveMutation;
+}) {
+  const { run, busy, error } = useAction();
+  const parsed = JudgedDetailSchema.safeParse(
+    JSON.parse(event.detail ?? "null"),
+  );
+  if (!parsed.success) return <span>Shadow verdict</span>;
+  const { criteria, probabilities, model, evidence_supplied } = parsed.data;
+
+  return (
+    <div className="form-stack">
+      <strong>Shadow verdict</strong>
+      <small>
+        {model} ·{" "}
+        {evidence_supplied ? "Evidence supplied" : "No evidence supplied"}
+      </small>
+      <dl className="shadow-criteria">
+        {criteria.map((criterion, index) => (
+          <div key={index}>
+            <dt>{criterion}</dt>
+            <dd>{classifyJudgeProbability(probabilities[index])}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="inline-actions">
+        {[true, false].map((agrees) => (
+          <button
+            key={String(agrees)}
+            type="button"
+            className={feedback === agrees ? "primary" : "subtle"}
+            aria-pressed={feedback === agrees}
+            disabled={!live || busy}
+            onClick={() =>
+              void run(() =>
+                save(
+                  {
+                    type: "JUDGE_FEEDBACK",
+                    input: {
+                      item_id: event.item_id,
+                      judged_event_id: event.id,
+                      agrees,
+                    },
+                  },
+                  { callerReportsError: true },
+                ),
+              )
+            }
+          >
+            {agrees ? "Agree" : "Disagree"}
+          </button>
+        ))}
+      </div>
+      {error && <p role="alert">{error}</p>}
+    </div>
+  );
+}
+
+function Activity({
+  item,
+  timezone,
+  revision,
+  live,
+  save,
+}: {
+  item: Item;
+  timezone: string;
+  revision: string;
+  live: boolean;
+  save: SaveMutation;
+}) {
   const itemId = item.id;
   // Heartbeat and layout broadcasts do not add activity entries.
   const eventFields = JSON.stringify([
+    revision,
     item.status,
     item.note,
     item.handoff,
@@ -69,6 +159,15 @@ function Activity({ item, timezone }: { item: Item; timezone: string }) {
     eventFields,
   );
   const events = Array.isArray(data) ? data : undefined;
+  const feedback = new Map<number, boolean>();
+  for (const event of events ?? []) {
+    if (event.kind !== "judge_feedback") continue;
+    const parsed = JudgeFeedbackDetailSchema.safeParse(
+      JSON.parse(event.detail ?? "null"),
+    );
+    if (parsed.success && !feedback.has(parsed.data.judged_event_id))
+      feedback.set(parsed.data.judged_event_id, parsed.data.agrees);
+  }
   const message =
     error?.message ??
     (data !== undefined && !events ? "Couldn’t load activity." : "");
@@ -91,7 +190,16 @@ function Activity({ item, timezone }: { item: Item; timezone: string }) {
         <ol className="activity-list">
           {events.map((event) => (
             <li key={event.id}>
-              <span>{eventSummary(event)}</span>
+              {event.kind === "judged" ? (
+                <ShadowVerdict
+                  event={event}
+                  feedback={feedback.get(event.id)}
+                  live={live}
+                  save={save}
+                />
+              ) : (
+                <span>{eventSummary(event)}</span>
+              )}
               <small>
                 {typeof event.actor === "string"
                   ? event.actor
@@ -124,6 +232,7 @@ function safeLink(value: string) {
 
 export function Inspector({
   drawer,
+  activityRevision,
   item,
   projects,
   items,
@@ -137,6 +246,7 @@ export function Inspector({
   selectChild,
 }: {
   drawer: boolean;
+  activityRevision: string;
   item: Item;
   projects: readonly Project[];
   items: ReadonlyMap<string, Item>;
@@ -769,7 +879,13 @@ export function Inspector({
             </button>
           )}
         </section>
-        <Activity item={item} timezone={timezone} />
+        <Activity
+          item={item}
+          timezone={timezone}
+          revision={activityRevision}
+          live={live}
+          save={save}
+        />
       </div>
     </>
   );

@@ -165,6 +165,8 @@ export async function handleHumanApi(
         return Response.json(await workspace().listTokens());
       case "GET /api/connected-apps":
         return Response.json(await workspace().listConnectedApps());
+      case "GET /api/judge/agreement":
+        return Response.json(await workspace().getJudgeAgreement());
       case "POST /api/tokens":
         return await withJson(
           request,
