@@ -24,7 +24,12 @@ import {
   type StreamMove,
 } from "./stream-move";
 import { streamDropSlot, useItemDrag, type DropSlot } from "./use-item-drag";
-import { ItemMarkers, ItemTimeBadge, itemTimeFormats } from "./item-markers";
+import {
+  ItemMarkers,
+  ItemTimeBadge,
+  ShadowVerdictMarker,
+  itemTimeFormats,
+} from "./item-markers";
 import type { WorkspaceData } from "./workspace-state";
 import type { selectWorkspace } from "./workspace-view";
 
@@ -50,6 +55,7 @@ interface Props extends Pick<
   items: WorkspaceData["items"];
   dependencies: WorkspaceData["dependencies"];
   ready: boolean;
+  eventRevision: (id: string) => string;
   openGuide?: () => void;
   live: boolean;
   now: number;
@@ -107,6 +113,7 @@ export function HorizonStream({
   items,
   dependencies,
   ready,
+  eventRevision,
   openGuide,
   live,
   now,
@@ -337,6 +344,7 @@ export function HorizonStream({
           const open = expanded.get(key) ?? attentionOnly;
           const link = safeLink(item.ref_url);
           const detailId = `stream-details-${encodeURIComponent(path)}${encodeURIComponent(item.id)}`;
+          const verdictId = `${detailId}-verdict`;
           const upcoming =
             canonical.band !== "today" && canonical.band !== "done-today";
           const childrenById = new Map(
@@ -390,7 +398,7 @@ export function HorizonStream({
                   type="button"
                   className="stream-select"
                   aria-label={item.title}
-                  aria-describedby={detailId}
+                  aria-describedby={`${detailId} ${verdictId}`}
                   aria-pressed={selectedId === item.id}
                   onClick={() => select(item.id)}
                 >
@@ -403,6 +411,11 @@ export function HorizonStream({
                       completed={band === "done-today"}
                     />
                     <span className="item-title">{item.title}</span>
+                    <ShadowVerdictMarker
+                      id={verdictId}
+                      item={item}
+                      revision={eventRevision(item.id)}
+                    />
                   </span>
                   <ItemMarkers
                     item={item}

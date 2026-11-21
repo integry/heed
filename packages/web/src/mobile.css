@@ -14,7 +14,7 @@
     position: relative;
     z-index: 3;
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     gap: 6px;
     min-height: 0;
     padding: calc(6px + env(safe-area-inset-top))
@@ -38,8 +38,7 @@
     gap: 6px;
   }
 
-  .header-menu summary,
-  .lens-select select {
+  .header-menu summary {
     display: flex;
     align-items: center;
     min-height: 44px;
@@ -47,8 +46,13 @@
     cursor: pointer;
   }
 
-  .lens-select select {
-    max-width: min(28vw, 116px);
+  .lens-tabs {
+    flex-basis: 100%;
+  }
+
+  .lens-tabs button {
+    flex: 1 0 auto;
+    min-height: 36px;
   }
 
   .project-menu summary::after {
@@ -150,11 +154,18 @@
     overflow: hidden;
   }
 
-  .lens-pane:has(> .onboarding-welcome) {
+  .lens-pane:has(.onboarding-welcome) {
     display: block;
     overflow: auto;
     padding: 12px max(12px, env(safe-area-inset-right)) 12px
       max(12px, env(safe-area-inset-left));
+  }
+
+  .lens-tabpanel:has(> :is(.radar, .treemap)) {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
   }
 
   .radar,
@@ -394,15 +405,14 @@
       max(16px, env(safe-area-inset-left));
   }
 
-  .inspector-drawer button,
-  .inspector-drawer .inspector-actions a {
+  .inspector-drawer button {
     min-height: 44px;
   }
 
-  .inspector-drawer .inspector-actions a {
-    display: inline-flex;
-    align-items: center;
-    text-decoration: none;
+  .inspector-drawer .inspector-footer {
+    padding-inline: max(12px, env(safe-area-inset-left))
+      max(12px, env(safe-area-inset-right));
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
 }
 
