@@ -5,8 +5,8 @@ import type { CommandResult } from "@heedwork/core";
 import type { SocketMessage } from "@heedwork/core";
 import { runCommand } from "./command-api";
 import type { CommandTurn } from "./command-provider";
-import worker from "./worker";
-import { issueSession } from "./session";
+import { fetchOpen } from "./worker-test-helpers";
+import { issueSession } from "./auth";
 import { getWorkspaceStub } from "./workspace";
 
 const origin = "https://heed.test";
@@ -40,7 +40,7 @@ function post(
   options = bindings,
   contentType = "application/json",
 ) {
-  return worker.fetch(
+  return fetchOpen(
     new Request(origin + path, {
       method: "POST",
       headers: { Cookie: cookie, Origin: origin, "Content-Type": contentType },
@@ -104,7 +104,7 @@ it("looks up items, applies multiple steer operations, and undoes them over the 
     day: "2-digit",
   }).format(new Date());
 
-  const response = await worker.fetch(
+  const response = await fetchOpen(
     new Request(origin + "/ws", {
       headers: { Cookie: cookie, Origin: origin, Upgrade: "websocket" },
     }),
@@ -523,7 +523,7 @@ it("reports the unconfigured state before rate limiting or looking up the worksp
   expect(await response.json()).toMatchObject({
     error: { code: "not_configured" },
   });
-  const me = await worker.fetch(
+  const me = await fetchOpen(
     new Request(origin + "/api/me", { headers: { Cookie: cookie } }),
     unset,
   );

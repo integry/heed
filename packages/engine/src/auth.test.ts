@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
-import worker from "./worker";
-import { SESSION_COOKIE } from "./session";
+import { fetchOpen } from "./worker-test-helpers";
+import { SESSION_COOKIE } from "./auth";
 import { encodeBase64Url } from "./signed-cookie";
 
 const origin = "https://heed.test";
@@ -37,7 +37,7 @@ afterEach(() => {
 });
 
 function request(path: string, init?: RequestInit) {
-  return worker.fetch(new Request(new URL(path, origin), init), bindings);
+  return fetchOpen(new Request(new URL(path, origin), init), bindings);
 }
 
 function getCookie(response: Response, name: string) {
@@ -171,7 +171,14 @@ it("exchanges the Google code with PKCE and issues a sliding session", async () 
   expect(me.headers.get("Cache-Control")).toBe("no-store");
   expect(await me.json()).toEqual({
     email: "member@example.test",
+    user: {
+      id: "member@example.test",
+      email: "member@example.test",
+      name: "member@example.test",
+    },
     workspaceId: "default",
+    role: "owner",
+    managed: false,
     capabilities: { command: false, transcription: false },
   });
   const refreshed = getCookie(me, SESSION_COOKIE);
@@ -293,7 +300,14 @@ it("only enables dev login on localhost with an explicitly configured email", as
   });
   expect(await me.json()).toEqual({
     email: bindings.DEV_LOGIN_EMAIL,
+    user: {
+      id: bindings.DEV_LOGIN_EMAIL,
+      email: bindings.DEV_LOGIN_EMAIL,
+      name: bindings.DEV_LOGIN_EMAIL,
+    },
     workspaceId: "default",
+    role: "owner",
+    managed: false,
     capabilities: { command: false, transcription: false },
   });
 
@@ -302,7 +316,7 @@ it("only enables dev login on localhost with an explicitly configured email", as
   });
   expect(deployed.status).toBe(404);
   expect(deployed.headers.has("Set-Cookie")).toBe(false);
-  const disabled = await worker.fetch(
+  const disabled = await fetchOpen(
     new Request(`${localOrigin}/auth/dev-login`),
     {
       ...bindings,

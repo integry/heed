@@ -121,7 +121,7 @@ export type WorkspaceMessage =
   | {
       type: "ERROR";
       requestId: string | null;
-      error: { code: string; message: string; reason?: string };
+      error: { code: string; message: string; limit?: string; reason?: string };
     };
 
 // Sequence numbers are consecutive per connection, including replies and snapshots.

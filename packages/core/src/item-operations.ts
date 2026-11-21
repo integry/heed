@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   GuidanceTextSchema,
   ScopeSchema,
+  WorkspaceUserSchema,
   StatusSchema,
   TimeTypeSchema,
 } from "./workspace.js";
@@ -37,8 +38,15 @@ export const CanvasQuerySchema = z.strictObject({
 export const SetGuidanceSchema = z.strictObject({ text: GuidanceTextSchema });
 
 export const ActorSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("human") }),
-  z.strictObject({ kind: z.literal("command"), scope: z.literal("steer") }),
+  z.strictObject({
+    kind: z.literal("human"),
+    user: WorkspaceUserSchema.optional(),
+  }),
+  z.strictObject({
+    kind: z.literal("command"),
+    scope: z.literal("steer"),
+    user: WorkspaceUserSchema.optional(),
+  }),
   z.strictObject({
     kind: z.literal("agent"),
     scope: ScopeSchema,

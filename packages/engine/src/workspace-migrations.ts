@@ -108,6 +108,10 @@ const migrations = [
       );
     `);
   },
+  // Version 5
+  (sql: SqlStorage) => {
+    sql.exec("ALTER TABLE events ADD COLUMN actor_user TEXT");
+  },
 ];
 
 export function migrateWorkspace(storage: DurableObjectStorage): void {

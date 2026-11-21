@@ -9,10 +9,10 @@ import {
   SetGuidanceSchema,
   UpdateItemSchema,
 } from "@heedwork/core";
-import type { Actor, ItemOperationResult } from "@heedwork/core";
-import type { Workspace } from "./workspace";
+import type { Actor, ItemOperationResult, WorkspaceUser } from "@heedwork/core";
+import type { Workspace } from "./workspace.js";
 
-export const commandActor = {
+const commandActor = {
   kind: "command",
   scope: "steer",
 } as const satisfies Actor;
@@ -27,7 +27,12 @@ function tool<T extends z.ZodType>(
   name: string,
   description: string,
   schema: T,
-  run: (workspace: Workspace, args: z.output<T>) => unknown,
+  run: (
+    workspace: Workspace,
+    args: z.output<T>,
+    actor: typeof commandActor & { user?: WorkspaceUser },
+    allowItemCreation: boolean,
+  ) => unknown,
 ) {
   const parameters = z.toJSONSchema(schema, {
     io: "input",
@@ -35,13 +40,23 @@ function tool<T extends z.ZodType>(
   delete parameters.$schema;
   return {
     definition: { name, description, parameters } satisfies ToolDefinition,
-    execute(workspace: Workspace, args: unknown) {
+    execute(
+      workspace: Workspace,
+      args: unknown,
+      user: WorkspaceUser | undefined,
+      allowItemCreation: boolean,
+    ) {
       const result = schema.safeParse(args);
       if (!result.success) {
         const { path, message } = result.error.issues[0];
         return { error: [path.join("."), message].filter(Boolean).join(": ") };
       }
-      return run(workspace, result.data);
+      return run(
+        workspace,
+        result.data,
+        { ...commandActor, user },
+        allowItemCreation,
+      );
     },
   };
 }
@@ -94,27 +109,32 @@ export const commandTools = [
     "add_item",
     "Add an item or child. Use a project ID. An existing external_key updates its item.",
     AddItemSchema,
-    (workspace, input) => itemResult(workspace.addItem(commandActor, input)),
+    (workspace, input, actor, allowItemCreation) => {
+      const result = allowItemCreation
+        ? workspace.addItem(actor, input)
+        : workspace.updateExistingItem(actor, input);
+      return result && itemResult(result);
+    },
   ),
   tool(
     "report_progress",
     "Change status, note, assignment or reference link for an item. Status may be active, blocked, done or cancelled.",
     ReportProgressSchema,
-    (workspace, input) =>
-      itemResult(workspace.reportProgress(commandActor, input)),
+    (workspace, input, actor) =>
+      itemResult(workspace.reportProgress(actor, input)),
   ),
   tool(
     "update_item",
     "Edit only the specified item fields. Use project IDs and YYYY-MM-DD for scheduled_on; null clears the date. Pass hidden to hide or show an item.",
     UpdateItemSchema,
-    (workspace, input) => itemResult(workspace.updateItem(commandActor, input)),
+    (workspace, input, actor) => itemResult(workspace.updateItem(actor, input)),
   ),
   tool(
     "set_dependency",
     "Add or remove a dependency. blocked_by_id is the prerequisite item.",
     SetDependencySchema,
-    (workspace, input) => {
-      const result = workspace.setDependency(commandActor, input);
+    (workspace, input, actor) => {
+      const result = workspace.setDependency(actor, input);
       return { ...itemResult(result), dependency: result.dependency };
     },
   ),
@@ -122,20 +142,20 @@ export const commandTools = [
     "flag_handoff",
     "Flag an item for a human decision and record what is needed. Only send a notification if requested or warranted by guidance.",
     FlagHandoffSchema,
-    async (workspace, input) =>
-      itemResult(await workspace.flagHandoff(commandActor, input)),
+    async (workspace, input, actor) =>
+      itemResult(await workspace.flagHandoff(actor, input)),
   ),
   tool(
     "reopen_item",
     "Reopen a completed or cancelled item. Record the reason.",
     ReopenItemSchema,
-    (workspace, input) => itemResult(workspace.reopenItem(commandActor, input)),
+    (workspace, input, actor) => itemResult(workspace.reopenItem(actor, input)),
   ),
   tool(
     "set_guidance",
     "Replace standing guidance when explicitly asked. Keep any guidance the user wants to retain.",
     SetGuidanceSchema,
-    (workspace, { text }) => workspace.setGuidance(commandActor, text),
+    (workspace, { text }, actor) => workspace.setGuidance(actor, text),
   ),
   tool(
     "toggle_project",

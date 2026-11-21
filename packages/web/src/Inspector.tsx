@@ -92,7 +92,10 @@ function Activity({ item, timezone }: { item: Item; timezone: string }) {
             <li key={event.id}>
               <span>{eventSummary(event)}</span>
               <small>
-                {event.actor} · <time>{dateLabel(event.at, timezone)}</time>
+                {typeof event.actor === "string"
+                  ? event.actor
+                  : event.actor.name || event.actor.email}{" "}
+                · <time>{dateLabel(event.at, timezone)}</time>
               </small>
             </li>
           ))}

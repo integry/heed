@@ -6,6 +6,7 @@ export default defineProject({
   root: fileURLToPath(new URL(".", import.meta.url)),
   plugins: [
     cloudflareTest({
+      main: "./src/test-host.ts",
       wrangler: {
         configPath: fileURLToPath(
           new URL("../../wrangler.jsonc", import.meta.url),
@@ -13,6 +14,9 @@ export default defineProject({
       },
       remoteBindings: false,
       miniflare: {
+        durableObjects: {
+          HOST_WORKSPACE: { className: "HostedWorkspace", useSQLite: true },
+        },
         bindings: {
           // Test-only P-256 key pair for signing requests to mocked endpoints.
           VAPID_SUBJECT: "mailto:push@example.test",
