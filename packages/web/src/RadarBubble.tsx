@@ -37,6 +37,7 @@ export function bubbleDetails(
   const { done, total } = item.progress;
   const detail = [
     item.title,
+    item.demo === 1 && "Demo",
     ghost ? "Completed" : ring && ringLabels[ring],
     stale,
     stamp,
@@ -252,6 +253,17 @@ export const RadarBubble = memo(function RadarBubble({
               {visibleBadge.text}
             </text>
           </g>
+        )}
+        {item.demo === 1 && (
+          <text
+            className="radar-demo-badge"
+            textAnchor="middle"
+            y={radius + 11 / labelScale}
+            fontSize={10 / labelScale}
+            aria-hidden="true"
+          >
+            Demo
+          </text>
         )}
         {outsideLabel && (
           <BubbleCallout

@@ -542,6 +542,12 @@ it("delivers token plaintext only in the creation reply", async () => {
       default_project_id: "inbox",
     },
   });
+  for (const client of [first, second]) {
+    expect(await client.next()).toMatchObject({
+      type: "ONBOARDING_UPDATE",
+      onboarding: { hasToken: true },
+    });
+  }
   const reply = await first.next();
   expect(reply).toMatchObject({
     type: "ACK",
@@ -572,6 +578,12 @@ it("delivers token plaintext only in the creation reply", async () => {
     requestId: "revoke-token",
     input: { token_id: id },
   });
+  for (const client of [first, second]) {
+    expect(await client.next()).toMatchObject({
+      type: "ONBOARDING_UPDATE",
+      onboarding: { hasToken: false },
+    });
+  }
   expect(await first.next()).toMatchObject({
     type: "ACK",
     requestId: "revoke-token",
@@ -626,7 +638,11 @@ it("reopens an older item through the shared operation and publishes it to the c
   const item_id = await addItem("Investigate regression");
   await workspace.reportProgress(human, { item_id, status: "cancelled" });
   const client = await connect();
-  expect(await client.next()).toMatchObject({ type: "SNAPSHOT", items: [] });
+  expect(await client.next()).toMatchObject({
+    type: "SNAPSHOT",
+    items: [],
+    onboarding: { hasItems: true, hasGoalOrProject: true },
+  });
 
   client.send({
     type: "REOPEN_ITEM",
@@ -671,5 +687,181 @@ it("rolls back a reorder batch if a row disappears before the drop", async () =>
   expect(await client.next()).toMatchObject({
     type: "SNAPSHOT",
     items: [{ id: item_id, sort_key: null }],
+  });
+});
+
+it("persists guide dismissal across sockets, reconnection and eviction", async () => {
+  const first = await connect();
+  const second = await connect();
+  for (const client of [first, second]) {
+    expect(await client.next()).toMatchObject({
+      type: "SNAPSHOT",
+      settings: { onboarding_dismissed: false },
+      onboarding: { hasItems: false, hasGoalOrProject: false },
+    });
+  }
+
+  first.send({ type: "DISMISS_ONBOARDING", requestId: "dismiss", input: {} });
+  for (const client of [first, second]) {
+    expect(await client.next()).toMatchObject({
+      type: "SETTINGS_UPDATE",
+      settings: { onboarding_dismissed: true },
+    });
+  }
+  expect(await first.next()).toMatchObject({
+    type: "ACK",
+    requestId: "dismiss",
+  });
+
+  await evictDurableObject(workspace);
+  const nextDevice = await connect();
+  expect(await nextDevice.next()).toMatchObject({
+    type: "SNAPSHOT",
+    settings: { onboarding_dismissed: true },
+  });
+  nextDevice.send({
+    type: "DISMISS_ONBOARDING",
+    requestId: "retry",
+    input: {},
+  });
+  expect(await nextDevice.next()).toMatchObject({
+    type: "ACK",
+    requestId: "retry",
+  });
+});
+
+it("loads and removes demo rows atomically and preserves real workspace content", async () => {
+  const realProject = await workspace.createProject({ name: "Product launch" });
+  const realGoal = (
+    await workspace.addItem(human, {
+      title: "Prepare the beta release",
+      project: realProject.id,
+    })
+  ).item_id;
+  const client = await connect();
+  await client.next();
+
+  client.send({ type: "LOAD_DEMO_DATA", requestId: "load", input: {} });
+  const loaded = await client.next();
+  expect(loaded).toMatchObject({
+    type: "CANVAS_REPLACE",
+    onboarding: { hasItems: true, hasDemoData: true },
+    items: expect.arrayContaining([
+      expect.objectContaining({
+        demo: 1,
+        handoff: 1,
+        handoff_note: expect.any(String),
+      }),
+      expect.objectContaining({
+        demo: 1,
+        status: "active",
+        agent_name: expect.any(String),
+        last_heartbeat_at: expect.any(String),
+      }),
+      expect.objectContaining({
+        demo: 1,
+        status: "done",
+        parent_id: expect.any(String),
+      }),
+    ]),
+  });
+  if (loaded.type !== "CANVAS_REPLACE") throw new Error("Missing demo canvas");
+  expect(loaded.projects.filter(({ demo }) => demo === 1)).toHaveLength(2);
+  expect(loaded.items.filter(({ demo }) => demo === 1)).toHaveLength(7);
+  expect(await client.next()).toMatchObject({ type: "ACK", requestId: "load" });
+
+  client.send({ type: "LOAD_DEMO_DATA", requestId: "load-again", input: {} });
+  expect(await client.next()).toMatchObject({
+    type: "ACK",
+    requestId: "load-again",
+  });
+
+  const demoGoal = loaded.items.find(
+    ({ demo, parent_id }) => demo === 1 && parent_id === null,
+  )!;
+  await workspace.updateItem(human, {
+    item_id: demoGoal.id,
+    title: "Renamed demo",
+  });
+  await workspace.updateItem(human, {
+    item_id: demoGoal.id,
+    parent_id: realGoal,
+  });
+  const realChild = (
+    await workspace.addItem(human, {
+      title: "Keep this task",
+      parent_id: demoGoal.id,
+    })
+  ).item_id;
+  const attachedProject = loaded.projects.find(({ demo }) => demo === 1)!;
+  const realRoot = (
+    await workspace.addItem(human, {
+      title: "Keep this goal",
+      project: attachedProject.id,
+    })
+  ).item_id;
+  const token = await workspace.createToken(
+    "Keep this token",
+    "report",
+    attachedProject.id,
+  );
+  await workspace.setDependency(human, {
+    item_id: realGoal,
+    blocked_by_id: realRoot,
+    action: "add",
+  });
+  const untouched = await workspace.getItem({ item_id: realGoal });
+  await runInDurableObject(workspace, (_, { storage: { sql } }) => {
+    sql.exec(
+      "UPDATE items SET completed_at = datetime('now', '-2 days') WHERE demo = 1 AND status = 'done'",
+    );
+  });
+
+  const remover = await connect();
+  await remover.next();
+  remover.send({ type: "REMOVE_DEMO_DATA", requestId: "remove", input: {} });
+  const removed = await remover.next();
+  expect(removed).toMatchObject({
+    type: "CANVAS_REPLACE",
+    onboarding: { hasItems: true, hasDemoData: false, hasToken: true },
+    dependencies: [{ item_id: realGoal, blocked_by_id: realRoot }],
+  });
+  if (removed.type !== "CANVAS_REPLACE")
+    throw new Error("Missing cleaned canvas");
+  expect(removed.projects.map(({ id }) => id)).toEqual([
+    "inbox",
+    realProject.id,
+  ]);
+  expect(removed.items.map(({ id }) => id).sort()).toEqual(
+    [realGoal, realRoot, realChild].sort(),
+  );
+  expect(await workspace.getItem({ item_id: realGoal })).toEqual(untouched);
+  expect(await workspace.getItem({ item_id: realChild })).toMatchObject({
+    parent_id: realGoal,
+    project_id: realProject.id,
+    depth: 2,
+  });
+  expect(await workspace.getItem({ item_id: realRoot })).toMatchObject({
+    project_id: "inbox",
+  });
+  expect(await workspace.listTokens()).toMatchObject([
+    { id: token.id, default_project_id: null },
+  ]);
+  expect(await (await request("/api/history")).json()).toMatchObject({
+    items: [],
+  });
+  expect(await remover.next()).toMatchObject({
+    type: "ACK",
+    requestId: "remove",
+  });
+
+  remover.send({
+    type: "REMOVE_DEMO_DATA",
+    requestId: "remove-again",
+    input: {},
+  });
+  expect(await remover.next()).toMatchObject({
+    type: "ACK",
+    requestId: "remove-again",
   });
 });

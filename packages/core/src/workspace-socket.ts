@@ -62,6 +62,9 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
   mutation("MOVE_PROJECT", MoveProjectSchema),
   mutation("DELETE_PROJECT", z.strictObject({ project_id: resourceId })),
   mutation("SET_TIMEZONE", TimezoneBodySchema),
+  mutation("DISMISS_ONBOARDING", z.strictObject({})),
+  mutation("LOAD_DEMO_DATA", z.strictObject({})),
+  mutation("REMOVE_DEMO_DATA", z.strictObject({})),
   mutation("CREATE_TOKEN", CreateTokenSchema),
   mutation("REVOKE_TOKEN", z.strictObject({ token_id: resourceId })),
   z.strictObject({
@@ -101,15 +104,27 @@ export type SocketRequest = z.infer<typeof SocketRequestSchema>;
 export type ChildCounts = { done: number; total: number };
 export type CanvasItem = Item & { progress: ChildCounts };
 
-export type WorkspaceMessage =
-  | {
+export interface OnboardingStatus {
+  hasItems: boolean;
+  hasGoalOrProject: boolean;
+  hasDemoData: boolean;
+  hasToken: boolean;
+}
+
+interface CanvasSnapshot {
+  projects: Project[];
+  items: CanvasItem[];
+  dependencies: Dependency[];
+}
+
+export type WorkspaceMessage = { onboarding?: OnboardingStatus } & (
+  | ({
       type: "SNAPSHOT";
       settings: Settings;
       timezoneConfigured: boolean;
-      projects: Project[];
-      items: CanvasItem[];
-      dependencies: Dependency[];
-    }
+    } & CanvasSnapshot)
+  | (CanvasSnapshot & { type: "CANVAS_REPLACE" })
+  | { type: "ONBOARDING_UPDATE"; onboarding: OnboardingStatus }
   // Clients retaining an item should keep the newest last_heartbeat_at they have seen.
   | { type: "ITEM_UPSERT"; item: CanvasItem }
   | { type: "ITEM_REMOVE"; item_id: string }
@@ -122,7 +137,8 @@ export type WorkspaceMessage =
       type: "ERROR";
       requestId: string | null;
       error: { code: string; message: string; reason?: string };
-    };
+    }
+);
 
 // Sequence numbers are consecutive per connection, including replies and snapshots.
 // The runtime-managed text ping/pong keepalive is outside the JSON protocol.

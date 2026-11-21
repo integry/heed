@@ -85,6 +85,10 @@ export function ItemTimeBadge({
   );
 }
 
+export function DemoBadge() {
+  return <span className="demo-badge">Demo</span>;
+}
+
 export function ItemMarkers({
   item,
   items,
@@ -113,6 +117,7 @@ export function ItemMarkers({
   return (
     <span className="stream-meta" id={id}>
       {leading}
+      {item.demo === 1 && <DemoBadge />}
       {(item.agent_name || stale || active) && (
         <span className="stream-agent">
           {active && (

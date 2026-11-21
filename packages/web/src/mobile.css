@@ -150,6 +150,13 @@
     overflow: hidden;
   }
 
+  .lens-pane:has(> .onboarding-welcome) {
+    display: block;
+    overflow: auto;
+    padding: 12px max(12px, env(safe-area-inset-right)) 12px
+      max(12px, env(safe-area-inset-left));
+  }
+
   .radar,
   .treemap {
     position: relative;
@@ -198,6 +205,11 @@
     left: 16px;
     color: #edf2e8;
     border: 0;
+  }
+
+  .radar .guide-link,
+  .treemap .guide-link {
+    color: #aff6da;
   }
 
   .radar-chart,

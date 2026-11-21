@@ -12,11 +12,19 @@ import {
   ModelKeyHint,
   useCommandBar,
 } from "./CommandBar";
+import { DemoBadge } from "./item-markers";
 import { Panel } from "./workspace-controls";
 import type { StreamRow } from "@heedwork/core";
 import type { CanvasItem } from "@heedwork/core";
 import type { Dependency, Item } from "@heedwork/core";
 import { isDescendant } from "./dependency-graph";
+import {
+  GuideEmpty,
+  OnboardingGuide,
+  onboardingCompletion,
+  type OnboardingScreen,
+} from "./Onboarding";
+import { usePushEnabled } from "./PushSettings";
 import { Guidance } from "./Guidance";
 import { Inspector } from "./Inspector";
 import { QuickAdd } from "./QuickAdd";
@@ -115,6 +123,7 @@ function StreamItems({
           >
             <span className="stream-marker" aria-hidden="true" />
             <span className="item-title">{item.title}</span>
+            {item.demo === 1 && <DemoBadge />}
           </button>
           {children.length > 0 && (
             <StreamItems
@@ -211,7 +220,9 @@ function Workspace({
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [hiddenOnly, setHiddenOnly] = useState(false);
   const [panel, setPanel] = useState<{
-    kind: "guidance" | "settings" | "goal" | "child" | "command";
+    kind: "guidance" | "settings" | "goal" | "child" | "command" | "onboarding";
+    fromGuide?: boolean;
+    screen?: OnboardingScreen;
   } | null>(null);
   const clock = useMinuteClock();
   const desktop = useSyncExternalStore(subscribeDesktop, isDesktop);
@@ -239,6 +250,13 @@ function Workspace({
   const LensComponent = lens.component;
   const canvasLens = lens.id === "radar" || lens.id === "treemap";
   const live = state.connection === "live";
+  const autoGuide =
+    state.onboarding?.hasItems === false &&
+    !state.settings?.onboarding_dismissed;
+  const guideVisible = panel?.kind === "onboarding" || (autoGuide && !panel);
+  const notificationsEnabled = usePushEnabled(
+    guideVisible && options?.hideScreens?.includes("notifications") !== true,
+  );
   const dependencyError = dependencyEditGoal ? dependencyEdit.error : "";
   const showDependencyErrorInline =
     lens.id === "dependencies" && focusedGoal === dependencyEditGoal;
@@ -298,7 +316,36 @@ function Workspace({
     : [];
   // A save can finish after the same kind of panel has been reopened.
   const closePanel = () =>
-    setPanel((current) => (current === panel ? null : current));
+    setPanel((current) =>
+      current === panel
+        ? panel?.fromGuide
+          ? { kind: "onboarding" }
+          : null
+        : current,
+    );
+  const openGuide = state.onboarding
+    ? () => setPanel({ kind: "onboarding" })
+    : undefined;
+  const guide = state.onboarding && state.settings && (
+    <OnboardingGuide
+      completion={onboardingCompletion(
+        state.onboarding,
+        state.settings.guidance,
+        notificationsEnabled,
+      )}
+      loaded={state.onboarding.hasDemoData}
+      live={live}
+      save={connection.save}
+      hidden={options?.hideScreens}
+      openGoal={() => setPanel({ kind: "goal", fromGuide: true })}
+      openSettings={(screen) =>
+        setPanel({ kind: "settings", screen, fromGuide: true })
+      }
+      openGuidance={() => setPanel({ kind: "guidance", fromGuide: true })}
+      onDismiss={!state.settings.onboarding_dismissed ? closePanel : undefined}
+      onDemoLoad={closePanel}
+    />
+  );
   const openHistoryIds = useMemo(
     () =>
       new Set(
@@ -446,6 +493,7 @@ function Workspace({
             aria-hidden="true"
           />
           {project.name}
+          {project.demo === 1 && <DemoBadge />}
         </button>
       ))}
     </div>
@@ -632,47 +680,60 @@ function Workspace({
               </button>
             )}
           </div>
-          {state.settings && (
-            <LensComponent
-              tree={tree}
-              projects={projects}
-              items={view.items}
-              filtered={filtered}
-              changeDependency={changeDependency}
-              savingDependency={dependencyEdit.busy}
-              dependencies={dependencies}
-              selectedId={selection}
-              now={now}
-              timezone={timezone}
-              live={live}
-              showGhosts={showGhosts}
-              goalId={focusedGoal}
-              focusGoal={focusGoal}
-              openDependencies={
-                dependenciesLens && focusedGoal
-                  ? () => switchLens(dependenciesLens.id)
-                  : undefined
-              }
-              select={(id) => {
-                if (lens.id === "list" && id) selectStreamItem(id);
-                else
-                  setSelectedItem(
-                    id ? { id, inspectorOpen: desktop || !canvasLens } : null,
+          {autoGuide && panel?.kind !== "onboarding" ? (
+            <section
+              className="onboarding-welcome"
+              aria-labelledby="onboarding-heading"
+            >
+              <h2 id="onboarding-heading">Set up your workspace</h2>
+              {guide}
+            </section>
+          ) : (
+            state.settings && (
+              <LensComponent
+                openGuide={openGuide}
+                tree={tree}
+                projects={projects}
+                items={view.items}
+                filtered={filtered}
+                changeDependency={changeDependency}
+                savingDependency={dependencyEdit.busy}
+                dependencies={dependencies}
+                selectedId={selection}
+                now={now}
+                timezone={timezone}
+                live={live}
+                showGhosts={showGhosts}
+                goalId={focusedGoal}
+                focusGoal={focusGoal}
+                openDependencies={
+                  dependenciesLens && focusedGoal
+                    ? () => switchLens(dependenciesLens.id)
+                    : undefined
+                }
+                select={(id) => {
+                  if (lens.id === "list" && id) selectStreamItem(id);
+                  else
+                    setSelectedItem(
+                      id ? { id, inspectorOpen: desktop || !canvasLens } : null,
+                    );
+                  setLensSelection(
+                    id ? { id, scrollStreamOnly: lens.id === "treemap" } : null,
                   );
-                setLensSelection(
-                  id ? { id, scrollStreamOnly: lens.id === "treemap" } : null,
-                );
-                if (id) setHistory(false);
-              }}
-              move={connection.mutate}
-              reschedule={(id, date) => updateItem(id, { scheduled_on: date })}
-              moveProject={(id, project) => updateItem(id, { project })}
-              setPriority={(id, priority) => updateItem(id, { priority })}
-              setPosition={(id, position) => placeItem(id, lens.id, position)}
-              moveRadar={(id, { position, ...patch }, key = "radar") =>
-                placeItem(id, key, position, patch)
-              }
-            />
+                  if (id) setHistory(false);
+                }}
+                move={connection.mutate}
+                reschedule={(id, date) =>
+                  updateItem(id, { scheduled_on: date })
+                }
+                moveProject={(id, project) => updateItem(id, { project })}
+                setPriority={(id, priority) => updateItem(id, { priority })}
+                setPosition={(id, position) => placeItem(id, lens.id, position)}
+                moveRadar={(id, { position, ...patch }, key = "radar") =>
+                  placeItem(id, key, position, patch)
+                }
+              />
+            )
           )}
           {dependencyError && showDependencyErrorInline && (
             <p className="action-error" role="alert">
@@ -700,6 +761,7 @@ function Workspace({
           {peek && (
             <StreamPeek
               {...derived}
+              openGuide={openGuide}
               items={view.items}
               ready={state.settings !== null}
               selectedId={selectedId}
@@ -712,6 +774,8 @@ function Workspace({
           <div className="stream-panel" hidden={peek}>
             {history && (desktop || sheet.stop === "full") ? (
               <StreamHistory
+                demoLoaded={state.onboarding?.hasDemoData}
+                openGuide={openGuide}
                 projects={projects}
                 timezone={timezone}
                 live={live}
@@ -755,13 +819,16 @@ function Workspace({
                       }}
                     />
                   ) : (
-                    <p className="empty">No hidden items.</p>
+                    <GuideEmpty openGuide={openGuide}>
+                      No hidden items.
+                    </GuideEmpty>
                   )}
                 </div>
               </>
             ) : (
               <HorizonStream
                 {...derived}
+                openGuide={openGuide}
                 items={view.items}
                 dependencies={view.dependencies}
                 ready={state.settings !== null}
@@ -846,8 +913,18 @@ function Workspace({
           </button>
         </Panel>
       )}
+      {panel?.kind === "onboarding" && guide && (
+        <Panel
+          title="Set up your workspace"
+          className="onboarding-panel"
+          close={closePanel}
+        >
+          {guide}
+        </Panel>
+      )}
       {panel?.kind === "guidance" && state.settings && (
         <Guidance
+          showExamples={panel.fromGuide}
           settings={state.settings}
           live={live}
           save={connection.save}
@@ -856,6 +933,9 @@ function Workspace({
       )}
       {panel?.kind === "settings" && (
         <Settings
+          focus={panel.screen}
+          openGuide={openGuide}
+          demoLoaded={state.onboarding?.hasDemoData ?? false}
           projects={projects}
           items={state.items}
           timezone={timezone}

@@ -218,7 +218,7 @@ Design notes:
 ```sql
 CREATE TABLE settings (
   key TEXT PRIMARY KEY,                     -- 'schema_version', 'timezone' (IANA, e.g. 'Europe/Tallinn'),
-  value TEXT NOT NULL                       -- 'guidance' (free-form text), 'guidance_updated_at'
+  value TEXT NOT NULL                       -- 'guidance' (free-form text), 'guidance_updated_at', 'onboarding_dismissed'
 );
 
 CREATE TABLE projects (
@@ -226,7 +226,8 @@ CREATE TABLE projects (
   name TEXT NOT NULL UNIQUE,
   color TEXT,
   sort INTEGER NOT NULL DEFAULT 0,
-  hidden INTEGER NOT NULL DEFAULT 0         -- view toggle
+  hidden INTEGER NOT NULL DEFAULT 0,        -- view toggle
+  demo INTEGER NOT NULL DEFAULT 0 CHECK (demo IN (0, 1))
 );                                          -- a built-in 'Inbox' project always exists
 
 CREATE TABLE items (
@@ -254,6 +255,7 @@ CREATE TABLE items (
   ref_url TEXT,
   note TEXT,                                -- latest one-line status
   hidden INTEGER NOT NULL DEFAULT 0,        -- view toggle; steer-only
+  demo INTEGER NOT NULL DEFAULT 0 CHECK (demo IN (0, 1)),
   last_heartbeat_at TEXT,
   completed_at TEXT,
   completed_band TEXT,                      -- radar ring at completion, retained for ghosts
@@ -396,10 +398,14 @@ Agents only report if the tool text tells them when to. The server `instructions
 ## 7. Real-Time & Voice Protocol
 
 * **WebSocket (`/ws`)**
-  * On connect the DO sends `{ type: "SNAPSHOT", settings, projects, items, dependencies }`. `items` contains every open item plus ghosts, and per-parent done/total counts; older history is not included.
+  * On connect the DO sends `{ type: "SNAPSHOT", settings, projects, items, dependencies, onboarding }`. `items` contains every open item plus ghosts, and per-parent done/total counts; older history is not included.
   * On any change it broadcasts `ITEM_UPSERT`, `ITEM_REMOVE`, `PROJECT_UPSERT`, `DEPENDENCY_ADD` or `DEPENDENCY_REMOVE`.
   * Uses the WebSocket Hibernation API so idle tabs do not keep the DO running.
   * History is fetched on demand: `GET /api/history?q=&project=&before=`. An item's timeline comes from `GET /api/items/:id/events`.
+* **First-run setup**
+  * An empty workspace shows the guide until it is dismissed. Dismissal belongs to the workspace. Settings and empty lens and stream views can reopen the guide.
+  * The snapshot includes onboarding status from stored items, projects, and tokens. The notification step checks this browser's registered push subscription.
+  * Demo items and projects carry a stored flag. Demo load and removal are atomic WebSocket operations that broadcast a replacement canvas. Removing demo data preserves real items. It reattaches them to the nearest surviving ancestor and moves them to Inbox if their project was removed.
 * **Push**
   * The browser registers a Web Push subscription after sign-in (`POST /api/push/subscribe`).
   * A push is sent only when an agent raises a handoff with `notify: true`. The text is the item title plus the handoff note; tapping it opens the item.

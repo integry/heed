@@ -30,13 +30,21 @@ it("migrates a fresh object and seeds Inbox", async () => {
   const stub = newWorkspace();
   const settings = await stub.getSettings();
   expect(SettingsSchema.parse(settings)).toEqual({
-    schema_version: 4,
+    schema_version: 5,
+    onboarding_dismissed: false,
     timezone: "UTC",
     guidance: "",
     guidance_updated_at: null,
   });
   expect(await stub.listProjects()).toEqual([
-    { id: INBOX_PROJECT_ID, name: "Inbox", color: null, sort: 0, hidden: 0 },
+    {
+      id: INBOX_PROJECT_ID,
+      name: "Inbox",
+      color: null,
+      sort: 0,
+      hidden: 0,
+      demo: 0,
+    },
   ]);
 
   const schema = await runInDurableObject(stub, (_, { storage: { sql } }) =>
@@ -73,7 +81,8 @@ it("keeps the migration and stored data intact across an eviction", async () => 
   await evictDurableObject(stub);
 
   expect(await stub.getSettings()).toEqual({
-    schema_version: 4,
+    schema_version: 5,
+    onboarding_dismissed: false,
     timezone: "Europe/Tallinn",
     ...guidance,
   });
@@ -92,6 +101,7 @@ it("creates, lists, updates and deletes projects", async () => {
     color: "#0033ff",
     sort: 0,
     hidden: 0,
+    demo: 0,
   });
   const updated = await stub.updateProject(project.id, {
     name: "Engineering",

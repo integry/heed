@@ -1,3 +1,5 @@
+import { DemoBadge } from "./item-markers";
+import { GuideEmpty } from "./Onboarding";
 import {
   useCallback,
   useEffect,
@@ -40,6 +42,7 @@ function DependencyGraph({
   showGhosts,
   changeDependency,
   savingDependency,
+  openGuide,
 }: LensProps) {
   const arrow = useId();
   const chart = useRef<HTMLDivElement>(null);
@@ -87,6 +90,10 @@ function DependencyGraph({
     const goals = [...filtered.values()]
       .filter(({ parent_id }) => parent_id === null)
       .sort((a, b) => a.title.localeCompare(b.title));
+    if (!goals.length)
+      return (
+        <GuideEmpty openGuide={openGuide}>No goals in this view.</GuideEmpty>
+      );
     return (
       <div className="dependency-picker">
         <p>Pick a goal to see its dependencies.</p>
@@ -352,6 +359,7 @@ function DependencyGraph({
                       <span className="dependency-title" title={item.title}>
                         {item.title}
                       </span>
+                      {item.demo === 1 && <DemoBadge />}
                       <span className="dependency-meta">
                         <span className="item-status" data-status={status}>
                           {status}
@@ -422,7 +430,9 @@ function DependencyGraph({
           )}
         </>
       ) : (
-        <p className="empty">No items in this goal’s current view.</p>
+        <GuideEmpty openGuide={openGuide}>
+          No items in this goal’s current view.
+        </GuideEmpty>
       )}
     </div>
   );

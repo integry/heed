@@ -108,6 +108,13 @@ const migrations = [
       );
     `);
   },
+  // Version 5
+  (sql: SqlStorage) => {
+    sql.exec(`
+      ALTER TABLE projects ADD COLUMN demo INTEGER NOT NULL DEFAULT 0 CHECK (demo IN (0, 1));
+      ALTER TABLE items ADD COLUMN demo INTEGER NOT NULL DEFAULT 0 CHECK (demo IN (0, 1));
+    `);
+  },
 ];
 
 export function migrateWorkspace(storage: DurableObjectStorage): void {
