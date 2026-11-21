@@ -820,16 +820,21 @@ function WorkspaceData({ live, save }: SettingsActions) {
 
 function ShadowJudgeAgreement({ revision }: { revision: number }) {
   const { data, error, reload } = useResource<JudgeAgreement>(
-    "/api/judge/agreement",
+    revision > 0 ? "/api/judge/agreement" : null,
     revision,
   );
-  if (!data?.verdicts && !error) return null;
+  const agreement = data?.reviewed
+    ? new Intl.NumberFormat(undefined, {
+        style: "percent",
+        maximumFractionDigits: 1,
+      }).format(data.agreed / data.reviewed)
+    : "—";
   return (
     <section
       className="settings-section"
       aria-labelledby="judge-agreement-heading"
     >
-      <h3 id="judge-agreement-heading">Shadow judge agreement</h3>
+      <h3 id="judge-agreement-heading">Shadow judge</h3>
       {error ? (
         <div className="inline-actions">
           <p role="alert">Couldn’t load judge agreement.</p>
@@ -837,14 +842,27 @@ function ShadowJudgeAgreement({ revision }: { revision: number }) {
             Retry
           </button>
         </div>
+      ) : !data ? (
+        <p className="muted">Loading judge agreement…</p>
+      ) : !data.verdicts ? (
+        <p className="muted">
+          No verdicts yet. Judging is optional and configured by your host.
+        </p>
       ) : (
-        data && (
-          <p className="muted">
-            {data.reviewed} of {data.verdicts} verdicts reviewed.
-            {data.reviewed > 0 &&
-              ` Agreed with ${data.agreed} of ${data.reviewed} reviewed verdicts (${Math.round((100 * data.agreed) / data.reviewed)}%).`}
-          </p>
-        )
+        <dl className="judge-totals">
+          <div>
+            <dt>Verdicts</dt>
+            <dd>{data.verdicts}</dd>
+          </div>
+          <div>
+            <dt>With feedback</dt>
+            <dd>{data.reviewed}</dd>
+          </div>
+          <div>
+            <dt>Agreement rate</dt>
+            <dd>{agreement}</dd>
+          </div>
+        </dl>
       )}
     </section>
   );
@@ -903,7 +921,7 @@ export function Settings({
         </section>
       )}
       {show("notifications") && <PushSettings key={resetVersion} />}
-      {!focus && judgeAgreementRevision > 0 && (
+      {show("shadow-judge") && (
         <ShadowJudgeAgreement revision={judgeAgreementRevision} />
       )}
       {show("projects") && (
