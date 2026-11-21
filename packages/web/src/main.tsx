@@ -1,15 +1,4 @@
-import { createRoot } from "react-dom/client";
-import { PwaUpdate } from "./PwaUpdate";
-import { App } from "./App";
-import "./styles.css";
-import "./mobile.css";
+import { mountApp } from "./library";
 
 const root = document.getElementById("root");
-if (root) {
-  createRoot(root).render(
-    <>
-      <App />
-      <PwaUpdate />
-    </>,
-  );
-}
+if (root) mountApp(root);

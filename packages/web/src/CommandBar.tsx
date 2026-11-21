@@ -1,11 +1,8 @@
+import { useApi } from "./api";
 import { useEffect, useRef, useState } from "react";
 import { COMMAND_TEXT_LIMIT, VOICE_SECONDS } from "@heedwork/core";
 import type { CommandResult } from "@heedwork/core";
-import {
-  postCommandApi,
-  voiceAvailable,
-  voiceTranscript,
-} from "./command-voice";
+import { voiceAvailable, voiceTranscript } from "./command-voice";
 import { useAction } from "./workspace-controls";
 import type { SaveMutation } from "./workspace-controls";
 
@@ -30,6 +27,7 @@ export function useCommandBar(
   transcription: boolean,
   visible: boolean,
 ) {
+  const { postJson, requestJson } = useApi();
   const [draft, setDraft] = useState("");
   const [summary, setSummary] = useState("");
   const [undoId, setUndoId] = useState<string>();
@@ -73,6 +71,7 @@ export function useCommandBar(
     );
     void voiceTranscript({
       fallback: transcription,
+      requestJson,
       preferRecording,
       stopped: stopped.signal,
       cancelled: cancelled.signal,
@@ -131,11 +130,7 @@ export function useCommandBar(
     void action.run(async () => {
       setClarificationTooLong(false);
       setVoiceError("");
-      const result = await postCommandApi<CommandResult>(
-        "/api/command",
-        JSON.stringify({ text }),
-        "application/json",
-      );
+      const result = await postJson<CommandResult>("/api/command", { text });
       setDraft("");
       setSummary(result.summary);
       setRequest(result.needsClarification ? { original, replies } : undefined);
@@ -304,5 +299,13 @@ export function CommandBar({
         )}
       </div>
     </div>
+  );
+}
+
+export function ModelKeyHint() {
+  return (
+    <p className="muted">
+      Configure Workers AI or an Anthropic key to enable workspace commands.
+    </p>
   );
 }
