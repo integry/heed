@@ -1,5 +1,5 @@
 import { DemoBadge } from "./item-markers";
-import { useResource } from "./api";
+import { useResource, type Resource } from "./api";
 import { useEffect, useRef, useState } from "react";
 import {
   classifyJudgeProbability,
@@ -9,9 +9,11 @@ import {
   UpdateItemSchema,
 } from "@heedwork/core";
 import type { LockableField, UpdateItemInput } from "@heedwork/core";
-import { effectiveSchedule, streamOrder } from "@heedwork/core";
+import { effectiveSchedule, progress, streamOrder } from "@heedwork/core";
 import type {
+  CanvasItem,
   Dependency,
+  JudgedDetail,
   Event,
   Item,
   Project,
@@ -63,337 +65,388 @@ function eventSummary(event: Event, detail: Record<string, unknown> | null) {
   }
 }
 
-function ShadowVerdict({
-  event,
-  feedback,
-  live,
-  save,
-}: {
-  event: Event;
-  feedback: boolean | undefined;
-  live: boolean;
-  save: SaveMutation;
-}) {
-  const { run, busy, error } = useAction();
-  const parsed = JudgedDetailSchema.safeParse(
-    JSON.parse(event.detail ?? "null"),
-  );
-  if (!parsed.success) return null;
-  const { criteria, probabilities, model, evidence_supplied } = parsed.data;
-
-  return (
-    <section
-      className="inspector-section"
-      aria-labelledby="shadow-verdict-heading"
-    >
-      <h3 id="shadow-verdict-heading">Shadow verdict</h3>
-      <div className="form-stack">
-        <small className="muted shadow-model">
-          {model} ·{" "}
-          {evidence_supplied ? "Evidence supplied" : "No evidence supplied"}
-        </small>
-        <dl className="shadow-criteria">
-          {criteria.map((criterion, index) => (
-            <div key={index}>
-              <dt>{criterion}</dt>
-              <dd>
-                {classifyJudgeProbability(probabilities[index])} ·{" "}
-                {probabilities[index] === null
-                  ? "No probability"
-                  : percent.format(probabilities[index])}
-              </dd>
-            </div>
-          ))}
-        </dl>
-        <p className="muted">Advisory only. This verdict changes nothing.</p>
-        <div className="inline-actions">
-          {[true, false].map((agrees) => (
-            <button
-              key={String(agrees)}
-              type="button"
-              className={feedback === agrees ? "primary" : "subtle"}
-              aria-pressed={feedback === agrees}
-              disabled={!live || busy}
-              onClick={() => {
-                if (feedback === agrees) return;
-                void run(() =>
-                  save(
-                    {
-                      type: "JUDGE_FEEDBACK",
-                      input: {
-                        item_id: event.item_id,
-                        judged_event_id: event.id,
-                        agrees,
-                      },
-                    },
-                    { callerReportsError: true },
-                  ),
-                );
-              }}
-            >
-              {agrees ? "Agree" : "Disagree"}
-            </button>
-          ))}
-        </div>
-        {error && <p role="alert">{error}</p>}
-      </div>
-    </section>
-  );
-}
-
 const percent = new Intl.NumberFormat(undefined, {
   style: "percent",
   maximumFractionDigits: 2,
 });
 
-function Activity({
-  item,
-  timezone,
-  revision,
+function VerdictScore({ probability }: { probability: number | null }) {
+  return (
+    <span className="verdict-score">
+      {classifyJudgeProbability(probability)} ·{" "}
+      {probability === null ? "No probability" : percent.format(probability)}
+    </span>
+  );
+}
+
+function ShadowVerdict({
+  event,
+  detail,
+  matches,
+  events,
   live,
   save,
 }: {
-  item: Item;
-  timezone: string;
-  revision: string;
+  event: Event;
+  detail: JudgedDetail;
+  matches: boolean;
+  events: Event[];
   live: boolean;
   save: SaveMutation;
 }) {
-  const itemId = item.id;
-  // Heartbeat and layout broadcasts do not add activity entries.
-  const eventFields = JSON.stringify([
-    revision,
-    item.status,
-    item.note,
-    item.handoff,
-    item.handoff_note,
-    item.reopen_count,
-    item.scheduled_on,
-    item.project_id,
-    item.parent_id,
-  ]);
-  const { data, error, reload } = useResource<Event[]>(
-    `/api/items/${encodeURIComponent(itemId)}/events`,
-    eventFields,
-  );
-  const events = Array.isArray(data) ? data : undefined;
-  // The activity endpoint returns the newest events first.
-  const verdict = events?.find((event) => event.kind === "judged");
+  const { run, busy, error } = useAction();
+  const { criteria, probabilities, model, evidence_supplied } = detail;
   let feedback: { id: number; agrees: boolean } | undefined;
-  for (const event of events ?? []) {
+  for (const entry of events) {
     if (
-      event.kind !== "judge_feedback" ||
-      (feedback && event.id <= feedback.id)
+      entry.kind !== "judge_feedback" ||
+      (feedback && entry.id <= feedback.id)
     )
       continue;
     const parsed = JudgeFeedbackDetailSchema.safeParse(
-      JSON.parse(event.detail ?? "null"),
+      JSON.parse(entry.detail ?? "null"),
     );
-    if (parsed.success && parsed.data.judged_event_id === verdict?.id)
-      feedback = { id: event.id, agrees: parsed.data.agrees };
+    if (parsed.success && parsed.data.judged_event_id === event.id)
+      feedback = { id: entry.id, agrees: parsed.data.agrees };
   }
+
+  return (
+    <section
+      className="shadow-verdict form-stack"
+      aria-labelledby="shadow-verdict-heading"
+    >
+      <h4 id="shadow-verdict-heading">Shadow verdict</h4>
+      {!matches && (
+        <>
+          <p className="muted">Judged against earlier criteria</p>
+          <ul className="acceptance-list">
+            {criteria.map((criterion, index) => (
+              <li key={index}>
+                <span>{criterion}</span>
+                <VerdictScore probability={probabilities[index]} />
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <small className="muted">
+        {model} ·{" "}
+        {evidence_supplied ? "Evidence supplied" : "No evidence supplied"}
+      </small>
+      <div className="inline-actions">
+        <span className="muted">Advisory only</span>
+        {[true, false].map((agrees) => (
+          <button
+            key={String(agrees)}
+            type="button"
+            className={feedback?.agrees === agrees ? "primary" : "subtle"}
+            aria-pressed={feedback?.agrees === agrees}
+            disabled={!live || busy}
+            onClick={() => {
+              if (feedback?.agrees === agrees) return;
+              void run(() =>
+                save(
+                  {
+                    type: "JUDGE_FEEDBACK",
+                    input: {
+                      item_id: event.item_id,
+                      judged_event_id: event.id,
+                      agrees,
+                    },
+                  },
+                  { callerReportsError: true },
+                ),
+              );
+            }}
+          >
+            {agrees ? "Agree" : "Disagree"}
+          </button>
+        ))}
+      </div>
+      {error && <p role="alert">{error}</p>}
+    </section>
+  );
+}
+
+function Activity({
+  resource,
+  timezone,
+}: {
+  resource: Resource<Event[]>;
+  timezone: string;
+}) {
+  const { data, error, reload } = resource;
+  const events = Array.isArray(data) ? data : undefined;
   const message =
     error?.message ??
     (data !== undefined && !events ? "Couldn’t load activity." : "");
 
   return (
-    <>
-      {verdict && (
-        <ShadowVerdict
-          key={verdict.id}
-          event={verdict}
-          feedback={feedback?.agrees}
-          live={live}
-          save={save}
-        />
+    <section className="inspector-section">
+      <h3>Activity</h3>
+      {message ? (
+        <div className="inline-actions">
+          <p role="alert">{message}</p>
+          <button type="button" className="subtle" onClick={reload}>
+            Retry
+          </button>
+        </div>
+      ) : !events ? (
+        <p className="muted">Loading activity…</p>
+      ) : events.length === 0 ? (
+        <p className="muted">No activity yet.</p>
+      ) : (
+        <ol className="activity-list">
+          {events.map((event) => {
+            const detail = JSON.parse(event.detail ?? "null");
+            const evidence =
+              event.kind === "status" &&
+              detail?.new === "done" &&
+              typeof detail.evidence === "string"
+                ? detail.evidence
+                : undefined;
+            return (
+              <li key={event.id}>
+                <span>{eventSummary(event, detail)}</span>
+                {evidence && (
+                  <details className="activity-evidence">
+                    <summary>Evidence</summary>
+                    <pre tabIndex={0}>{evidence}</pre>
+                  </details>
+                )}
+                <small>
+                  {typeof event.actor === "string"
+                    ? event.actor
+                    : event.actor.name || event.actor.email}{" "}
+                  · <time>{dateLabel(event.at, timezone)}</time>
+                </small>
+              </li>
+            );
+          })}
+        </ol>
       )}
-      <section className="inspector-section">
-        <h3>Activity</h3>
-        {message ? (
-          <div className="inline-actions">
-            <p role="alert">{message}</p>
-            <button type="button" className="subtle" onClick={reload}>
-              Retry
-            </button>
-          </div>
-        ) : !events ? (
-          <p className="muted">Loading activity…</p>
-        ) : events.length === 0 ? (
-          <p className="muted">No activity yet.</p>
-        ) : (
-          <ol className="activity-list">
-            {events.map((event) => {
-              const detail = JSON.parse(event.detail ?? "null");
-              const evidence =
-                event.kind === "status" &&
-                detail?.new === "done" &&
-                typeof detail.evidence === "string"
-                  ? detail.evidence
-                  : undefined;
-              return (
-                <li key={event.id}>
-                  <span>{eventSummary(event, detail)}</span>
-                  {evidence && (
-                    <details className="activity-evidence">
-                      <summary>Evidence</summary>
-                      <pre tabIndex={0}>{evidence}</pre>
-                    </details>
-                  )}
-                  <small>
-                    {typeof event.actor === "string"
-                      ? event.actor
-                      : event.actor.name || event.actor.email}{" "}
-                    · <time>{dateLabel(event.at, timezone)}</time>
-                  </small>
-                </li>
-              );
-            })}
-          </ol>
-        )}
-      </section>
-    </>
+    </section>
+  );
+}
+
+function LockMark({ field }: { field: LockableField }) {
+  const label = `${lockLabels[field]} locked`;
+  return (
+    <span className="lock-mark" role="img" aria-label={label} title={label} />
   );
 }
 
 function AcceptanceCriteria({
   item,
   disabled,
+  locked,
+  events,
   save,
 }: {
   item: Item;
   disabled: boolean;
+  locked: boolean;
+  events: Event[];
   save: SaveMutation;
 }) {
-  const [draft, setDraft] = useState<{ original: string; values: string[] }>();
+  const [draft, setDraft] = useState<{
+    original: string;
+    index: number;
+    value: string;
+  }>();
   const { run, busy, error } = useAction();
   const stored = JSON.parse(item.acceptance) as string[];
-  const values = draft?.values ?? stored;
-  const input = UpdateItemSchema.safeParse({
-    item_id: item.id,
-    acceptance: values,
-  });
-  const changed =
-    input.success && JSON.stringify(input.data.acceptance) !== item.acceptance;
-  const conflict = !busy && draft && draft.original !== item.acceptance;
+  const verdict = events.find(({ kind }) => kind === "judged");
+  const detail = verdict
+    ? JudgedDetailSchema.safeParse(JSON.parse(verdict.detail ?? "null")).data
+    : undefined;
+  const matches =
+    detail?.criteria.length === stored.length &&
+    stored.every((criterion, index) => detail.criteria[index] === criterion);
   const unavailable = disabled || busy;
+  const conflict = Boolean(
+    draft && !busy && draft.original !== item.acceptance,
+  );
+  const edited = [...stored];
+  if (draft) edited[draft.index] = draft.value.trim();
+  const validation =
+    draft && draft.value.trim() && !conflict
+      ? UpdateItemSchema.safeParse({ item_id: item.id, acceptance: edited })
+      : undefined;
+  const buttons = useRef(new Map<number, HTMLButtonElement>());
+  const returnFocus = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!draft && returnFocus.current !== undefined) {
+      (
+        buttons.current.get(returnFocus.current) ?? buttons.current.get(-1)
+      )?.focus();
+      returnFocus.current = undefined;
+    }
+  }, [draft]);
 
-  function edit(next: string[]) {
-    setDraft({ original: draft?.original ?? item.acceptance, values: next });
+  function finish() {
+    returnFocus.current = draft?.index;
+    setDraft(undefined);
   }
 
-  function move(index: number, direction: -1 | 1) {
-    const next = [...values];
-    const target = index + direction;
-    [next[index], next[target]] = [next[target], next[index]];
-    edit(next);
+  function persist(acceptance: string[]) {
+    const input = UpdateItemSchema.parse({ item_id: item.id, acceptance });
+    return save({ type: "UPDATE_ITEM", input }, { callerReportsError: true });
+  }
+
+  function submit() {
+    if (!draft || unavailable || !validation?.success) return;
+    if (edited[draft.index] === stored[draft.index]) {
+      finish();
+      return;
+    }
+    void run(async () => {
+      await persist(edited);
+      finish();
+    });
+  }
+
+  function editor(index: number) {
+    if (draft?.index !== index) return null;
+    return (
+      <form
+        className="form-stack"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <textarea
+          autoFocus
+          aria-label={`Criterion ${index + 1}`}
+          rows={2}
+          required
+          value={draft.value}
+          disabled={unavailable}
+          onChange={(event) =>
+            setDraft({ ...draft, value: event.target.value })
+          }
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (event.key === "Escape") {
+              event.preventDefault();
+              if (!busy) finish();
+            } else if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <div className="inline-actions">
+          <button
+            className="subtle"
+            disabled={unavailable || !validation?.success}
+          >
+            Save criterion
+          </button>
+          <button
+            type="button"
+            className="subtle"
+            disabled={busy}
+            onClick={finish}
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  function start(index: number, value: string) {
+    setDraft({ original: item.acceptance, index, value });
+  }
+
+  function focusRef(index: number) {
+    return (button: HTMLButtonElement | null) => {
+      if (button) buttons.current.set(index, button);
+      else buttons.current.delete(index);
+    };
   }
 
   return (
     <section className="inspector-section" aria-labelledby="acceptance-heading">
-      <h3 id="acceptance-heading">Acceptance criteria</h3>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (unavailable || conflict || !changed) return;
-          void run(async () => {
-            await save(
-              { type: "UPDATE_ITEM", input: input.data },
-              { callerReportsError: true },
-            );
-            setDraft(undefined);
-          });
-        }}
-      >
-        <fieldset className="form-stack" disabled={unavailable}>
-          {values.length === 0 ? (
-            <p className="muted">No acceptance criteria yet.</p>
-          ) : (
-            <ol className="form-stack acceptance-list">
-              {values.map((criterion, index) => (
-                <li key={index}>
-                  <label className="form-field">
-                    Criterion {index + 1}
-                    <textarea
-                      rows={2}
-                      value={criterion}
-                      onChange={(event) =>
-                        edit(
-                          values.map((value, i) =>
-                            i === index ? event.target.value : value,
-                          ),
-                        )
-                      }
-                    />
-                  </label>
-                  <div className="inline-actions">
-                    <button
-                      type="button"
-                      className="subtle"
-                      aria-label={`Move criterion ${index + 1} up`}
-                      disabled={index === 0}
-                      onClick={() => move(index, -1)}
-                    >
-                      Move up
-                    </button>
-                    <button
-                      type="button"
-                      className="subtle"
-                      aria-label={`Move criterion ${index + 1} down`}
-                      disabled={index === values.length - 1}
-                      onClick={() => move(index, 1)}
-                    >
-                      Move down
-                    </button>
-                    <button
-                      type="button"
-                      className="subtle"
-                      aria-label={`Remove criterion ${index + 1}`}
-                      onClick={() => edit(values.filter((_, i) => i !== index))}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ol>
-          )}
-          <div className="inline-actions">
-            <button
-              type="button"
-              className="subtle"
-              disabled={values.length >= 8 || Boolean(conflict)}
-              onClick={() => edit([...values, ""])}
-            >
-              Add criterion
-            </button>
-            {draft && (
-              <>
-                <button
-                  className="primary"
-                  disabled={!changed || Boolean(conflict)}
-                >
-                  Save criteria
-                </button>
+      <h3 id="acceptance-heading">
+        Acceptance criteria {locked && <LockMark field="acceptance" />}
+      </h3>
+      {stored.length === 0 ? (
+        <p className="muted">No acceptance criteria yet.</p>
+      ) : (
+        <ol className="acceptance-list">
+          {stored.map((criterion, index) => (
+            <li key={index}>
+              {draft?.index === index ? (
+                editor(index)
+              ) : (
                 <button
                   type="button"
-                  className="subtle"
-                  onClick={() => setDraft(undefined)}
+                  className="inline-edit criterion-text"
+                  ref={focusRef(index)}
+                  disabled={unavailable || Boolean(draft)}
+                  onClick={() => start(index, criterion)}
                 >
-                  Cancel
+                  {criterion}
                 </button>
-              </>
-            )}
-          </div>
-        </fieldset>
-        {conflict ? (
-          <p role="alert">
-            Criteria changed elsewhere. Cancel to load the latest version.
-          </p>
-        ) : !input.success ? (
-          <p className="muted">{input.error.issues[0].message}</p>
-        ) : null}
-        {error && <p role="alert">{error}</p>}
-      </form>
+              )}
+              {matches && (
+                <VerdictScore probability={detail.probabilities[index]} />
+              )}
+              {draft?.index !== index && (
+                <button
+                  type="button"
+                  className="criterion-remove subtle"
+                  aria-label={`Remove criterion ${index + 1}`}
+                  disabled={unavailable || Boolean(draft)}
+                  onClick={() =>
+                    void run(() =>
+                      persist(stored.filter((_, i) => i !== index)),
+                    )
+                  }
+                >
+                  ×
+                </button>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+      {draft && draft.index >= stored.length ? (
+        editor(draft.index)
+      ) : (
+        <button
+          type="button"
+          className="subtle criterion-add"
+          ref={focusRef(-1)}
+          disabled={unavailable || Boolean(draft) || stored.length >= 8}
+          onClick={() => start(stored.length, "")}
+        >
+          Add criterion
+        </button>
+      )}
+      {conflict && (
+        <p role="alert">
+          Criteria changed elsewhere. Cancel to load the latest version.
+        </p>
+      )}
+      {validation && !validation.success && (
+        <p className="muted">{validation.error.issues[0].message}</p>
+      )}
+      {error && <p role="alert">{error}</p>}
+      {verdict && detail && (
+        <ShadowVerdict
+          key={verdict.id}
+          event={verdict}
+          detail={detail}
+          matches={matches}
+          events={events}
+          live={!disabled}
+          save={save}
+        />
+      )}
     </section>
   );
 }
@@ -431,7 +484,7 @@ export function Inspector({
 }: {
   drawer: boolean;
   activityRevision: string;
-  item: Item;
+  item: Item | CanvasItem;
   projects: readonly Project[];
   items: ReadonlyMap<string, Item>;
   dependencies: readonly Dependency[];
@@ -448,6 +501,15 @@ export function Inspector({
     if (drawer) dialog.current?.showModal();
   }, [drawer]);
   const [title, setTitle] = useState<string>();
+  const titleButton = useRef<HTMLButtonElement>(null);
+  const restoreTitleFocus = useRef(false);
+  useEffect(() => {
+    if (title === undefined && restoreTitleFocus.current) {
+      titleButton.current?.focus();
+      restoreTitleFocus.current = false;
+    }
+  }, [title]);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [note, setNote] = useState<string>();
   const [details, setDetails] = useState<Partial<DetailDraft>>({});
   const [tagDraft, setTagDraft] = useState<{
@@ -467,6 +529,23 @@ export function Inspector({
         ),
       )
     : [];
+  const { done, total } =
+    "progress" in item ? item.progress : progress(item, [...items.values()]);
+  const activity = useResource<Event[]>(
+    `/api/items/${encodeURIComponent(item.id)}/events`,
+    JSON.stringify([
+      activityRevision,
+      item.status,
+      item.completed_at,
+      item.note,
+      item.handoff,
+      item.handoff_note,
+      item.reopen_count,
+      item.scheduled_on,
+      item.project_id,
+      item.parent_id,
+    ]),
+  );
   const baseline: DetailDraft = {
     project: item.project_id,
     priority: item.priority,
@@ -535,6 +614,24 @@ export function Inspector({
     setNewTag("");
   }
 
+  function finishTitle() {
+    restoreTitleFocus.current = true;
+    setTitle(undefined);
+  }
+
+  function submitTitle() {
+    const value = title?.trim();
+    if (disabled || !value) return;
+    if (value === item.title) {
+      finishTitle();
+      return;
+    }
+    void run(async () => {
+      await update({ title: value });
+      finishTitle();
+    });
+  }
+
   function saveDetails() {
     return run(async () => {
       const patch: Omit<UpdateItemInput, "item_id"> = {};
@@ -577,33 +674,60 @@ export function Inspector({
       </header>
       <div className="inspector-body">
         {item.demo === 1 && <DemoBadge />}
-        <form
-          className="inspector-title"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const value = (title ?? item.title).trim();
-            if (!value || value === item.title) return;
-            void run(async () => {
-              await update({ title: value });
-              setTitle(undefined);
-            });
-          }}
-        >
-          <label className="form-field">
-            Title
+        {title === undefined ? (
+          <h3 className="inspector-title" aria-label={item.title}>
+            <button
+              type="button"
+              className="inline-edit"
+              ref={titleButton}
+              aria-label={`${item.title} — edit title`}
+              disabled={disabled}
+              onClick={() => setTitle(item.title)}
+            >
+              {item.title}
+            </button>
+          </h3>
+        ) : (
+          <form
+            className="form-stack"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submitTitle();
+            }}
+          >
             <input
+              autoFocus
+              aria-label="Title"
               required
-              value={title ?? item.title}
+              value={title}
               disabled={disabled}
               onChange={(event) => setTitle(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return;
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  if (!busy) finishTitle();
+                } else if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitTitle();
+                }
+              }}
             />
-          </label>
-          {title !== undefined && title.trim() !== item.title && (
-            <button className="subtle" disabled={disabled}>
-              Save title
-            </button>
-          )}
-        </form>
+            <div className="inline-actions">
+              <button className="subtle" disabled={disabled || !title.trim()}>
+                Save title
+              </button>
+              <button
+                type="button"
+                className="subtle"
+                disabled={busy}
+                onClick={finishTitle}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
         <div className="inspector-summary">
           <strong className="status-pill">{item.status}</strong>
           <span>{item.agent_name ?? "Human"}</span>
@@ -615,11 +739,76 @@ export function Inspector({
               : "—"}
           </small>
         </div>
-        {error && (
-          <p className="action-error" role="alert">
-            {error}
-          </p>
+        <div className="inspector-note">
+          <h4>Latest note</h4>
+          {note !== undefined ? (
+            <form
+              className="form-stack note-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (disabled || note === (item.note ?? "")) return;
+                void run(async () => {
+                  await save({
+                    type: "SET_NOTE",
+                    input: { item_id, note: note.trim() || null },
+                  });
+                  setNote(undefined);
+                });
+              }}
+            >
+              <label className="form-field">
+                Note
+                <textarea
+                  autoFocus
+                  rows={2}
+                  value={note}
+                  disabled={disabled}
+                  onChange={(event) => setNote(event.target.value)}
+                />
+              </label>
+              <div className="inline-actions">
+                <button
+                  className="subtle"
+                  disabled={disabled || note === (item.note ?? "")}
+                >
+                  Save note
+                </button>
+                <button
+                  type="button"
+                  className="subtle"
+                  disabled={busy}
+                  onClick={() => setNote(undefined)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <>
+              {item.note && <p>{item.note}</p>}
+              <button
+                type="button"
+                className="inline-edit muted"
+                disabled={disabled}
+                onClick={() => setNote(item.note ?? "")}
+              >
+                {item.note ? "Edit note" : "Add note"}
+              </button>
+            </>
+          )}
+        </div>
+        {link && (
+          <a href={link} target="_blank" rel="noreferrer">
+            Open link ↗
+          </a>
         )}
+        <AcceptanceCriteria
+          item={item}
+          disabled={disabled}
+          locked={locks.includes("acceptance")}
+          events={Array.isArray(activity.data) ? activity.data : []}
+          save={save}
+        />
         {item.handoff === 1 && (
           <div className="handoff-card">
             <strong>Needs input</strong>
@@ -628,15 +817,369 @@ export function Inspector({
               type="button"
               className="subtle"
               disabled={disabled}
-              onClick={() =>
-                void run(() =>
-                  save({ type: "CLEAR_HANDOFF", input: { item_id } }),
-                )
-              }
+              onClick={() => {
+                setReason(item.handoff_note ?? "");
+                setAction("handoff");
+              }}
             >
-              Clear handoff
+              Edit handoff
             </button>
           </div>
+        )}
+        <section className="inspector-section">
+          <h3>Child progress</h3>
+          <p className="muted">
+            {total ? `${done} of ${total} complete` : "No child items."}
+          </p>
+          {selectChild && children.length > 0 && (
+            <ul className="item-list">
+              {children.map(({ id, title }) => (
+                <li key={id}>
+                  <button
+                    className="item-row"
+                    type="button"
+                    onClick={() => selectChild(id)}
+                  >
+                    <span className="item-title">{title}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {openDependencies && (
+            <button type="button" className="subtle" onClick={openDependencies}>
+              Open dependency graph
+            </button>
+          )}
+          {item.depth === 3 ? (
+            <p className="muted">{depthLimitMessage}</p>
+          ) : (
+            <button
+              type="button"
+              className="subtle"
+              disabled={disabled}
+              onClick={addChild}
+            >
+              Add child item
+            </button>
+          )}
+        </section>
+        <section className="inspector-section">
+          <div className="inspector-facts muted">
+            <span>{project?.name ?? item.project_id}</span>
+            <span>
+              Priority {item.priority}{" "}
+              {locks.includes("priority") && <LockMark field="priority" />}
+            </span>
+            <span>
+              {effectiveSchedule(item, items) ?? "Unscheduled"}{" "}
+              {locks.includes("scheduled_on") && (
+                <LockMark field="scheduled_on" />
+              )}
+            </span>
+            {item.time_type !== "flexible" && item.time_at && (
+              <span>
+                {item.time_type === "deadline" ? "Due" : "Fixed"}{" "}
+                {dateLabel(item.time_at, timezone)}
+              </span>
+            )}
+            {storedTags.length > 0 && (
+              <span>Tags · {storedTags.join(", ")}</span>
+            )}
+            {blockers.length > 0 && (
+              <span>
+                Blocked by ·{" "}
+                {blockers
+                  .map(
+                    ({ blocked_by_id }) =>
+                      items.get(blocked_by_id)?.title ?? blocked_by_id,
+                  )
+                  .join(", ")}
+              </span>
+            )}
+            {locks.includes("sort_key") && (
+              <span>
+                Stream order <LockMark field="sort_key" />
+              </span>
+            )}
+            {locks.includes("layout_pos") && (
+              <span>
+                Canvas position <LockMark field="layout_pos" />
+              </span>
+            )}
+          </div>
+          <details className="inspector-details" open={detailsOpen}>
+            <summary
+              onClick={(event) => {
+                event.preventDefault();
+                setDetailsOpen(!detailsOpen);
+              }}
+            >
+              Edit details
+            </summary>
+            {detailsOpen && (
+              <div className="form-stack inspector-detail-editors">
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (dirty && !disabled && !tagConflict) void saveDetails();
+                  }}
+                >
+                  <fieldset className="form-stack" disabled={disabled}>
+                    <div className="form-grid">
+                      <label className="form-field">
+                        Project
+                        {item.parent_id ? (
+                          <input
+                            value={project?.name ?? item.project_id}
+                            readOnly
+                          />
+                        ) : (
+                          <select
+                            value={draft.project}
+                            onChange={(event) =>
+                              edit("project", event.target.value)
+                            }
+                          >
+                            <ProjectOptions projects={projects} />
+                          </select>
+                        )}
+                      </label>
+                      <label className="form-field">
+                        Priority
+                        <select
+                          value={draft.priority}
+                          onChange={(event) =>
+                            edit("priority", Number(event.target.value))
+                          }
+                        >
+                          {Array.from({ length: 10 }, (_, index) => (
+                            <option key={index} value={index + 1}>
+                              {index + 1}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="form-field">
+                        Schedule
+                        <input
+                          type="date"
+                          value={draft.schedule}
+                          onChange={(event) =>
+                            edit("schedule", event.target.value)
+                          }
+                        />
+                        {inherited && (
+                          <small className="muted">
+                            Inherited · {inherited}
+                          </small>
+                        )}
+                      </label>
+                      <TimeFields
+                        type={draft.timeType}
+                        setType={(type) => edit("timeType", type)}
+                        at={draft.timeAt}
+                        setAt={(at) => edit("timeAt", at)}
+                        timezone={timezone}
+                      />
+                    </div>
+                    <fieldset className="inspector-tags" disabled={tagConflict}>
+                      <legend className="form-field">Tags</legend>
+                      {tagValues.length > 0 && (
+                        <ul className="compact-list">
+                          {tagValues.map((tag, index) => (
+                            <li key={index}>
+                              <span>{tag || "(Empty tag)"}</span>
+                              <button
+                                type="button"
+                                className="subtle"
+                                aria-label={
+                                  tag ? `Remove tag ${tag}` : "Remove empty tag"
+                                }
+                                onClick={() =>
+                                  editTags(
+                                    tagValues.filter(
+                                      (_, position) => position !== index,
+                                    ),
+                                  )
+                                }
+                              >
+                                Remove
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      <div className="tag-input">
+                        <label className="form-field">
+                          New tag
+                          <input
+                            value={newTag}
+                            onChange={(event) => setNewTag(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (
+                                event.key !== "Enter" ||
+                                event.nativeEvent.isComposing
+                              )
+                                return;
+                              event.preventDefault();
+                              addTag();
+                            }}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="subtle"
+                          disabled={!pendingTag}
+                          onClick={addTag}
+                        >
+                          Add tag
+                        </button>
+                      </div>
+                    </fieldset>
+                    {tagConflict && (
+                      <div className="inline-actions">
+                        <p role="alert">
+                          Tags changed elsewhere. Reload tags to edit the
+                          current list.
+                        </p>
+                        <button
+                          type="button"
+                          className="subtle"
+                          onClick={() => {
+                            setTagDraft(undefined);
+                            setNewTag("");
+                          }}
+                        >
+                          Reload tags
+                        </button>
+                      </div>
+                    )}
+                    <label className="form-field">
+                      Link
+                      <input
+                        type="url"
+                        value={draft.link}
+                        placeholder="https://"
+                        onChange={(event) => edit("link", event.target.value)}
+                      />
+                    </label>
+                    {dirty && (
+                      <div>
+                        <button className="subtle" disabled={tagConflict}>
+                          Save details
+                        </button>
+                      </div>
+                    )}
+                  </fieldset>
+                </form>
+                {locks.length > 0 && (
+                  <ul className="compact-list locks">
+                    {locks.map((field) => (
+                      <li key={field}>
+                        <span className="status-pill lock-status">
+                          {lockLabels[field]} locked
+                        </span>
+                        <button
+                          type="button"
+                          className="subtle"
+                          aria-label={`Unlock ${lockLabels[field].toLowerCase()}`}
+                          disabled={disabled}
+                          onClick={() =>
+                            void run(() => update({ unlock: field }))
+                          }
+                        >
+                          Unlock
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <h3>Dependencies</h3>
+                {blockers.length ? (
+                  <ul className="compact-list">
+                    {blockers.map(({ blocked_by_id }) => (
+                      <li key={blocked_by_id}>
+                        <span>
+                          {items.get(blocked_by_id)?.title ??
+                            `Archived item · ${blocked_by_id}`}
+                        </span>
+                        <button
+                          type="button"
+                          className="subtle"
+                          disabled={disabled}
+                          onClick={() =>
+                            void run(() =>
+                              save({
+                                type: "SET_DEPENDENCY",
+                                input: {
+                                  item_id,
+                                  blocked_by_id,
+                                  action: "remove",
+                                },
+                              }),
+                            )
+                          }
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="muted">No dependencies.</p>
+                )}
+                <form
+                  className="inline-actions dependency-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!target) return;
+                    void run(async () => {
+                      await save({
+                        type: "SET_DEPENDENCY",
+                        input: {
+                          item_id,
+                          blocked_by_id: target,
+                          action: "add",
+                        },
+                      });
+                      setTarget("");
+                    });
+                  }}
+                >
+                  <select
+                    aria-label="Blocked by"
+                    value={target}
+                    disabled={disabled || !choices.length}
+                    onChange={(event) => setTarget(event.target.value)}
+                  >
+                    <option value="">Choose a blocking item</option>
+                    {choices.map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>
+                        {candidate.title}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="subtle"
+                    disabled={
+                      disabled || !choices.some(({ id }) => id === target)
+                    }
+                  >
+                    Add dependency
+                  </button>
+                </form>
+              </div>
+            )}
+          </details>
+        </section>
+        <Activity resource={activity} timezone={timezone} />
+      </div>
+      <footer className="inspector-footer">
+        {error && (
+          <p className="action-error" role="alert">
+            {error}
+          </p>
         )}
         <div className="inline-actions inspector-actions">
           {terminal ? (
@@ -673,17 +1216,18 @@ export function Inspector({
             className="subtle"
             disabled={disabled}
             onClick={() => {
-              setReason(item.handoff_note ?? "");
-              setAction("handoff");
+              if (item.handoff) {
+                void run(() =>
+                  save({ type: "CLEAR_HANDOFF", input: { item_id } }),
+                );
+              } else {
+                setReason("");
+                setAction("handoff");
+              }
             }}
           >
-            {item.handoff ? "Edit handoff" : "Flag handoff"}
+            {item.handoff ? "Clear handoff" : "Flag handoff"}
           </button>
-          {drawer && link && (
-            <a className="subtle" href={link} target="_blank" rel="noreferrer">
-              Open link ↗
-            </a>
-          )}
           {item.parent_id === null && (
             <button
               type="button"
@@ -756,322 +1300,7 @@ export function Inspector({
             </div>
           </form>
         )}
-        <AcceptanceCriteria item={item} disabled={disabled} save={save} />
-        <section className="inspector-section">
-          <h3>Details</h3>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (dirty && !disabled && !tagConflict) void saveDetails();
-            }}
-          >
-            <fieldset className="form-stack" disabled={disabled}>
-              <div className="form-grid">
-                <label className="form-field">
-                  Project
-                  {item.parent_id ? (
-                    <input value={project?.name ?? item.project_id} readOnly />
-                  ) : (
-                    <select
-                      value={draft.project}
-                      onChange={(event) => edit("project", event.target.value)}
-                    >
-                      <ProjectOptions projects={projects} />
-                    </select>
-                  )}
-                </label>
-                <label className="form-field">
-                  Priority
-                  <select
-                    value={draft.priority}
-                    onChange={(event) =>
-                      edit("priority", Number(event.target.value))
-                    }
-                  >
-                    {Array.from({ length: 10 }, (_, index) => (
-                      <option key={index} value={index + 1}>
-                        {index + 1}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="form-field">
-                  Schedule
-                  <input
-                    type="date"
-                    value={draft.schedule}
-                    onChange={(event) => edit("schedule", event.target.value)}
-                  />
-                  {inherited && (
-                    <small className="muted">Inherited · {inherited}</small>
-                  )}
-                </label>
-                <TimeFields
-                  type={draft.timeType}
-                  setType={(type) => edit("timeType", type)}
-                  at={draft.timeAt}
-                  setAt={(at) => edit("timeAt", at)}
-                  timezone={timezone}
-                />
-              </div>
-              <fieldset className="inspector-tags" disabled={tagConflict}>
-                <legend className="form-field">Tags</legend>
-                {tagValues.length > 0 && (
-                  <ul className="compact-list">
-                    {tagValues.map((tag, index) => (
-                      <li key={index}>
-                        <span>{tag || "(Empty tag)"}</span>
-                        <button
-                          type="button"
-                          className="subtle"
-                          aria-label={
-                            tag ? `Remove tag ${tag}` : "Remove empty tag"
-                          }
-                          onClick={() =>
-                            editTags(
-                              tagValues.filter(
-                                (_, position) => position !== index,
-                              ),
-                            )
-                          }
-                        >
-                          Remove
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                <div className="tag-input">
-                  <label className="form-field">
-                    New tag
-                    <input
-                      value={newTag}
-                      onChange={(event) => setNewTag(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (
-                          event.key !== "Enter" ||
-                          event.nativeEvent.isComposing
-                        )
-                          return;
-                        event.preventDefault();
-                        addTag();
-                      }}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="subtle"
-                    disabled={!pendingTag}
-                    onClick={addTag}
-                  >
-                    Add tag
-                  </button>
-                </div>
-              </fieldset>
-              {tagConflict && (
-                <div className="inline-actions">
-                  <p role="alert">
-                    Tags changed elsewhere. Reload tags to edit the current
-                    list.
-                  </p>
-                  <button
-                    type="button"
-                    className="subtle"
-                    onClick={() => {
-                      setTagDraft(undefined);
-                      setNewTag("");
-                    }}
-                  >
-                    Reload tags
-                  </button>
-                </div>
-              )}
-              <label className="form-field">
-                Link
-                <input
-                  type="url"
-                  value={draft.link}
-                  placeholder="https://"
-                  onChange={(event) => edit("link", event.target.value)}
-                />
-              </label>
-              {(dirty || (!drawer && link)) && (
-                <div className="inline-actions">
-                  {dirty && (
-                    <button className="subtle" disabled={tagConflict}>
-                      Save details
-                    </button>
-                  )}
-                  {!drawer && link && (
-                    <a href={link} target="_blank" rel="noreferrer">
-                      Open link ↗
-                    </a>
-                  )}
-                </div>
-              )}
-            </fieldset>
-          </form>
-          {locks.length > 0 && (
-            <ul className="compact-list locks">
-              {locks.map((field) => (
-                <li key={field}>
-                  <span className="status-pill lock-status">
-                    {lockLabels[field]} locked
-                  </span>
-                  <button
-                    type="button"
-                    className="subtle"
-                    aria-label={`Unlock ${lockLabels[field].toLowerCase()}`}
-                    disabled={disabled}
-                    onClick={() => void run(() => update({ unlock: field }))}
-                  >
-                    Unlock
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <form
-            className="form-stack note-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (note === undefined) return;
-              void run(async () => {
-                await save({
-                  type: "SET_NOTE",
-                  input: { item_id, note: note.trim() || null },
-                });
-                setNote(undefined);
-              });
-            }}
-          >
-            <label className="form-field">
-              Note
-              <textarea
-                rows={2}
-                value={note ?? item.note ?? ""}
-                disabled={disabled}
-                onChange={(event) => setNote(event.target.value)}
-              />
-            </label>
-            {note !== undefined && note !== (item.note ?? "") && (
-              <div>
-                <button className="subtle" disabled={disabled}>
-                  Save note
-                </button>
-              </div>
-            )}
-          </form>
-        </section>
-        <section className="inspector-section">
-          <h3>Dependencies</h3>
-          {openDependencies && (
-            <button type="button" className="subtle" onClick={openDependencies}>
-              Open dependency graph
-            </button>
-          )}
-          {blockers.length ? (
-            <ul className="compact-list">
-              {blockers.map(({ blocked_by_id }) => (
-                <li key={blocked_by_id}>
-                  <span>
-                    {items.get(blocked_by_id)?.title ??
-                      `Archived item · ${blocked_by_id}`}
-                  </span>
-                  <button
-                    type="button"
-                    className="subtle"
-                    disabled={disabled}
-                    onClick={() =>
-                      void run(() =>
-                        save({
-                          type: "SET_DEPENDENCY",
-                          input: { item_id, blocked_by_id, action: "remove" },
-                        }),
-                      )
-                    }
-                  >
-                    Remove
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="muted">No dependencies.</p>
-          )}
-          <form
-            className="inline-actions dependency-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (!target) return;
-              void run(async () => {
-                await save({
-                  type: "SET_DEPENDENCY",
-                  input: { item_id, blocked_by_id: target, action: "add" },
-                });
-                setTarget("");
-              });
-            }}
-          >
-            <select
-              aria-label="Blocked by"
-              value={target}
-              disabled={disabled || !choices.length}
-              onChange={(event) => setTarget(event.target.value)}
-            >
-              <option value="">Choose a blocking item</option>
-              {choices.map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>
-                  {candidate.title}
-                </option>
-              ))}
-            </select>
-            <button
-              className="subtle"
-              disabled={disabled || !choices.some(({ id }) => id === target)}
-            >
-              Add dependency
-            </button>
-          </form>
-        </section>
-        <section className="inspector-section">
-          <h3>Child items</h3>
-          {selectChild && children.length > 0 && (
-            <ul className="item-list">
-              {children.map(({ id, title }) => (
-                <li key={id}>
-                  <button
-                    className="item-row"
-                    type="button"
-                    onClick={() => selectChild(id)}
-                  >
-                    <span className="item-title">{title}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          {item.depth === 3 ? (
-            <p className="muted">{depthLimitMessage}</p>
-          ) : (
-            <button
-              type="button"
-              className="subtle"
-              disabled={disabled}
-              onClick={addChild}
-            >
-              Add child item
-            </button>
-          )}
-        </section>
-        <Activity
-          item={item}
-          timezone={timezone}
-          revision={activityRevision}
-          live={live}
-          save={save}
-        />
-      </div>
+      </footer>
     </>
   );
   return drawer ? (

@@ -638,7 +638,7 @@ it("discards the notification fallback when a reopened item enters the canvas", 
     .fn(missingItem)
     .mockReturnValueOnce(Response.json(notificationItem));
   const socket = await openNotificationItem(lookup);
-  await screen.findByDisplayValue(notificationItem.title);
+  await screen.findByRole("heading", { name: notificationItem.title });
 
   const reopened = {
     ...notificationItem,
@@ -647,7 +647,7 @@ it("discards the notification fallback when a reopened item enters the canvas", 
     completed_at: null,
   } as const;
   socket.receive({ type: "ITEM_UPSERT", seq: 2, item: reopened });
-  expect(screen.getByDisplayValue(reopened.title)).toBeTruthy();
+  expect(screen.getByRole("heading", { name: reopened.title })).toBeTruthy();
   expect(lookup).toHaveBeenCalledTimes(1);
 
   socket.receive({ type: "ITEM_REMOVE", seq: 3, item_id: reopened.id });
@@ -661,7 +661,7 @@ it("closes the notification inspector when an off-canvas item is removed", async
     .fn(missingItem)
     .mockReturnValueOnce(Response.json(notificationItem));
   const socket = await openNotificationItem(lookup);
-  await screen.findByDisplayValue(notificationItem.title);
+  await screen.findByRole("heading", { name: notificationItem.title });
 
   socket.receive({ type: "ITEM_REMOVE", seq: 2, item_id: notificationItem.id });
   expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
@@ -699,7 +699,7 @@ it.each([false, true])(
       )
       .mockReturnValueOnce(Response.json(notificationItem));
     const socket = await openNotificationItem(lookup);
-    await screen.findByDisplayValue(notificationItem.title);
+    await screen.findByRole("heading", { name: notificationItem.title });
 
     socket.receive({ type: "ITEM_UPSERT", seq: 3, item: goal });
     expect(socket.send).toHaveBeenCalledWith(
@@ -709,7 +709,9 @@ it.each([false, true])(
     expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
     await waitFor(() => expect(lookup).toHaveBeenCalledTimes(2));
     if (exists)
-      expect(await screen.findByDisplayValue("Updated alerts")).toBeTruthy();
+      expect(
+        await screen.findByRole("heading", { name: "Updated alerts" }),
+      ).toBeTruthy();
     else
       expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
   },
@@ -877,9 +879,7 @@ it("switches registered lenses, retains the selection and remembers the lens on 
       { name: child.title },
     ),
   );
-  fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
-    target: { value: detail.id },
-  });
+  fireEvent.click(screen.getByRole("tab", { name: "Detail" }));
   expect(screen.getByText("Selected item child")).toBeTruthy();
   view.unmount();
 
@@ -1466,14 +1466,13 @@ it.each(["Radar", "List"])(
     fireEvent.click(
       radar.getByRole("checkbox", { name: "Show completed ghosts" }),
     );
-    const lens = screen.getByRole("combobox", { name: "Lens" });
     if (source === "List") {
-      fireEvent.change(lens, { target: { value: "list" } });
+      fireEvent.click(screen.getByRole("tab", { name: "List" }));
       const list = within(screen.getByRole("region", { name: "List" }));
       fireEvent.click(
         list.getByRole("button", { name: new RegExp(task.title) }),
       );
-      fireEvent.change(lens, { target: { value: "radar" } });
+      fireEvent.click(screen.getByRole("tab", { name: "Radar" }));
     } else {
       const stream = within(
         screen.getByRole("region", { name: "Horizon Stream" }),
@@ -1497,7 +1496,7 @@ it("offers a registered Dependencies lens for the focused goal", async () => {
     component: ({ goalId }) => <p>Dependencies for {goalId}</p>,
   };
   await openWorkspace([lensRegistry[0], dependencies]);
-  expect(screen.queryByRole("option", { name: "Dependencies" })).toBeNull();
+  expect(screen.queryByRole("tab", { name: "Dependencies" })).toBeNull();
   const radar = within(screen.getByRole("region", { name: "Radar" }));
   fireEvent.click(radar.getByRole("button", { name: goal.title }));
   fireEvent.click(radar.getByRole("button", { name: "Dependencies" }));
@@ -1851,9 +1850,7 @@ it.each([
         fireEvent.click(lens.getByRole("button", { name: "Change goal" }));
         pickGoal(nextGoal.id);
       } else {
-        fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
-          target: { value: "list" },
-        });
+        fireEvent.click(screen.getByRole("tab", { name: "List" }));
       }
     }
     if (navigateFirst) navigate();
@@ -1893,9 +1890,7 @@ it("opens the selected child's goal when switching from List to Radar", async ()
   await openWorkspace();
   const list = within(screen.getByRole("region", { name: "List" }));
   fireEvent.click(list.getByRole("button", { name: new RegExp(child.title) }));
-  fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
-    target: { value: "radar" },
-  });
+  fireEvent.click(screen.getByRole("tab", { name: "Radar" }));
   const radar = within(screen.getByRole("region", { name: "Radar" }));
   expect(
     radar
@@ -1910,85 +1905,138 @@ function inspect(title: string) {
   return within(screen.getByRole("complementary", { name: "Inspector" }));
 }
 
-it("edits, reorders and removes acceptance criteria within the limits", async () => {
-  await openWorkspace();
-  const inspector = inspect(goal.title);
+it("opens a read-only inspector and exposes additional field editors in one disclosure", async () => {
+  const item = {
+    ...goal,
+    note: "Confirm the rollback plan.",
+    ref_url: "https://example.test/plan",
+    locked_fields: '["priority","acceptance"]',
+  };
+  await openWorkspace(undefined, { ...snapshot, items: [item, child] });
+  const inspector = inspect(item.title);
+  const card = screen.getByRole("complementary", inspectorRegion);
+  expect(inspector.getByRole("heading", { name: item.title })).toBeTruthy();
+  expect(inspector.getByText(item.note)).toBeTruthy();
+  expect(
+    inspector.getByRole("link", { name: /Open link/ }).getAttribute("href"),
+  ).toBe(item.ref_url);
+  expect(inspector.getByRole("img", { name: "Priority locked" })).toBeTruthy();
+  expect(
+    inspector.getByRole("img", { name: "Acceptance criteria locked" }),
+  ).toBeTruthy();
+  for (const name of ["Mark done", "Flag handoff", "Hide", "Delete"])
+    expect(inspector.getByRole("button", { name })).toBeTruthy();
+  expect(card.querySelector("input, select, textarea")).toBeNull();
+  expect(await inspector.findByText("No activity yet.")).toBeTruthy();
+
+  const summary = inspector.getByText("Edit details");
+  expect(summary.closest("details")?.open).toBe(false);
+  fireEvent.click(summary);
+  expect(summary.closest("details")?.open).toBe(true);
+  for (const name of [
+    "Project",
+    "Priority",
+    "Schedule",
+    "Time type",
+    "New tag",
+    "Blocked by",
+    "Link",
+  ])
+    expect(inspector.getByLabelText(name)).toBeTruthy();
+  fireEvent.click(summary);
+  expect(card.querySelector("input, select, textarea")).toBeNull();
+});
+
+it("saves and cancels title and criterion edits in place, and adds and removes criteria", async () => {
+  const item = { ...goal, acceptance: '["Run smoke tests"]' };
+  await openWorkspace(undefined, { ...snapshot, items: [item, child] });
+  const inspector = inspect(item.title);
   const editor = within(
     inspector.getByRole("region", { name: "Acceptance criteria" }),
   );
-  expect(editor.getByText("No acceptance criteria yet.")).toBeTruthy();
-  expect(await inspector.findByText("No activity yet.")).toBeTruthy();
-  expect(
-    inspector.queryByRole("heading", { name: "Shadow verdict" }),
-  ).toBeNull();
-
-  const add = editor.getByRole<HTMLButtonElement>("button", {
-    name: "Add criterion",
-  });
-  for (let i = 1; i <= 8; i++) {
-    fireEvent.click(add);
-    fireEvent.change(editor.getByRole("textbox", { name: `Criterion ${i}` }), {
-      target: { value: `Check ${i}` },
-    });
-  }
-  expect(add.disabled).toBe(true);
-  expect(editor.getAllByRole("textbox")).toHaveLength(8);
-
-  const first = editor.getByRole("textbox", { name: "Criterion 1" });
-  const save = editor.getByRole<HTMLButtonElement>("button", {
-    name: "Save criteria",
-  });
-  const limit = "🙂".repeat(200);
-  fireEvent.change(first, { target: { value: limit + "🙂" } });
-  expect(save.disabled).toBe(true);
-  expect(editor.getByText(/at most 200 characters/)).toBeTruthy();
-  fireEvent.change(first, { target: { value: "   " } });
-  expect(save.disabled).toBe(true);
-  fireEvent.change(first, { target: { value: limit } });
-  expect(save.disabled).toBe(false);
-
-  fireEvent.click(editor.getByRole("button", { name: "Move criterion 2 up" }));
-  fireEvent.click(editor.getByRole("button", { name: "Remove criterion 3" }));
-  expect(add.disabled).toBe(false);
-  fireEvent.click(save);
   const socket = TestSocket.current;
-  const acceptance = [
-    "Check 2",
-    limit,
-    "Check 4",
-    "Check 5",
-    "Check 6",
-    "Check 7",
-    "Check 8",
-  ];
-  expect(socket.latestRequest()).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: goal.id, acceptance },
-  });
-  socket.receive({
-    type: "ITEM_UPSERT",
-    item: {
-      ...goal,
-      acceptance: JSON.stringify(acceptance),
-      locked_fields: '["acceptance"]',
-    },
-    seq: 2,
-  });
-  await act(async () =>
-    socket.receive({
-      type: "ACK",
-      seq: 3,
-      requestId: socket.latestRequest().requestId,
-    }),
-  );
-  expect(inspector.getByText("Acceptance criteria locked")).toBeTruthy();
+  let current = item;
+  let seq = 1;
+
+  async function confirm(
+    patch: Partial<typeof item>,
+    input: Record<string, unknown>,
+  ) {
+    expect(socket.latestRequest()).toMatchObject({
+      type: "UPDATE_ITEM",
+      input: { item_id: item.id, ...input },
+    });
+    current = { ...current, ...patch };
+    socket.receive({ type: "ITEM_UPSERT", item: current, seq: ++seq });
+    await act(async () =>
+      socket.receive({
+        type: "ACK",
+        seq: ++seq,
+        requestId: socket.latestRequest().requestId,
+      }),
+    );
+  }
+
+  const newTitle = "Payment rollout";
   fireEvent.click(
-    inspector.getByRole("button", { name: "Unlock acceptance criteria" }),
+    inspector.getByRole("button", { name: `${item.title} — edit title` }),
   );
-  expect(socket.latestRequest()).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: goal.id, unlock: "acceptance" },
+  fireEvent.change(inspector.getByRole("textbox", { name: "Title" }), {
+    target: { value: "Discard this" },
   });
+  fireEvent.keyDown(inspector.getByRole("textbox", { name: "Title" }), {
+    key: "Escape",
+  });
+  expect(document.activeElement).toBe(
+    inspector.getByRole("button", { name: `${item.title} — edit title` }),
+  );
+  expect(socket.send).not.toHaveBeenCalled();
+  fireEvent.click(
+    inspector.getByRole("button", { name: `${item.title} — edit title` }),
+  );
+  fireEvent.change(inspector.getByRole("textbox", { name: "Title" }), {
+    target: { value: newTitle },
+  });
+  fireEvent.keyDown(inspector.getByRole("textbox", { name: "Title" }), {
+    key: "Enter",
+  });
+  await confirm({ title: newTitle }, { title: newTitle });
+  expect(inspector.getByRole("heading", { name: newTitle })).toBeTruthy();
+
+  fireEvent.click(editor.getByRole("button", { name: "Run smoke tests" }));
+  const first = editor.getByRole("textbox", { name: "Criterion 1" });
+  fireEvent.change(first, { target: { value: "Discard this too" } });
+  fireEvent.keyDown(first, { key: "Escape" });
+  expect(editor.queryByRole("textbox")).toBeNull();
+  expect(socket.send).toHaveBeenCalledTimes(1);
+  fireEvent.click(editor.getByRole("button", { name: "Run smoke tests" }));
+  const revised = editor.getByRole("textbox", { name: "Criterion 1" });
+  fireEvent.change(revised, { target: { value: "Smoke tests pass" } });
+  fireEvent.keyDown(revised, { key: "Enter" });
+  await confirm(
+    { acceptance: '["Smoke tests pass"]' },
+    { acceptance: ["Smoke tests pass"] },
+  );
+
+  fireEvent.click(editor.getByRole("button", { name: "Add criterion" }));
+  const addition = editor.getByRole("textbox", { name: "Criterion 2" });
+  fireEvent.change(addition, { target: { value: "Rollback verified" } });
+  fireEvent.keyDown(addition, { key: "Enter" });
+  await confirm(
+    { acceptance: '["Smoke tests pass","Rollback verified"]' },
+    { acceptance: ["Smoke tests pass", "Rollback verified"] },
+  );
+  expect(
+    editor.getByRole("button", { name: "Rollback verified" }),
+  ).toBeTruthy();
+
+  fireEvent.click(editor.getByRole("button", { name: "Remove criterion 1" }));
+  await confirm(
+    { acceptance: '["Rollback verified"]' },
+    { acceptance: ["Rollback verified"] },
+  );
+  expect(editor.queryByRole("button", { name: "Smoke tests pass" })).toBeNull();
+  expect(editor.queryByRole("button", { name: /^Move criterion/i })).toBeNull();
 });
 
 it("shows evidence and the latest shadow verdict in the mobile inspector and changes feedback over the socket", async () => {
@@ -2024,7 +2072,11 @@ it("shows evidence and the latest shadow verdict in the mobile inspector and cha
     detail: verdict.detail!.replace("judge/example", "judge/older"),
   };
   const events = [verdict, completion, older];
-  await openWorkspace(undefined, snapshot, () => Response.json(events));
+  const criteria = JSON.parse(verdict.detail!).criteria;
+  const judged = { ...goal, acceptance: JSON.stringify(criteria) };
+  await openWorkspace(undefined, { ...snapshot, items: [judged, child] }, () =>
+    Response.json(events),
+  );
   const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
   fireEvent.click(stream.getByRole("button", { name: /Payment reliability/ }));
   const inspector = within(screen.getByRole("dialog", { name: "Inspector" }));
@@ -2032,10 +2084,25 @@ it("shows evidence and the latest shadow verdict in the mobile inspector and cha
     await inspector.findByRole("region", { name: "Shadow verdict" }),
   );
   expect(result.getByText("judge/example · Evidence supplied")).toBeTruthy();
-  expect(result.getByText("Likely met · 70%")).toBeTruthy();
-  expect(result.getByText("Likely not met · 30%")).toBeTruthy();
-  expect(result.getByText("Unclear · 51%")).toBeTruthy();
-  expect(result.getByText("Unclear · No probability")).toBeTruthy();
+  const acceptance = within(
+    inspector.getByRole("region", { name: "Acceptance criteria" }),
+  );
+  for (const [criterion, score] of [
+    ["Unit tests pass", "Likely met · 70%"],
+    ["Load test passes", "Likely not met · 30%"],
+    ["Review is complete", "Unclear · 51%"],
+    ["Docs published", "Unclear · No probability"],
+  ]) {
+    const row = acceptance
+      .getByRole("button", { name: criterion })
+      .closest("li")!;
+    expect(within(row).getByText(score)).toBeTruthy();
+  }
+  expect(
+    screen
+      .getByRole("dialog", { name: "Inspector" })
+      .querySelector("input, select, textarea"),
+  ).toBeNull();
   expect(result.getByText(/Advisory only/)).toBeTruthy();
   expect(inspector.queryByText(/judge\/older/)).toBeNull();
   const disclosure = inspector.getByText("Evidence").closest("details")!;
@@ -2078,6 +2145,85 @@ it("shows evidence and the latest shadow verdict in the mobile inspector and cha
     );
     expect(other.getAttribute("aria-pressed")).toBe("false");
   }
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: ++seq,
+    item: {
+      ...judged,
+      acceptance: '["Docs published","Unit tests pass"]',
+    },
+  });
+  expect(result.getByText("Judged against earlier criteria")).toBeTruthy();
+  expect(result.getByText("Likely met · 70%")).toBeTruthy();
+  const currentDocs = acceptance
+    .getByRole("button", { name: "Docs published" })
+    .closest("li")!;
+  expect(within(currentDocs).queryByText(/%|No probability/)).toBeNull();
+});
+
+it("marks the stream row only when its latest completion has a verdict", async () => {
+  const item = {
+    ...goal,
+    status: "done" as const,
+    completed_at: "2024-04-03T11:00:00Z",
+  };
+  const base = { item_id: item.id, at: item.completed_at, actor: "Runner" };
+  const first: Event = {
+    ...base,
+    id: 1,
+    kind: "status",
+    detail: '{"new":"done"}',
+  };
+  const latest: Event = { ...first, id: 3 };
+  const verdict: Event = {
+    ...base,
+    id: 4,
+    kind: "judged",
+    detail: JSON.stringify({
+      status_event_id: first.id,
+      model: "judge/example",
+      criteria: ["Smoke tests pass"],
+      probabilities: [0.9],
+      evidence_supplied: true,
+    }),
+  };
+  const events = [verdict, latest, first];
+  const eventRequests = vi.fn(() => Response.json(events));
+  await openWorkspace(undefined, { ...snapshot, items: [item] }, eventRequests);
+  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+  const row = within(stream.getByRole("button", { name: item.title }));
+  expect(row.queryByTitle("Shadow verdict available")).toBeNull();
+
+  const currentVerdict = {
+    ...verdict,
+    id: 5,
+    detail: verdict.detail!.replace(
+      '"status_event_id":1',
+      '"status_event_id":3',
+    ),
+  };
+  events.unshift(currentVerdict);
+  TestSocket.current.receive({
+    type: "EVENT_APPEND",
+    seq: 2,
+    event: currentVerdict,
+  });
+  expect(await row.findByTitle("Shadow verdict available")).toBeTruthy();
+
+  events.unshift({ ...latest, id: 6 });
+  TestSocket.current.receive({
+    type: "ITEM_UPSERT",
+    seq: 3,
+    item: {
+      ...item,
+      completed_at: "2024-04-03T11:30:00Z",
+      reopen_count: 1,
+    },
+  });
+  await waitFor(() =>
+    expect(eventRequests.mock.calls.length).toBeGreaterThanOrEqual(3),
+  );
+  expect(row.queryByTitle("Shadow verdict available")).toBeNull();
 });
 
 it("shows optional judging in settings and refreshes counts and agreement as verdicts arrive", async () => {
@@ -2205,6 +2351,7 @@ it("sends the inspector actions and displays activity from the item endpoint", a
   });
   await acknowledge({ type: "ITEM_UPSERT", item: goal });
 
+  fireEvent.click(inspector.getByText("Edit details"));
   fireEvent.change(inspector.getByLabelText("Blocked by"), {
     target: { value: tomorrow.id },
   });
@@ -2262,6 +2409,7 @@ it("unlocks only the chosen field and reflects the server update", async () => {
   const item = { ...goal, locked_fields: '["priority","layout_pos"]' };
   socket.receive({ type: "ITEM_UPSERT", seq: 2, item });
   const inspector = inspect(goal.title);
+  fireEvent.click(inspector.getByText("Edit details"));
   fireEvent.click(inspector.getByRole("button", { name: "Unlock priority" }));
   expect(socket.latestRequest()).toMatchObject({
     type: "UPDATE_ITEM",
@@ -2920,6 +3068,7 @@ it("preserves existing tag values and backlog membership when adding a tag", asy
   fireEvent.change(filter, { target: { value: existing[0] } });
 
   const inspector = inspect(item.title);
+  fireEvent.click(inspector.getByText("Edit details"));
   fireEvent.change(inspector.getByRole("textbox", { name: "New tag" }), {
     target: { value: "urgent" },
   });
@@ -2956,6 +3105,7 @@ it("prevents an outdated tag draft from replacing newer tags", async () => {
   const socket = TestSocket.current;
   socket.receive({ ...snapshot, seq: 2, items: [item] });
   const inspector = inspect(item.title);
+  fireEvent.click(inspector.getByText("Edit details"));
   fireEvent.click(
     inspector.getByRole("button", { name: "Remove tag retired" }),
   );
@@ -3149,9 +3299,7 @@ it("selects Treemap tiles, zooms into parents and returns through their breadcru
     ...snapshot,
     items: [parent, child, tomorrow, finished],
   });
-  fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
-    target: { value: "treemap" },
-  });
+  fireEvent.click(screen.getByRole("tab", { name: "Treemap" }));
 
   const lens = within(screen.getByRole("region", { name: "Treemap" }));
   const overview = lens.getByRole("button", { name: goal.title });
@@ -3320,9 +3468,7 @@ it("places top-level Board cards by project and Radar band with Stream ordering 
     screen.getByRole("complementary", { name: "Inspector" }),
   );
   fireEvent.click(inspector.getByRole("button", { name: tomorrow.title }));
-  expect(
-    (screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value,
-  ).toBe(tomorrow.title);
+  expect(screen.getByRole("heading", { name: tomorrow.title })).toBeTruthy();
   fireEvent.click(
     screen.getByRole("checkbox", { name: "Show completed ghosts" }),
   );
@@ -3436,14 +3582,32 @@ function mockViewport(desktop: boolean) {
 }
 
 it.each(["desktop", "mobile"])(
-  "lists each lens once in the %s selector",
+  "switches and focuses lens tabs with the keyboard on %s",
   async (layout) => {
     if (layout === "mobile") mockViewport(false);
     await openWorkspace();
-    const selector = within(screen.getByRole("combobox", { name: "Lens" }));
-    expect(
-      selector.getAllByRole("option").map((option) => option.textContent),
-    ).toEqual(["Radar", "Board", "Treemap", "List"]);
+    const tabs = within(screen.getByRole("tablist", { name: "Lens" }));
+    expect(tabs.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Radar",
+      "Board",
+      "Treemap",
+      "List",
+    ]);
+    const radar = tabs.getByRole("tab", { name: "Radar", selected: true });
+    const list = tabs.getByRole("tab", { name: "List", selected: false });
+    expect(radar.tabIndex).toBe(0);
+    expect(list.tabIndex).toBe(-1);
+    radar.focus();
+    fireEvent.keyDown(radar, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(list);
+    expect(list.tabIndex).toBe(0);
+    expect(radar.tabIndex).toBe(-1);
+    expect(screen.getByRole("tabpanel", { name: "List" })).toBeTruthy();
+    fireEvent.keyDown(list, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(radar);
+    expect(tabs.getByRole("tab", { name: "Radar", selected: true })).toBe(
+      radar,
+    );
   },
 );
 
@@ -3493,14 +3657,15 @@ it.each([
     ).toBeTruthy();
     fireEvent.click(graph.getByRole("button", { name: /^Run failover drill/ }));
     expect(
-      within(
-        screen.getByRole("dialog", { name: "Inspector" }),
-      ).getByDisplayValue(tomorrow.title),
+      within(screen.getByRole("dialog", { name: "Inspector" })).getByRole(
+        "heading",
+        { name: tomorrow.title },
+      ),
     ).toBeTruthy();
   },
 );
 
-it("reveals Dependencies when chosen from the mobile selector with the Full stream open", async () => {
+it("reveals Dependencies when chosen from the mobile lens tabs with the Full stream open", async () => {
   mockViewport(false);
   await openWorkspace();
   const radar = within(screen.getByRole("region", { name: "Radar" }));
@@ -3508,9 +3673,7 @@ it("reveals Dependencies when chosen from the mobile selector with the Full stre
   const handle = screen.getByRole("button", { name: /size: Peek/ });
   fireEvent.keyDown(handle, { key: "End" });
 
-  fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
-    target: { value: "dependencies" },
-  });
+  fireEvent.click(screen.getByRole("tab", { name: "Dependencies" }));
 
   expect(screen.getByRole("button", { name: /size: Peek/ })).toBe(handle);
   const graph = screen.getByRole("region", {
@@ -3568,7 +3731,7 @@ it("keeps the mobile Radar priority handle usable before and after inspecting", 
     screen.getByRole("button", { name: `Inspect ${tomorrow.title}` }),
   );
   const drawer = within(screen.getByRole("dialog", { name: "Inspector" }));
-  expect(drawer.getByDisplayValue(tomorrow.title)).toBeTruthy();
+  expect(drawer.getByRole("heading", { name: tomorrow.title })).toBeTruthy();
   fireEvent.click(drawer.getByRole("button", { name: "Close" }));
   expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
   expect(bubble.getAttribute("aria-pressed")).toBe("true");
@@ -3611,7 +3774,9 @@ it("lets a second mobile Treemap tap zoom into the selected parent", async () =>
     screen.getByRole("button", { name: `Inspect ${goal.title}` }),
   );
   const drawer = screen.getByRole("dialog", { name: "Inspector" });
-  expect(within(drawer).getByDisplayValue(goal.title)).toBeTruthy();
+  expect(
+    within(drawer).getByRole("heading", { name: goal.title }),
+  ).toBeTruthy();
   fireEvent(drawer, new Event("cancel", { cancelable: true }));
   expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
   expect(
@@ -3670,9 +3835,7 @@ it("switches the Board stream between desktop and mobile sheet stops at 768px", 
   fireEvent.click(within(drawer).getByRole("button", { name: "Close" }));
 
   resize(true);
-  fireEvent.change(screen.getByRole("combobox", { name: "Lens" }), {
-    target: { value: "list" },
-  });
+  fireEvent.click(screen.getByRole("tab", { name: "List" }));
   expect(stream.getByRole("heading", { name: "Today" })).toBeTruthy();
   expect(stream.queryByRole("heading", { name: "Needs me" })).toBeNull();
 });
@@ -3689,6 +3852,11 @@ it("keeps stream inspector drafts and pending saves across both breakpoint direc
   let inspector = within(screen.getByRole("dialog", { name: "Inspector" }));
   const title = "Draft payment reliability plan";
   const note = "Confirm the retry budget with the team.";
+  fireEvent.click(
+    inspector.getByRole("button", { name: `${goal.title} — edit title` }),
+  );
+  fireEvent.click(inspector.getByRole("button", { name: "Add note" }));
+  fireEvent.click(inspector.getByText("Edit details"));
   fireEvent.change(inspector.getByLabelText("Title"), {
     target: { value: title },
   });
@@ -3779,6 +3947,9 @@ it("keeps a canvas inspector open with its draft after resizing to mobile", asyn
   const inspector = within(
     screen.getByRole("complementary", { name: "Inspector" }),
   );
+  fireEvent.click(
+    inspector.getByRole("button", { name: `${goal.title} — edit title` }),
+  );
   fireEvent.change(inspector.getByLabelText("Title"), {
     target: { value: "Draft payment reliability plan" },
   });
@@ -3795,8 +3966,9 @@ it("keeps a canvas inspector open with its draft after resizing to mobile", asyn
     screen.getByRole("button", { name: `Inspect ${goal.title}` }),
   );
   expect(
-    within(screen.getByRole("dialog", { name: "Inspector" })).getByDisplayValue(
-      goal.title,
+    within(screen.getByRole("dialog", { name: "Inspector" })).getByRole(
+      "heading",
+      { name: goal.title },
     ),
   ).toBeTruthy();
 });

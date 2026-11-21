@@ -12,7 +12,7 @@ import {
   ModelKeyHint,
   useCommandBar,
 } from "./CommandBar";
-import { DemoBadge } from "./item-markers";
+import { DemoBadge, ShadowVerdictMarker } from "./item-markers";
 import { Panel } from "./workspace-controls";
 import type { StreamRow } from "@heedwork/core";
 import type { CanvasItem } from "@heedwork/core";
@@ -107,10 +107,12 @@ function StreamItems({
   rows,
   selectedId,
   select,
+  eventRevision,
 }: {
   rows: StreamRow<CanvasItem>[];
   selectedId: string | null;
   select: (id: string) => void;
+  eventRevision: (id: string) => string;
 }) {
   return (
     <ul className="item-list">
@@ -125,12 +127,17 @@ function StreamItems({
             <span className="stream-marker" aria-hidden="true" />
             <span className="item-title">{item.title}</span>
             {item.demo === 1 && <DemoBadge />}
+            <ShadowVerdictMarker
+              item={item}
+              revision={eventRevision(item.id)}
+            />
           </button>
           {children.length > 0 && (
             <StreamItems
               rows={children}
               selectedId={selectedId}
               select={select}
+              eventRevision={eventRevision}
             />
           )}
         </li>
@@ -249,6 +256,9 @@ function Workspace({
   const focusedGoal = goalId && filtered.has(goalId) ? goalId : null;
   const lens = resolveLens(registry, lensId);
   const LensComponent = lens.component;
+  const availableLenses = registry.filter(
+    ({ id }) => id !== "dependencies" || focusedGoal || lens.id === id,
+  );
   const canvasLens = lens.id === "radar" || lens.id === "treemap";
   const live = state.connection === "live";
   const autoGuide =
@@ -532,10 +542,14 @@ function Workspace({
       </label>
     );
 
+  function eventRevision(id: string) {
+    return `${state.snapshotRevision}:${state.eventRevisions.get(id) ?? 0}`;
+  }
+
   const inspector = inspected && selectedItem?.inspectorOpen && (
     <Inspector
       key={inspected.id}
-      activityRevision={`${state.snapshotRevision}:${state.eventRevisions.get(inspected.id) ?? 0}`}
+      activityRevision={eventRevision(inspected.id)}
       drawer={!desktop}
       item={inspected}
       projects={projects}
@@ -586,24 +600,6 @@ function Workspace({
           </details>
         )}
         <div className="header-tools">
-          <label className="lens-select">
-            {!desktop ? <span className="sr-only">Lens</span> : "Lens"}
-            <select
-              value={lens.id}
-              onChange={(event) => switchLens(event.target.value)}
-            >
-              {registry
-                .filter(
-                  ({ id }) =>
-                    id !== "dependencies" || focusedGoal || lens.id === id,
-                )
-                .map(({ id, label }) => (
-                  <option key={id} value={id}>
-                    {label}
-                  </option>
-                ))}
-            </select>
-          </label>
           {state.settings && (
             <span className="live-indicator">
               <span data-live={live && liveCount > 0} aria-hidden="true" />
@@ -628,6 +624,54 @@ function Workspace({
             </details>
           )}
           {HeaderEnd && <HeaderEnd {...slotProps} />}
+        </div>
+        <div
+          className="lens-tabs"
+          role="tablist"
+          aria-label="Lens"
+          onKeyDown={(event) => {
+            const tabs = Array.from(
+              event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                '[role="tab"]',
+              ),
+            );
+            const index = tabs.indexOf(event.target as HTMLButtonElement);
+            let next: number;
+            switch (event.key) {
+              case "ArrowLeft":
+                next = (index - 1 + tabs.length) % tabs.length;
+                break;
+              case "ArrowRight":
+                next = (index + 1) % tabs.length;
+                break;
+              case "Home":
+                next = 0;
+                break;
+              case "End":
+                next = tabs.length - 1;
+                break;
+              default:
+                return;
+            }
+            event.preventDefault();
+            tabs[next].focus();
+            switchLens(availableLenses[next].id);
+          }}
+        >
+          {availableLenses.map(({ id, label }) => (
+            <button
+              key={id}
+              id={`lens-tab-${id}`}
+              type="button"
+              role="tab"
+              aria-selected={lens.id === id}
+              aria-controls={lens.id === id ? "active-lens" : undefined}
+              tabIndex={lens.id === id ? 0 : -1}
+              onClick={() => switchLens(id)}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </header>
 
@@ -682,61 +726,74 @@ function Workspace({
               </button>
             )}
           </div>
-          {autoGuide && panel?.kind !== "onboarding" ? (
-            <section
-              className="onboarding-welcome"
-              aria-labelledby="onboarding-heading"
-            >
-              <h2 id="onboarding-heading">Set up your workspace</h2>
-              {guide}
-            </section>
-          ) : (
-            state.settings && (
-              <LensComponent
-                openGuide={openGuide}
-                tree={tree}
-                projects={projects}
-                items={view.items}
-                filtered={filtered}
-                changeDependency={changeDependency}
-                savingDependency={dependencyEdit.busy}
-                dependencies={dependencies}
-                selectedId={selection}
-                now={now}
-                timezone={timezone}
-                live={live}
-                showGhosts={showGhosts}
-                goalId={focusedGoal}
-                focusGoal={focusGoal}
-                openDependencies={
-                  dependenciesLens && focusedGoal
-                    ? () => switchLens(dependenciesLens.id)
-                    : undefined
-                }
-                select={(id) => {
-                  if (lens.id === "list" && id) selectStreamItem(id);
-                  else
-                    setSelectedItem(
-                      id ? { id, inspectorOpen: desktop || !canvasLens } : null,
+          <div
+            className="lens-tabpanel"
+            id="active-lens"
+            role="tabpanel"
+            aria-labelledby={`lens-tab-${lens.id}`}
+          >
+            {autoGuide && panel?.kind !== "onboarding" ? (
+              <section
+                className="onboarding-welcome"
+                aria-labelledby="onboarding-heading"
+              >
+                <h2 id="onboarding-heading">Set up your workspace</h2>
+                {guide}
+              </section>
+            ) : (
+              state.settings && (
+                <LensComponent
+                  openGuide={openGuide}
+                  tree={tree}
+                  projects={projects}
+                  items={view.items}
+                  filtered={filtered}
+                  changeDependency={changeDependency}
+                  savingDependency={dependencyEdit.busy}
+                  dependencies={dependencies}
+                  selectedId={selection}
+                  now={now}
+                  timezone={timezone}
+                  live={live}
+                  showGhosts={showGhosts}
+                  goalId={focusedGoal}
+                  focusGoal={focusGoal}
+                  openDependencies={
+                    dependenciesLens && focusedGoal
+                      ? () => switchLens(dependenciesLens.id)
+                      : undefined
+                  }
+                  select={(id) => {
+                    if (lens.id === "list" && id) selectStreamItem(id);
+                    else
+                      setSelectedItem(
+                        id
+                          ? { id, inspectorOpen: desktop || !canvasLens }
+                          : null,
+                      );
+                    setLensSelection(
+                      id
+                        ? { id, scrollStreamOnly: lens.id === "treemap" }
+                        : null,
                     );
-                  setLensSelection(
-                    id ? { id, scrollStreamOnly: lens.id === "treemap" } : null,
-                  );
-                  if (id) setHistory(false);
-                }}
-                move={connection.mutate}
-                reschedule={(id, date) =>
-                  updateItem(id, { scheduled_on: date })
-                }
-                moveProject={(id, project) => updateItem(id, { project })}
-                setPriority={(id, priority) => updateItem(id, { priority })}
-                setPosition={(id, position) => placeItem(id, lens.id, position)}
-                moveRadar={(id, { position, ...patch }, key = "radar") =>
-                  placeItem(id, key, position, patch)
-                }
-              />
-            )
-          )}
+                    if (id) setHistory(false);
+                  }}
+                  move={connection.mutate}
+                  reschedule={(id, date) =>
+                    updateItem(id, { scheduled_on: date })
+                  }
+                  moveProject={(id, project) => updateItem(id, { project })}
+                  setPriority={(id, priority) => updateItem(id, { priority })}
+                  setPosition={(id, position) =>
+                    placeItem(id, lens.id, position)
+                  }
+                  moveRadar={(id, { position, ...patch }, key = "radar") =>
+                    placeItem(id, key, position, patch)
+                  }
+                />
+              )
+            )}
+          </div>
           {dependencyError && showDependencyErrorInline && (
             <p className="action-error" role="alert">
               {dependencyError}
@@ -814,6 +871,7 @@ function Workspace({
                 <div className="stream-content">
                   {hiddenRows.length ? (
                     <StreamItems
+                      eventRevision={eventRevision}
                       rows={hiddenRows}
                       selectedId={selectedId}
                       select={(id) => {
@@ -831,6 +889,7 @@ function Workspace({
             ) : (
               <HorizonStream
                 {...derived}
+                eventRevision={eventRevision}
                 openGuide={openGuide}
                 items={view.items}
                 dependencies={view.dependencies}
