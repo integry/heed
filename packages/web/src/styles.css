@@ -1243,3 +1243,153 @@ fieldset {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+.onboarding-welcome {
+  width: min(100%, 740px);
+  margin-inline: auto;
+  padding: clamp(14px, 3vw, 30px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.onboarding-welcome h2 {
+  margin-bottom: 12px;
+  font-size: clamp(1.25rem, 2.3vw, 1.75rem);
+}
+
+.onboarding-panel {
+  width: min(calc(100% - 32px), 720px);
+}
+
+.onboarding-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.onboarding-progress progress {
+  width: min(100px, 25%);
+  height: 8px;
+  accent-color: var(--accent);
+}
+
+.onboarding-steps {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--page);
+}
+
+.onboarding-step {
+  display: grid;
+  flex: 0 0 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.onboarding-steps [data-complete="true"] .onboarding-step {
+  border-color: var(--live);
+  background: var(--accent-soft);
+  color: var(--live);
+}
+
+.onboarding-steps h3 {
+  margin: 2px 0 5px;
+  font-size: 1rem;
+}
+
+.onboarding-steps p,
+.guidance-examples p {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.onboarding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.onboarding-actions > button:last-of-type:not(:first-of-type) {
+  margin-inline-start: auto;
+}
+
+@media (min-width: 1050px) {
+  .onboarding-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.guide-link,
+.stream-peek .guide-link {
+  display: inline;
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.demo-badge {
+  display: inline-block;
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.radar-demo-badge {
+  fill: #f0f6f1;
+  paint-order: stroke;
+  stroke: #111f20;
+  stroke-width: 2px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.guidance-examples {
+  margin-block: 12px;
+}
+
+.guidance-examples ul {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guidance-examples li {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}

@@ -12,6 +12,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { COMMAND_TEXT_LIMIT } from "@heedwork/core";
 import type { SocketMessage, SocketRequest } from "@heedwork/core";
 import { App } from "./App";
+import { onboardingCompletion } from "./Onboarding";
 import { mountApp, type MountedApp, type MountAppOptions } from "./index";
 import { lensRegistry, type Lens } from "./lenses";
 import {
@@ -2370,6 +2371,23 @@ it("shows the token and MCP config once and lists only metadata afterward", asyn
   fireEvent.click(settings.getByRole("button", { name: "Copy token" }));
   await waitFor(() => expect(writeText).toHaveBeenCalledWith(token));
   await settings.findByText("Token copied.");
+  const client = settings.getByLabelText("MCP client");
+  fireEvent.change(client, { target: { value: "cursor" } });
+  const cursor = settings.getByLabelText(
+    /Cursor MCP config/,
+  ) as HTMLTextAreaElement;
+  expect(JSON.parse(cursor.value).mcpServers.heed).toEqual({
+    url: new URL("/mcp", location.origin).href,
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  fireEvent.change(client, { target: { value: "codex" } });
+  const codex = settings.getByLabelText(
+    /Codex MCP config/,
+  ) as HTMLTextAreaElement;
+  expect(codex.value).toContain("[mcp_servers.heed]");
+  expect(codex.value).toContain(`Authorization = "Bearer ${token}"`);
+  fireEvent.click(settings.getByRole("button", { name: "Copy MCP config" }));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith(codex.value));
   fireEvent.click(settings.getByRole("button", { name: "Done" }));
   expect(settings.queryByDisplayValue(token)).toBeNull();
   expect(settings.getByText(metadata.label)).toBeTruthy();
@@ -3518,4 +3536,189 @@ it("keeps a canvas inspector open with its draft after resizing to mobile", asyn
       goal.title,
     ),
   ).toBeTruthy();
+});
+
+const emptyOnboarding = {
+  hasItems: false,
+  hasGoalOrProject: false,
+  hasDemoData: false,
+  hasToken: false,
+};
+
+it("computes the four steps from real work, tokens, saved guidance and this device", () => {
+  expect(
+    onboardingCompletion(
+      { ...emptyOnboarding, hasItems: true, hasDemoData: true },
+      "  ",
+      false,
+    ),
+  ).toEqual({
+    work: false,
+    agent: false,
+    guidance: false,
+    notifications: false,
+  });
+  expect(
+    onboardingCompletion(
+      { ...emptyOnboarding, hasGoalOrProject: true, hasToken: true },
+      "Focus on today.",
+      true,
+    ),
+  ).toEqual({ work: true, agent: true, guidance: true, notifications: true });
+});
+
+it("mounts the first-run guide for hosts and reopens the dismissed guide from Settings", async () => {
+  const previous = TestSocket.current;
+  fetchSession.mockImplementation(async (path: string) =>
+    Response.json(
+      path === "/api/me"
+        ? { workspaceId: "host", email: "demo@example.test" }
+        : [],
+    ),
+  );
+  mountHost();
+  await waitFor(() => expect(TestSocket.current).not.toBe(previous));
+  const socket = TestSocket.current;
+  socket.receive({ ...snapshot, items: [], onboarding: emptyOnboarding });
+  const guide = within(
+    screen.getByRole("region", { name: "Set up your workspace" }),
+  );
+  expect(guide.getByRole("progressbar").getAttribute("value")).toBe("0");
+
+  fireEvent.click(guide.getByRole("button", { name: "Open guidance" }));
+  const guidance = within(screen.getByRole("dialog", { name: "Guidance" }));
+  const examples = guidance.getAllByRole("button", { name: /Use example:/ });
+  expect(examples).toHaveLength(3);
+  fireEvent.click(examples[0]);
+  fireEvent.click(guidance.getByRole("button", { name: "Save guidance" }));
+  const request = socket.latestRequest();
+  if (request.type !== "SET_GUIDANCE")
+    throw new Error("Expected a guidance save");
+  expect(request.input.text).toContain("customer-facing incidents");
+  const settings = { ...snapshot.settings, guidance: request.input.text };
+  socket.receive({ type: "SETTINGS_UPDATE", seq: 2, settings });
+  await act(async () =>
+    socket.receive({ type: "ACK", seq: 3, requestId: request.requestId }),
+  );
+  fireEvent.click(guidance.getByRole("button", { name: "Close" }));
+
+  const opened = within(
+    screen.getByRole("dialog", { name: "Set up your workspace" }),
+  );
+  expect(opened.getByRole("progressbar").getAttribute("value")).toBe("1");
+  socket.receive({
+    type: "ONBOARDING_UPDATE",
+    seq: 4,
+    onboarding: { ...emptyOnboarding, hasToken: true },
+  });
+  expect(opened.getByRole("progressbar").getAttribute("value")).toBe("2");
+  fireEvent.click(opened.getByRole("button", { name: "Dismiss guide" }));
+  const dismiss = socket.latestRequest();
+  expect(dismiss.type).toBe("DISMISS_ONBOARDING");
+  socket.receive({
+    type: "SETTINGS_UPDATE",
+    seq: 5,
+    settings: { ...settings, onboarding_dismissed: true },
+  });
+  await act(async () =>
+    socket.receive({ type: "ACK", seq: 6, requestId: dismiss.requestId }),
+  );
+  expect(
+    screen.queryByRole("heading", { name: "Set up your workspace" }),
+  ).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  fireEvent.click(
+    within(screen.getByRole("dialog", { name: "Settings" })).getByRole(
+      "button",
+      { name: "Open setup guide" },
+    ),
+  );
+  expect(
+    screen.getByRole("dialog", { name: "Set up your workspace" }),
+  ).toBeTruthy();
+});
+
+it.each([
+  ["radar", "Radar"],
+  ["board", "Board"],
+  ["treemap", "Treemap"],
+  ["list", "List"],
+  ["dependencies", "Dependencies"],
+])(
+  "links the empty %s lens and Horizon Stream back to the guide",
+  async (id, label) => {
+    localStorage.setItem("heed.lens", id);
+    await openWorkspace(undefined, {
+      ...snapshot,
+      items: [],
+      settings: { ...snapshot.settings, onboarding_dismissed: true },
+      onboarding: emptyOnboarding,
+    });
+    const lens = within(screen.getByRole("region", { name: label }));
+    const stream = within(
+      screen.getByRole("region", { name: "Horizon Stream" }),
+    );
+    expect(lens.getByRole("button", { name: "Open setup guide" })).toBeTruthy();
+    fireEvent.click(stream.getByRole("button", { name: "Open setup guide" }));
+    expect(
+      screen.getByRole("dialog", { name: "Set up your workspace" }),
+    ).toBeTruthy();
+  },
+);
+
+it("replaces the canvas with labeled demo rows and exposes demo removal in Settings", async () => {
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: [],
+    onboarding: emptyOnboarding,
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Load demo data" }));
+  const socket = TestSocket.current;
+  const load = socket.latestRequest();
+  expect(load.type).toBe("LOAD_DEMO_DATA");
+  socket.receive({
+    type: "CANVAS_REPLACE",
+    seq: 2,
+    projects: [
+      project,
+      { ...project, id: "research", name: "Research", demo: 1 },
+    ],
+    items: [{ ...goal, project_id: "research", demo: 1 }],
+    dependencies: [],
+    onboarding: { ...emptyOnboarding, hasItems: true, hasDemoData: true },
+  });
+  await act(async () =>
+    socket.receive({ type: "ACK", seq: 3, requestId: load.requestId }),
+  );
+  expect(
+    screen.queryByRole("heading", { name: "Set up your workspace" }),
+  ).toBeNull();
+  const projects = within(
+    screen.getByRole("group", { name: "Visible projects" }),
+  );
+  expect(projects.getByRole("button", { name: /Research.*Demo/ })).toBeTruthy();
+  expect(
+    within(screen.getByRole("region", { name: "Radar" }))
+      .getByRole("button", { name: goal.title })
+      .getAttribute("aria-description"),
+  ).toContain("Demo");
+
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  const settings = within(screen.getByRole("dialog", { name: "Settings" }));
+  fireEvent.click(settings.getByRole("button", { name: "Remove demo data" }));
+  const remove = socket.latestRequest();
+  expect(remove.type).toBe("REMOVE_DEMO_DATA");
+  socket.receive({
+    type: "CANVAS_REPLACE",
+    seq: 4,
+    projects: [project],
+    items: [],
+    dependencies: [],
+    onboarding: emptyOnboarding,
+  });
+  await act(async () =>
+    socket.receive({ type: "ACK", seq: 5, requestId: remove.requestId }),
+  );
+  expect(projects.queryByRole("button", { name: /Research/ })).toBeNull();
 });

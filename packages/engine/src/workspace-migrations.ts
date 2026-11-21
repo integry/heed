@@ -1,5 +1,19 @@
 import { INBOX_PROJECT_ID } from "@heedwork/core";
 
+function reconcileWorkspaceColumns(sql: SqlStorage): void {
+  const demo = "demo INTEGER NOT NULL DEFAULT 0 CHECK (demo IN (0, 1))";
+  for (const [table, column, definition] of [
+    ["events", "actor_user", "actor_user TEXT"],
+    ["projects", "demo", demo],
+    ["items", "demo", demo],
+  ]) {
+    const hasColumn = sql
+      .exec("SELECT 1 FROM pragma_table_info(?) WHERE name = ?", table, column)
+      .toArray().length;
+    if (!hasColumn) sql.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+  }
+}
+
 const migrations = [
   // Version 1
   (sql: SqlStorage) => {
@@ -112,20 +126,23 @@ const migrations = [
   (sql: SqlStorage) => {
     sql.exec("ALTER TABLE events ADD COLUMN actor_user TEXT");
   },
-  // Version 6
+  // Version 6 reconciles legacy version-5 layouts with demo flags or actor attribution.
+  reconcileWorkspaceColumns,
+  // Version 7 brings both version-6 layouts to the same schema.
   (sql: SqlStorage) => {
+    reconcileWorkspaceColumns(sql);
     sql.exec(`
-      CREATE TABLE oauth_clients (
+      CREATE TABLE IF NOT EXISTS oauth_clients (
         id TEXT PRIMARY KEY,
         registration TEXT NOT NULL
       );
-      CREATE TABLE oauth_consents (
+      CREATE TABLE IF NOT EXISTS oauth_consents (
         hash TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
         request TEXT NOT NULL,
         expires_at INTEGER NOT NULL
       );
-      CREATE TABLE oauth_grants (
+      CREATE TABLE IF NOT EXISTS oauth_grants (
         id TEXT PRIMARY KEY REFERENCES tokens(id) ON DELETE CASCADE,
         client_name TEXT NOT NULL,
         authorization TEXT NOT NULL,
@@ -136,11 +153,11 @@ const migrations = [
         refresh_hash TEXT UNIQUE,
         refresh_expires_at INTEGER
       );
-      CREATE TABLE oauth_used_refresh_tokens (
+      CREATE TABLE IF NOT EXISTS oauth_used_refresh_tokens (
         hash TEXT PRIMARY KEY,
         grant_id TEXT NOT NULL REFERENCES oauth_grants(id) ON DELETE CASCADE
       );
-      CREATE INDEX idx_oauth_used_refresh_grant ON oauth_used_refresh_tokens(grant_id);
+      CREATE INDEX IF NOT EXISTS idx_oauth_used_refresh_grant ON oauth_used_refresh_tokens(grant_id);
     `);
   },
 ];

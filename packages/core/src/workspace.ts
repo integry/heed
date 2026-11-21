@@ -59,6 +59,7 @@ export const GuidanceSchema = z.object({
 export const SettingsSchema = GuidanceSchema.extend({
   schema_version: z.int().positive(),
   timezone: TimezoneSchema,
+  onboarding_dismissed: z.boolean().optional(),
 });
 
 export const SettingSchema = z.object({
@@ -76,9 +77,10 @@ export const ProjectSchema = z.object({
   color: nullableText,
   sort: z.int(),
   hidden: sqliteFlag,
+  demo: sqliteFlag.optional(),
 });
 
-export const UpdateProjectSchema = ProjectSchema.omit({ id: true })
+export const UpdateProjectSchema = ProjectSchema.omit({ id: true, demo: true })
   .partial()
   .strict();
 export const CreateProjectSchema = UpdateProjectSchema.required({ name: true });
@@ -108,6 +110,7 @@ export const ItemSchema = z.object({
   ref_url: nullableText,
   note: nullableText,
   hidden: sqliteFlag,
+  demo: sqliteFlag.optional(),
   last_heartbeat_at: nullableText,
   completed_at: nullableText,
   completed_band: RadarBandSchema.nullable(),

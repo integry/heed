@@ -1,3 +1,5 @@
+import { DemoBadge } from "./item-markers";
+import { GuideEmpty } from "./Onboarding";
 import {
   useCallback,
   useLayoutEffect,
@@ -129,6 +131,13 @@ function Tile({
         {width >= 24 && labelHeight >= 16 && (
           <span className="treemap-title" data-zoom={Boolean(hasZoomButton)}>
             {data.title}
+            {(item?.demo === 1 ||
+              (data.kind === "project" && data.project.demo === 1)) && (
+              <>
+                {" "}
+                <DemoBadge />
+              </>
+            )}
           </span>
         )}
       </button>
@@ -172,6 +181,7 @@ export function TreemapLens({
   selectedId,
   select,
   moveProject,
+  openGuide,
 }: LensProps) {
   const breadcrumb = useRef<HTMLSpanElement>(null);
   const focusBreadcrumb = useRef(false);
@@ -378,7 +388,9 @@ export function TreemapLens({
           ))}
         </div>
       </div>
-      {!layout.children && <p className="empty">No items in this view.</p>}
+      {!layout.children && (
+        <GuideEmpty openGuide={openGuide}>No items in this view.</GuideEmpty>
+      )}
     </div>
   );
 }

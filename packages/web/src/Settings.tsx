@@ -10,10 +10,13 @@ import type {
 import type { CreatedToken } from "@heedwork/core";
 import { Panel, ProjectOptions, useAction } from "./workspace-controls";
 import type { SaveMutation } from "./workspace-controls";
+import { DemoDataButton, type OnboardingScreen } from "./Onboarding";
 import { PushSettings } from "./PushSettings";
 import { ModelKeyHint } from "./CommandBar";
 import { useApi, useResource } from "./api";
+import { DemoBadge } from "./item-markers";
 import type {
+  BuiltInScreenId,
   MountAppOptions,
   SettingsScreen,
   SettingsScreenProps,
@@ -56,6 +59,7 @@ function ProjectRow({
           aria-hidden="true"
         />
         <h4>{project.name}</h4>
+        {project.demo === 1 && <DemoBadge />}
         {inbox && <small className="muted">Default project</small>}
         {project.hidden === 1 && <small className="muted">Hidden</small>}
       </div>
@@ -246,6 +250,39 @@ function Projects({
 
 const scopeLabels: Record<Scope, string> = { report: "Report", steer: "Steer" };
 
+const mcpClients = {
+  claude: { label: "Claude Code", path: ".mcp.json" },
+  cursor: { label: "Cursor", path: "~/.cursor/mcp.json" },
+  codex: { label: "Codex", path: "~/.codex/config.toml" },
+} as const;
+
+type McpClient = keyof typeof mcpClients;
+
+function mcpConfig(client: McpClient, token: string) {
+  const url = new URL("/mcp", window.location.origin).href;
+  const authorization = `Bearer ${token}`;
+  if (client === "codex") {
+    return [
+      "[mcp_servers.heed]",
+      `url = ${JSON.stringify(url)}`,
+      `http_headers = { Authorization = ${JSON.stringify(authorization)} }`,
+    ].join("\n");
+  }
+  return JSON.stringify(
+    {
+      mcpServers: {
+        heed: {
+          ...(client === "claude" ? { type: "http" } : {}),
+          url,
+          headers: { Authorization: authorization },
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+
 function TokenReveal({
   created,
   close,
@@ -254,19 +291,9 @@ function TokenReveal({
   close: () => void;
 }) {
   const [feedback, setFeedback] = useState("");
-  const config = JSON.stringify(
-    {
-      mcpServers: {
-        heed: {
-          type: "http",
-          url: new URL("/mcp", window.location.origin).href,
-          headers: { Authorization: `Bearer ${created.token}` },
-        },
-      },
-    },
-    null,
-    2,
-  );
+  const [client, setClient] = useState<McpClient>("claude");
+  const config = mcpConfig(client, created.token);
+  const { label, path } = mcpClients[client];
   async function copy(text: string, label: string) {
     try {
       await navigator.clipboard.writeText(text);
@@ -297,9 +324,33 @@ function TokenReveal({
         Copy token
       </button>
       <label className="form-field">
-        Claude Code MCP config (.mcp.json)
-        <textarea rows={7} readOnly value={config} spellCheck={false} />
+        MCP client
+        <select
+          value={client}
+          onChange={(event) => {
+            setClient(event.target.value as McpClient);
+            setFeedback("");
+          }}
+        >
+          {Object.entries(mcpClients).map(([id, { label }]) => (
+            <option key={id} value={id}>
+              {label}
+            </option>
+          ))}
+        </select>
       </label>
+      <label className="form-field">
+        {label} MCP config ({path})
+        <textarea
+          rows={client === "codex" ? 4 : 9}
+          readOnly
+          value={config}
+          spellCheck={false}
+        />
+      </label>
+      <p className="muted">
+        Keep this configuration private. It contains your API token.
+      </p>
       <div className="inline-actions">
         <button
           type="button"
@@ -646,6 +697,9 @@ export function Settings({
   live,
   save,
   close,
+  focus,
+  openGuide,
+  demoLoaded,
 }: SettingsActions & {
   projects: readonly Project[];
   items: ReadonlyMap<string, Item>;
@@ -655,18 +709,37 @@ export function Settings({
   showModelKeyHint: boolean;
   onSignOut?: () => Promise<void>;
   close: () => void;
+  focus?: OnboardingScreen;
+  openGuide?: () => void;
+  demoLoaded: boolean;
 }) {
   const hidden = options?.hideScreens ?? [];
+  const show = (id: BuiltInScreenId) =>
+    (!focus || focus === id) && !hidden.includes(id);
   return (
     <Panel title="Settings" close={close} className="settings-panel">
-      {!hidden.includes("notifications") && <PushSettings />}
-      {!hidden.includes("projects") && (
+      {!focus && openGuide && (
+        <section className="settings-section" aria-labelledby="setup-heading">
+          <h3 id="setup-heading">Workspace setup</h3>
+          <div className="inline-actions">
+            <button type="button" className="subtle" onClick={openGuide}>
+              Open setup guide
+            </button>
+            <DemoDataButton
+              loaded={demoLoaded}
+              live={live}
+              save={save}
+              onLoad={close}
+            />
+          </div>
+        </section>
+      )}
+      {show("notifications") && <PushSettings />}
+      {show("projects") && (
         <Projects projects={projects} items={items} live={live} save={save} />
       )}
-      {!hidden.includes("tokens") && (
-        <Tokens projects={projects} live={live} save={save} />
-      )}
-      {!hidden.includes("account") && (
+      {show("tokens") && <Tokens projects={projects} live={live} save={save} />}
+      {show("account") && (
         <Account
           timezone={timezone}
           email={screenProps.user.email}
@@ -675,7 +748,7 @@ export function Settings({
           onSignOut={onSignOut}
         />
       )}
-      {showModelKeyHint && !hidden.includes("model-keys") && (
+      {showModelKeyHint && show("model-keys") && (
         <section
           className="settings-section"
           aria-labelledby="model-keys-heading"
@@ -684,13 +757,14 @@ export function Settings({
           <ModelKeyHint />
         </section>
       )}
-      {options?.extraSettingsScreens?.map((screen) => (
-        <ExtraSettings
-          key={screen.id}
-          screen={screen}
-          screenProps={screenProps}
-        />
-      ))}
+      {!focus &&
+        options?.extraSettingsScreens?.map((screen) => (
+          <ExtraSettings
+            key={screen.id}
+            screen={screen}
+            screenProps={screenProps}
+          />
+        ))}
     </Panel>
   );
 }

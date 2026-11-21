@@ -41,12 +41,52 @@ async function registeredSubscription(
   return registered ? subscription : null;
 }
 
-export function PushSettings() {
-  const { getJson, requestJson } = useApi();
-  const supported =
+function pushSupported() {
+  return (
     "serviceWorker" in navigator &&
     "PushManager" in window &&
-    "Notification" in window;
+    "Notification" in window
+  );
+}
+
+async function readPushSubscription(
+  worker: ServiceWorkerRegistration,
+  requestJson: ReturnType<typeof useApi>["requestJson"],
+  signal: AbortSignal,
+) {
+  // Settings can be closed while a device change is still in progress.
+  await pendingDeviceChange?.catch(() => {});
+  if (signal.aborted) return null;
+  const existing = await worker.pushManager.getSubscription();
+  return !signal.aborted && existing
+    ? registeredSubscription(requestJson, existing, signal)
+    : null;
+}
+
+export function usePushEnabled(active: boolean) {
+  const { requestJson } = useApi();
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    if (!active || !pushSupported()) return;
+    const controller = new AbortController();
+    void navigator.serviceWorker.ready
+      .then((worker) =>
+        readPushSubscription(worker, requestJson, controller.signal),
+      )
+      .then((subscription) => {
+        if (!controller.signal.aborted) setEnabled(Boolean(subscription));
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setEnabled(false);
+      });
+    return () => controller.abort();
+  }, [active, requestJson]);
+  return enabled;
+}
+
+export function PushSettings() {
+  const { getJson, requestJson } = useApi();
+  const supported = pushSupported();
   const [registration, setRegistration] = useState<ServiceWorkerRegistration>();
   const [publicKey, setPublicKey] = useState<string>();
   const [subscription, setSubscription] = useState<PushSubscription | null>();
@@ -59,14 +99,11 @@ export function PushSettings() {
     const controller = new AbortController();
     async function load() {
       const worker = await navigator.serviceWorker.ready;
-      // Settings can be closed while a device change is still in progress.
-      await pendingDeviceChange?.catch(() => {});
-      if (controller.signal.aborted) return;
-      const existing = await worker.pushManager.getSubscription();
-      if (controller.signal.aborted) return;
-      const registered = existing
-        ? await registeredSubscription(requestJson, existing, controller.signal)
-        : null;
+      const registered = await readPushSubscription(
+        worker,
+        requestJson,
+        controller.signal,
+      );
       if (controller.signal.aborted) return;
       setRegistration(worker);
       setSubscription(registered);
