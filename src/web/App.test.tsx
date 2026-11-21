@@ -13,7 +13,13 @@ import { COMMAND_TEXT_LIMIT } from "../shared/command";
 import type { SocketMessage, SocketRequest } from "../shared/workspace-socket";
 import { App } from "./App";
 import { lensRegistry, type Lens } from "./lenses";
-import { cellPoint, RADAR_BANDS, type Cell } from "./radar-geometry";
+import {
+  cellPoint,
+  RADAR_BANDS,
+  RADAR_RADIUS,
+  radarViewport,
+  type Cell,
+} from "./radar-geometry";
 import { child, goal, project, snapshot, tomorrow } from "./workspace-fixtures";
 
 class TestSocket extends EventTarget {
@@ -666,6 +672,151 @@ it("defaults to Radar, opens a goal, and cross-highlights and resizes its childr
   });
   fireEvent.click(radar.getByRole("button", { name: "All projects" }));
   expect(radar.getByRole("button", { name: goal.title })).toBeTruthy();
+});
+
+function mockRadarSize(width: number, height: number) {
+  let resize: (width: number, height: number) => void;
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) {
+        if (!target.classList.contains("radar-chart")) return;
+        resize = (width, height) =>
+          this.callback(
+            [
+              {
+                target,
+                contentRect: new DOMRect(0, 0, width, height),
+              } as ResizeObserverEntry,
+            ],
+            this,
+          );
+        resize(width, height);
+      }
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  return (width: number, height: number) => act(() => resize(width, height));
+}
+
+it.each([
+  [360, 360, 560],
+  [390, 390, 560],
+  [768, 410, 655],
+  [1440, 800, 655],
+])(
+  "fits the radar and keeps labels at 11px through zoom at %ipx",
+  async (width, chartWidth, chartHeight) => {
+    mockViewport(width >= 768);
+    mockRadarSize(chartWidth, chartHeight);
+    const { container } = await openWorkspace(undefined, {
+      ...snapshot,
+      items: [
+        { ...goal, title: "Review payment reconciliation", priority: 10 },
+      ],
+    });
+    const svg = container.querySelector(".radar-svg")!;
+    const viewBox = svg.getAttribute("viewBox");
+    const viewport = radarViewport(chartWidth, chartHeight, false);
+    expect(viewBox).toBe(
+      `${viewport.x} ${viewport.y} ${viewport.width} ${viewport.height}`,
+    );
+    const outer = svg.querySelector('.radar-band[data-band="backlog"]')!;
+    expect(Number(outer.getAttribute("r")) * 2 * viewport.scale).toBeCloseTo(
+      Math.min(chartWidth, chartHeight) - 50,
+    );
+    const projectLabel = svg.querySelector(".radar-project-label textPath")!;
+    const arc = document.getElementById(
+      projectLabel.getAttribute("href")!.slice(1),
+    )!;
+    expect(
+      Number(arc.getAttribute("d")!.split(" A ")[1].split(" ")[0]),
+    ).toBeGreaterThan(RADAR_RADIUS);
+
+    function expectLabels(zoom: number) {
+      const labels = [
+        ...svg.querySelectorAll(
+          ".radar-band-label, .radar-project-label, .radar-bubble-title",
+        ),
+      ];
+      expect(labels).toHaveLength(
+        5 + svg.querySelectorAll(".radar-bubble-title").length,
+      );
+      expect(
+        labels.some((label) => label.classList.contains("radar-bubble-title")),
+      ).toBe(true);
+      for (const label of labels) {
+        const font = Number(
+          label.closest("[font-size]")!.getAttribute("font-size"),
+        );
+        expect(font * viewport.scale * zoom).toBeCloseTo(11);
+      }
+      for (const label of svg.querySelectorAll(".radar-bubble-title")) {
+        expect(label.querySelectorAll("tspan").length).toBeLessThanOrEqual(2);
+      }
+    }
+
+    expectLabels(1);
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    expectLabels(1.35);
+    fireEvent.click(screen.getByRole("button", { name: "Reset zoom" }));
+    expect(svg.getAttribute("viewBox")).toBe(viewBox);
+    expect(outer.parentElement?.parentElement?.getAttribute("transform")).toBe(
+      "translate(0,0) scale(1)",
+    );
+    expectLabels(1);
+  },
+);
+
+it("renders packed bubbles and hides a ring label when its reservation fills their cell", async () => {
+  mockViewport(false);
+  const resize = mockRadarSize(360, 280);
+  const titles = ["Review payment retries", "Test failover alerts"];
+  const { container } = await openWorkspace(undefined, {
+    ...snapshot,
+    projects: Array.from({ length: 16 }, (_, sort) => ({
+      ...project,
+      id: sort === 0 ? project.id : `project-${sort}`,
+      name: `Project ${sort + 1}`,
+      sort,
+    })),
+    items: titles.map((title, index) => ({
+      ...goal,
+      id: `item-${index}`,
+      title,
+      progress: { done: 0, total: 0 },
+      priority: 10,
+      scheduled_on: tomorrow.scheduled_on,
+      layout_pos: '{"radar":{"angle":0.5,"radius":0.5}}',
+    })),
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const labels = () =>
+    [...container.querySelectorAll(".radar-band-label")].map(
+      (label) => label.textContent,
+    );
+  expect(labels()).toEqual(["Today · You", "Later", "Backlog"]);
+  const [a, b] = titles.map((name) => {
+    const bubble = radar.getByRole("button", { name });
+    const [x, y] = bubble
+      .parentElement!.getAttribute("transform")!
+      .slice("translate(".length, -1)
+      .split(",")
+      .map(Number);
+    const radius = Number(
+      bubble.querySelector(".radar-disc")!.getAttribute("r"),
+    );
+    expect(radius).toBeGreaterThan(0);
+    return { x, y, radius };
+  });
+  expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(
+    a.radius + b.radius,
+  );
+
+  resize(800, 655);
+  expect(labels()).toEqual(["Today · You", "This week", "Later", "Backlog"]);
 });
 
 it("keeps radar positions on status updates and filters attention and completed ghosts", async () => {
@@ -2799,7 +2950,7 @@ it("keeps the mobile Radar priority handle usable before and after inspecting", 
     clientX: x + dx,
     clientY: y + dy,
   };
-  const drag = { ...press, clientX: press.clientX + 30 };
+  const drag = { ...press, clientX: press.clientX + 40 };
   vi.useFakeTimers();
   try {
     fireEvent.pointerDown(handle, press);

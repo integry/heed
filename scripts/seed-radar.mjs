@@ -1,5 +1,6 @@
 import process from "node:process";
 import { URL } from "node:url";
+import { demoGoal, radarDemoItems } from "./radar-demo.mts";
 
 const args = process.argv.slice(2);
 const dense = args.includes("--dense");
@@ -73,9 +74,10 @@ async function add(key, title, priority, options = {}) {
   return item_id;
 }
 
-const goal = await add("reliability", "Payment reliability", 10, {
+const [, goalTitle, goalPriority, goalRing] = demoGoal;
+const goal = await add("reliability", goalTitle, goalPriority, {
   project: engineering.id,
-  scheduled_on: dates[0],
+  scheduled_on: dates[goalRing],
 });
 const verify = await add("verify", "Verify gateway failover", 7, {
   parent_id: goal,
@@ -97,74 +99,20 @@ await add("trace", "Trace checkout errors", 5, {
   status: "done",
 });
 
-const sample = [
-  [
-    inbox,
-    "Triage requests",
-    7,
-    0,
-    { status: "active", agent_name: "Triage agent" },
-  ],
-  [inbox, "Check access", 5, 1],
-  [inbox, "Inbox cleanup", 6, 2],
-  [inbox, "Read vendor notes", 4, 3],
-  [engineering, "API rollout", 8, 1],
-  [engineering, "Storage audit", 9, 2],
-  [engineering, "Cache cleanup", 5, 3],
-  [
-    product,
-    "Prototype review",
-    9,
-    0,
-    { time_type: "fixed", time_at: timed(0, "14:00") },
-  ],
-  [product, "Onboarding copy", 8, 1],
-  [product, "Usage dashboard", 6, 2],
-  [product, "Email variants", 4, 3],
-  [
-    customer,
-    "Client sync",
-    8,
-    0,
-    { time_type: "deadline", time_at: timed(0, "17:00") },
-  ],
-  [customer, "Billing follow-up", 9, 1, { status: "blocked" }],
-  [customer, "Help center refresh", 7, 2],
-  [customer, "Support templates", 4, 3],
-  [engineering, "Deploy log alerts", 6, 2, { status: "done" }],
-];
-for (const [
-  index,
-  [owner, title, priority, ring, options],
-] of sample.entries()) {
-  await add(index, title, priority, {
-    project: owner.id,
+const owners = { inbox, engineering, product, customer };
+const projectNames = Object.fromEntries(
+  Object.entries(owners).map(([key, { name }]) => [key, name]),
+);
+for (const [key, [owner, title, priority, ring, options]] of radarDemoItems(
+  dense,
+  projectNames,
+)) {
+  const { time, ...fields } = options ?? {};
+  await add(key, title, priority, {
+    project: owners[owner].id,
     scheduled_on: dates[ring],
-    ...options,
+    ...fields,
+    ...(time && { time_at: timed(0, time) }),
   });
-}
-
-if (dense) {
-  const owners = [inbox, engineering, product, customer];
-  const subjects = [
-    "Review",
-    "Document",
-    "Prototype",
-    "Measure",
-    "Validate",
-    "Plan",
-  ];
-  for (let index = 0; index < 300 - sample.length - 1; index++) {
-    const owner = owners[index % owners.length];
-    await add(
-      `dense-${index}`,
-      `${subjects[index % subjects.length]} ${owner.name} ${index + 1}`,
-      1 + ((index * 7) % 10),
-      {
-        project: owner.id,
-        scheduled_on: dates[Math.floor(index / owners.length) % dates.length],
-      },
-    );
-  }
 }
 process.stdout.write(`Radar demo ready at ${server.origin}/auth/dev-login\n`);

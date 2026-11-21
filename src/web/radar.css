@@ -49,6 +49,12 @@
   color: var(--muted);
 }
 
+.radar-breadcrumb button,
+.radar-breadcrumb [aria-current] {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .radar-breadcrumb [aria-current] {
   font-weight: 650;
   color: var(--text);
@@ -62,8 +68,27 @@
   min-width: 36px;
 }
 
+.radar {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.lens-pane[data-lens="radar"] {
+  display: flex;
+  flex-direction: column;
+}
+
+.radar-toolbar {
+  flex: none;
+}
+
 .radar-chart {
   position: relative;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid #273e38;
   border-radius: 16px;
@@ -72,10 +97,11 @@
 }
 
 .radar-svg {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
-  max-height: min(76vh, 820px);
-  aspect-ratio: 800 / 760;
+  height: 100%;
   touch-action: none;
   -webkit-touch-callout: none;
   cursor: grab;
@@ -124,19 +150,18 @@
 .radar-band-label {
   paint-order: stroke;
   stroke: #152a28;
-  stroke-width: 5px;
+  stroke-width: 3px;
+  vector-effect: non-scaling-stroke;
   stroke-linejoin: round;
   font-weight: 650;
 }
 
 .radar-project-label {
   fill: #b6d4c6;
-  font-size: 14px;
 }
 
 .radar-band-label {
   fill: #afcfc0;
-  font-size: 12px;
 }
 
 .radar-drop-cell {
@@ -176,12 +201,6 @@
 .radar-bubble-title {
   fill: #f0f6f1;
   font-weight: 650;
-}
-
-.radar-svg:not(.canvas-magnified)
-  .radar-bubble:not(:is(:hover, :focus-visible, [aria-pressed="true"]))
-  .radar-bubble-title[data-small="true"] {
-  visibility: hidden;
 }
 
 .radar-child-count {
@@ -286,6 +305,7 @@
 .radar-time-badge rect {
   fill: #152a28;
   stroke: #6b8c7e;
+  vector-effect: non-scaling-stroke;
 }
 
 .radar-time-badge text {
@@ -340,4 +360,17 @@
   font-size: 0.82rem;
   pointer-events: none;
   overflow-wrap: anywhere;
+}
+
+.radar-callout :is(line, rect) {
+  stroke: #587b71;
+  vector-effect: non-scaling-stroke;
+}
+
+.radar-callout rect {
+  fill: #152a28;
+}
+
+.radar-callout-time {
+  fill: #f5e3bb;
 }
