@@ -713,6 +713,7 @@ function Workspace({
           <div className="stream-panel" hidden={peek}>
             {history && (desktop || sheet.stop === "full") ? (
               <StreamHistory
+                key={state.resetVersion}
                 projects={projects}
                 timezone={timezone}
                 live={live}
@@ -863,6 +864,7 @@ function Workspace({
           screenProps={screenProps}
           options={options}
           showModelKeyHint={showModelKeyHint}
+          resetVersion={state.resetVersion}
           onSignOut={
             signOut &&
             (async () => {

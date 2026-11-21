@@ -9,7 +9,11 @@ import {
   SetStatusBodySchema,
   UpdateItemSchema,
 } from "./item-operations.js";
-import { GuidanceBodySchema, TimezoneBodySchema } from "./human-api.js";
+import {
+  GuidanceBodySchema,
+  ResetWorkspaceBodySchema,
+  TimezoneBodySchema,
+} from "./human-api.js";
 import {
   CreateProjectSchema,
   CreateTokenSchema,
@@ -24,6 +28,7 @@ import type {
 } from "./workspace.js";
 
 export const SocketRequestIdSchema = z.string().min(1).max(128);
+export const WORKSPACE_RESET_CLOSE_CODE = 4000;
 const resourceId = z.string().min(1);
 
 export const MoveProjectSchema = z.strictObject({
@@ -64,6 +69,7 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
   mutation("SET_TIMEZONE", TimezoneBodySchema),
   mutation("CREATE_TOKEN", CreateTokenSchema),
   mutation("REVOKE_TOKEN", z.strictObject({ token_id: resourceId })),
+  mutation("RESET_WORKSPACE", ResetWorkspaceBodySchema),
   z.strictObject({
     type: z.literal("UPDATE_ITEM"),
     requestId: SocketRequestIdSchema,

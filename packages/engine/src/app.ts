@@ -184,7 +184,7 @@ async function route<Bindings extends AppEnv>(
         }
         return app
           .workspace(actor.workspaceId)
-          .fetch(socketUpgrade(request, actor.user));
+          .fetch(socketUpgrade(request, actor.user, actor.role));
       },
     );
     return options.sessionResponse?.(request, response, env) ?? response;

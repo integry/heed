@@ -447,6 +447,8 @@ A host replaces these and nothing else. Every method is async so a host may cons
 
 `createApp(seams, options)` returns `{ fetch }`. `@heedwork/engine` also exports the `Workspace` Durable Object class, which the host must bind and re-export from its own Worker entry. When a host supplies limits for socket mutations or meters push delivery, it binds a subclass and exposes the same seams through the protected `socketLimits` and `pushUsage` getters. Hibernated sockets and background push deliveries run in the Durable Object isolate, outside the Worker request and its seam instances.
 
+Hosts use `Workspace.exportWorkspace()` and `Workspace.resetWorkspace()` for the workspace deletion flow. A host whose auth provider stores workspace OAuth grants outside the Durable Object supplies an idempotent `revokeWorkspaceGrants()` override on its Workspace subclass. The engine calls it during reset through every entry point. The hook must finish before the local wipe and must avoid calling back into the same Durable Object. See [the export format](export-format.md) for the host and browser contracts.
+
 The human actor carries the `user` from the session, and events record it, so a shared workspace shows who made each change. Lock semantics do not depend on which human it was.
 
 `mountApp(root, options)` from `@heedwork/web` renders the app. Options let a host supply its own sign-in screen and sign-out action, add settings screens and header slots (workspace switcher, account menu), hide built-in screens, and reuse the same API helpers the built-in screens use.

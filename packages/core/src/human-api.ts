@@ -14,6 +14,12 @@ export const ReopenBodySchema = z.strictObject({
 
 export const TimezoneBodySchema = z.strictObject({ timezone: TimezoneSchema });
 export const GuidanceBodySchema = z.strictObject({ text: GuidanceTextSchema });
+export const RESET_WORKSPACE_CONFIRMATION = "RESET WORKSPACE";
+export const ResetWorkspaceBodySchema = z.strictObject({
+  confirmation: z.literal(RESET_WORKSPACE_CONFIRMATION, {
+    error: `Type ${RESET_WORKSPACE_CONFIRMATION} to reset the workspace.`,
+  }),
+});
 
 const instant = z.iso.datetime({ offset: true });
 const historyCursor = z.string().refine((value) => {

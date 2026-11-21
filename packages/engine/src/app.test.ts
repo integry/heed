@@ -5,7 +5,11 @@ import {
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { expect, it, onTestFinished, vi } from "vitest";
-import { VOICE_SAMPLE_RATE, WAV_HEADER_BYTES } from "@heedwork/core";
+import {
+  RESET_WORKSPACE_CONFIRMATION,
+  VOICE_SAMPLE_RATE,
+  WAV_HEADER_BYTES,
+} from "@heedwork/core";
 import type { Event, ItemOperationResult, SocketMessage } from "@heedwork/core";
 import { createApp } from "./index";
 import type { AppSeams, UsageEvent } from "./index";
@@ -94,7 +98,7 @@ async function openSocket(response: Response) {
   };
 }
 
-function setupHost(limits = hostLimits) {
+function setupHost(limits = hostLimits, role = "editor") {
   const id = crypto.randomUUID();
   const alpha = `alpha_${id}`;
   const beta = `limited_${id}`;
@@ -137,7 +141,7 @@ function setupHost(limits = hostLimits) {
       async session(request) {
         const workspaceId = request.headers.get("X-Test-Workspace");
         return workspaceId && ids.includes(workspaceId)
-          ? { workspaceId, role: "editor", user }
+          ? { workspaceId, role, user }
           : null;
       },
       async handleAuthRoute(request) {
@@ -184,6 +188,57 @@ function setupHost(limits = hostLimits) {
       ),
   };
 }
+
+it("rejects editor export and reset before workspace lookup and ignores forged socket roles", async () => {
+  const { alpha, fetch, human, getByName } = setupHost();
+  const input = { confirmation: RESET_WORKSPACE_CONFIRMATION };
+  expect((await fetch(human(alpha, "/api/export"))).status).toBe(403);
+  expect((await fetch(human(alpha, "/api/reset", input))).status).toBe(403);
+  expect(getByName).not.toHaveBeenCalled();
+  const { socket, next } = await openSocket(
+    await fetch(
+      human(alpha, "/ws", undefined, {
+        Upgrade: "websocket",
+        "X-Heed-Workspace-Role": "owner",
+      }),
+    ),
+  );
+  expect(await next()).toMatchObject({ type: "SNAPSHOT" });
+  socket.send(
+    JSON.stringify({ type: "RESET_WORKSPACE", requestId: "reset", input }),
+  );
+  expect(await next()).toMatchObject({
+    type: "ERROR",
+    requestId: "reset",
+    error: { code: "forbidden" },
+  });
+});
+
+it("exposes data operations to hosts and revokes host-managed grants on reset", async () => {
+  const { alpha, fetch, human, workspace } = setupHost(hostLimits, "owner");
+  const stub = workspace(alpha);
+  await stub.addItem({ kind: "human" }, { title: "Host data" });
+  await stub.issueTestGrant();
+  const body = await new Response(await stub.exportWorkspace()).json();
+  expect(body).toMatchObject({ items: [{ title: "Host data" }] });
+  await stub.resetWorkspace();
+  expect(await stub.hasTestGrant()).toBe(false);
+
+  await stub.issueTestGrant();
+  const { socket, next } = await openSocket(
+    await fetch(human(alpha, "/ws", undefined, { Upgrade: "websocket" })),
+  );
+  expect(await next()).toMatchObject({ type: "SNAPSHOT", items: [] });
+  socket.send(
+    JSON.stringify({
+      type: "RESET_WORKSPACE",
+      requestId: "reset",
+      input: { confirmation: RESET_WORKSPACE_CONFIRMATION },
+    }),
+  );
+  expect(await next()).toMatchObject({ type: "ACK", requestId: "reset" });
+  expect(await stub.hasTestGrant()).toBe(false);
+});
 
 it("isolates the hosted human API, hibernating WebSockets, MCP and report by workspace", async () => {
   const host = setupHost();

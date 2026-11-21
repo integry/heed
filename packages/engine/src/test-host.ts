@@ -30,6 +30,19 @@ export const hostLimits: Limits = {
 
 export class HostedWorkspace extends Workspace {
   #events: UsageEvent[] = [];
+  #testGrant = false;
+
+  issueTestGrant() {
+    this.#testGrant = true;
+  }
+
+  hasTestGrant() {
+    return this.#testGrant;
+  }
+
+  protected override async revokeWorkspaceGrants() {
+    this.#testGrant = false;
+  }
 
   protected override get socketLimits() {
     return hostLimits;

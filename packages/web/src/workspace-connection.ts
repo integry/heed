@@ -1,4 +1,5 @@
 import type { SocketMessage, SocketRequest } from "@heedwork/core";
+import { WORKSPACE_RESET_CLOSE_CODE } from "@heedwork/core";
 import {
   initialWorkspaceState,
   queueMutation,
@@ -8,7 +9,11 @@ import {
 } from "./workspace-state";
 
 export function createWorkspaceConnection(notificationItemId: string | null) {
-  let state = { ...initialWorkspaceState(), notificationItemVersion: 0 };
+  let state = {
+    ...initialWorkspaceState(),
+    notificationItemVersion: 0,
+    resetVersion: 0,
+  };
   let activeSocket: WebSocket | undefined;
   const listeners = new Set<() => void>();
   type Ack = Extract<SocketMessage, { type: "ACK" }>;
@@ -26,12 +31,17 @@ export function createWorkspaceConnection(notificationItemId: string | null) {
     replies.clear();
   }
 
-  function publish(next: WorkspaceState, invalidateNotificationItem = false) {
+  function publish(
+    next: WorkspaceState,
+    invalidateNotificationItem = false,
+    reset = false,
+  ) {
     if (state === next) return;
     state = {
       ...next,
       notificationItemVersion:
         state.notificationItemVersion + Number(invalidateNotificationItem),
+      resetVersion: state.resetVersion + Number(reset),
     };
     for (const listener of listeners) listener();
   }
@@ -102,7 +112,7 @@ export function createWorkspaceConnection(notificationItemId: string | null) {
       if (!controller.signal.aborted) connect();
     }
 
-    function disconnected() {
+    function disconnected(reset = false) {
       if (controller.signal.aborted) return;
       clearTimeout(watchdog);
       activeSocket = undefined;
@@ -112,15 +122,21 @@ export function createWorkspaceConnection(notificationItemId: string | null) {
       rejectReplies(
         "Connection lost while saving. Check the workspace after reconnecting.",
       );
-      publish({
-        ...state,
-        seq: 0,
-        connection: "reconnecting",
-        pending: new Map(),
-        error: needsErrorBanner
-          ? "Connection lost while changes were saving. Check the workspace after reconnecting."
-          : state.error,
-      });
+      publish(
+        {
+          ...(reset ? initialWorkspaceState() : state),
+          seq: 0,
+          connection: "reconnecting",
+          pending: new Map(),
+          error: needsErrorBanner
+            ? "Connection lost while changes were saving. Check the workspace after reconnecting."
+            : reset
+              ? null
+              : state.error,
+        },
+        reset,
+        reset,
+      );
       retry = setTimeout(() => void retryConnection(), delay);
       delay = Math.min(delay * 2, 30_000);
     }
@@ -213,8 +229,9 @@ export function createWorkspaceConnection(notificationItemId: string | null) {
           }
         }
       });
-      socket.addEventListener("close", () => {
-        if (activeSocket === socket) disconnected();
+      socket.addEventListener("close", ({ code }) => {
+        if (activeSocket === socket)
+          disconnected(code === WORKSPACE_RESET_CLOSE_CODE);
       });
     }
 
@@ -230,6 +247,7 @@ export function createWorkspaceConnection(notificationItemId: string | null) {
       state = {
         ...initialWorkspaceState(),
         notificationItemVersion: state.notificationItemVersion + 1,
+        resetVersion: state.resetVersion,
       };
     };
   }

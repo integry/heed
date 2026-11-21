@@ -1,11 +1,17 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
+import {
+  INBOX_PROJECT_ID,
+  RESET_WORKSPACE_CONFIRMATION,
+  WORKSPACE_RESET_CLOSE_CODE,
+} from "@heedwork/core";
 import type { HistoryPage } from "@heedwork/core";
 import type { ItemOperationResult } from "@heedwork/core";
 import type { Event, Guidance, Project, TokenMetadata } from "@heedwork/core";
 import { fetchOpen } from "./worker-test-helpers";
 import { issueSession } from "./auth";
+import { tokenParts } from "./token-secrets";
 import type { PushEnv } from "./web-push";
 import { getWorkspaceStub } from "./workspace";
 
@@ -19,6 +25,7 @@ const bindings = {
   ...(env as Env & PushEnv),
   SESSION_SECRET: secret,
   WORKSPACE: { getByName } as unknown as Env["WORKSPACE"],
+  TOKEN_RATE_LIMITER: { limit: async () => ({ success: true }) },
 };
 
 beforeEach(async () => {
@@ -78,6 +85,7 @@ it("requires a signed session and a same-origin mutation before looking up the w
   });
   for (const path of [
     "/api/settings",
+    "/api/export",
     "/api/projects",
     "/api/tokens",
     "/api/history",
@@ -87,6 +95,7 @@ it("requires a signed session and a same-origin mutation before looking up the w
   }
   for (const [method, path] of [
     ["POST", "/api/command"],
+    ["POST", "/api/reset"],
     ["POST", "/api/transcribe"],
     ["POST", "/api/items"],
     ["PATCH", "/api/items/id"],
@@ -126,6 +135,207 @@ it("requires a signed session and a same-origin mutation before looking up the w
   expect(getByName).not.toHaveBeenCalled();
   await json(await request("/api/settings"));
   expect(getByName).toHaveBeenCalledWith("default");
+});
+
+it("exports workspace data and history without credentials or internal settings", async () => {
+  const project = await workspace.createProject({ name: "Archive", hidden: 1 });
+  const active = await addItem('Release "α"');
+  const archived = await addItem("Archived", {
+    project: project.id,
+    status: "cancelled",
+  });
+  const blocker = await addItem("Blocker");
+  await workspace.setDependency(
+    { kind: "human" },
+    {
+      item_id: active.id,
+      blocked_by_id: blocker.id,
+      action: "add",
+    },
+  );
+  await workspace.setTimezone("Europe/Tallinn");
+  await workspace.setGuidance({ kind: "human" }, "Review before merging.");
+  const token = await workspace.createToken("Private token label");
+  await runInDurableObject(workspace, (_instance, state) => {
+    state.storage.sql.exec(
+      "INSERT INTO push_subscriptions (endpoint, keys) VALUES ('private-endpoint', 'private-keys')",
+    );
+    state.storage.sql.exec("CREATE TABLE oauth_grants (secret TEXT)");
+    state.storage.sql.exec("INSERT INTO oauth_grants VALUES ('private-grant')");
+    state.storage.sql.exec(
+      "INSERT INTO settings VALUES ('command_undo', 'private-undo')",
+    );
+  });
+
+  const response = await request("/api/export");
+  expect(response.headers.get("Content-Disposition")).toBe(
+    'attachment; filename="heed-workspace.json"',
+  );
+  expect(response.headers.get("Cache-Control")).toBe("no-store");
+  expect(response.headers.get("Content-Type")).toBe("application/json");
+  expect(response.status).toBe(200);
+  const body = await response.text();
+  const data = JSON.parse(body);
+  expect(data).toEqual({
+    format_version: 1,
+    settings: {
+      timezone: "Europe/Tallinn",
+      guidance: "Review before merging.",
+      guidance_updated_at: expect.any(String),
+    },
+    projects: expect.arrayContaining([
+      expect.objectContaining({ id: INBOX_PROJECT_ID }),
+      project,
+    ]),
+    items: expect.arrayContaining([active, archived, blocker]),
+    dependencies: [{ item_id: active.id, blocked_by_id: blocker.id }],
+    events: expect.arrayContaining(
+      await workspace.getItemEvents({ item_id: active.id }),
+    ),
+  });
+  expect(data.items).toHaveLength(3);
+  expect(data.events.length).toBeGreaterThan(2);
+  for (const secret of [
+    token.token,
+    token.label,
+    token.id,
+    "secret_hash",
+    "private-endpoint",
+    "private-keys",
+    "private-grant",
+    "private-undo",
+  ]) {
+    expect(body).not.toContain(secret);
+  }
+});
+
+it("fails an interrupted export instead of mixing old and new data", async () => {
+  await runInDurableObject(workspace, async (instance) => {
+    const reader = instance.exportWorkspace().getReader();
+    expect((await reader.read()).done).toBe(false);
+    instance.createProject({ name: "Changed after export started" });
+    await expect(async () => {
+      while (!(await reader.read()).done) {
+        // The stream may already have queued a chunk before the change.
+      }
+    }).rejects.toThrow("The workspace changed during export.");
+  });
+});
+
+it("streams a JSON export larger than the Worker memory budget in bounded chunks", async () => {
+  await runInDurableObject(workspace, (_instance, { storage }) => {
+    storage.sql.exec(`
+      WITH RECURSIVE n(i) AS (VALUES (1) UNION ALL SELECT i + 1 FROM n WHERE i < 4400)
+      INSERT INTO items (id, project_id, title, tags)
+      SELECT 'item-' || i, 'inbox', 'Fixture ' || i,
+        '["' || hex(zeroblob(16384)) || '"]' FROM n
+    `);
+  });
+  const response = await request("/api/export");
+  expect(response.status).toBe(200);
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let first = "";
+  let last = "";
+  let itemCount = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const text = decoder.decode(value, { stream: true });
+    if (bytes === 0) first = text;
+    bytes += value.length;
+    if (value.length > 128 * 1024) throw new Error("Oversized export chunk");
+    itemCount += text.split('"title":"Fixture ').length - 1;
+    last = (last + text).slice(-100);
+  }
+  expect(first).toMatch(/^\{"format_version":1,"settings":/);
+  expect(last).toMatch(/\],"dependencies":\[\],"events":\[\]\}$/);
+  expect(bytes).toBeGreaterThan(128 * 1024 * 1024);
+  expect(itemCount).toBe(4400);
+}, 20_000);
+
+it("requires exact confirmation and resets storage, sockets and agent access", async () => {
+  const defaultSettings = await workspace.getSettings();
+  const item = await addItem("Remove me");
+  const { token } = await workspace.createToken("Before reset");
+  await workspace.setTimezone("Europe/Tallinn");
+  await workspace.setGuidance({ kind: "human" }, "Remove me too");
+  await runInDurableObject(workspace, async (_instance, { storage }) => {
+    await storage.put("grant", "old grant");
+    storage.sql.exec("CREATE TABLE oauth_grants (secret TEXT)");
+    storage.sql.exec("INSERT INTO oauth_grants VALUES ('old grant')");
+    storage.sql.exec(
+      "INSERT INTO push_subscriptions (endpoint, keys) VALUES ('old-endpoint', 'old-keys')",
+    );
+  });
+
+  const report = () =>
+    request(
+      "/api/report",
+      "POST",
+      { item_id: item.id, note: "Agent report" },
+      {
+        Authorization: `Bearer heed_default_${tokenParts(token)!.secret}`,
+        "Content-Type": "application/json",
+      },
+    );
+  expect((await report()).status).toBe(200);
+  await error(
+    await request("/api/reset", "POST", { confirmation: "reset workspace" }),
+    400,
+    "invalid_input",
+  );
+  expect((await workspace.getItem({ item_id: item.id })).title).toBe(
+    "Remove me",
+  );
+
+  const upgrade = await request("/ws", "GET", undefined, {
+    Cookie: cookie,
+    Origin: origin,
+    Upgrade: "websocket",
+  });
+  expect(upgrade.status).toBe(101);
+  const socket = upgrade.webSocket!;
+  onTestFinished(() => socket.close());
+  const closed = new Promise<number>((resolve) =>
+    socket.addEventListener("close", ({ code }) => resolve(code), {
+      once: true,
+    }),
+  );
+  socket.accept();
+  await expect(
+    json(
+      await request("/api/reset", "POST", {
+        confirmation: RESET_WORKSPACE_CONFIRMATION,
+      }),
+    ),
+  ).resolves.toEqual({ ok: true });
+  expect(await closed).toBe(WORKSPACE_RESET_CLOSE_CODE);
+
+  expect(await workspace.getSettings()).toEqual(defaultSettings);
+  expect(await workspace.listProjects()).toEqual([
+    { id: INBOX_PROJECT_ID, name: "Inbox", color: null, hidden: 0, sort: 0 },
+  ]);
+  expect(await workspace.listTokens()).toEqual([]);
+  expect((await report()).status).toBe(401);
+  const empty = await json<{ items: unknown[]; events: unknown[] }>(
+    await request("/api/export"),
+  );
+  expect(empty.items).toEqual([]);
+  expect(empty.events).toEqual([]);
+  await runInDurableObject(workspace, async (_instance, { storage }) => {
+    expect(await storage.get("grant")).toBeUndefined();
+    expect(
+      storage.sql
+        .exec("SELECT name FROM sqlite_master WHERE name = 'oauth_grants'")
+        .toArray(),
+    ).toEqual([]);
+    expect(
+      storage.sql.exec("SELECT * FROM push_subscriptions").toArray(),
+    ).toEqual([]);
+  });
+  expect((await addItem("Fresh item")).project_id).toBe(INBOX_PROJECT_ID);
 });
 
 it("creates, edits, unlocks and hard-deletes items as a human", async () => {
