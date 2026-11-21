@@ -674,6 +674,33 @@ it("defaults to Radar, opens a goal, and cross-highlights and resizes its childr
   expect(radar.getByRole("button", { name: goal.title })).toBeTruthy();
 });
 
+function mockRadarSize(width: number, height: number) {
+  let resize: (width: number, height: number) => void;
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) {
+        if (!target.classList.contains("radar-chart")) return;
+        resize = (width, height) =>
+          this.callback(
+            [
+              {
+                target,
+                contentRect: new DOMRect(0, 0, width, height),
+              } as ResizeObserverEntry,
+            ],
+            this,
+          );
+        resize(width, height);
+      }
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  return (width: number, height: number) => act(() => resize(width, height));
+}
+
 it.each([
   [360, 360, 560],
   [390, 390, 560],
@@ -683,27 +710,7 @@ it.each([
   "fits the radar and keeps labels at 11px through zoom at %ipx",
   async (width, chartWidth, chartHeight) => {
     mockViewport(width >= 768);
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        constructor(private callback: ResizeObserverCallback) {}
-        observe(target: Element) {
-          if (target.classList.contains("radar-chart")) {
-            this.callback(
-              [
-                {
-                  target,
-                  contentRect: new DOMRect(0, 0, chartWidth, chartHeight),
-                } as ResizeObserverEntry,
-              ],
-              this,
-            );
-          }
-        }
-        unobserve() {}
-        disconnect() {}
-      },
-    );
+    mockRadarSize(chartWidth, chartHeight);
     const { container } = await openWorkspace(undefined, {
       ...snapshot,
       items: [
@@ -762,6 +769,55 @@ it.each([
     expectLabels(1);
   },
 );
+
+it("renders packed bubbles and hides a ring label when its reservation fills their cell", async () => {
+  mockViewport(false);
+  const resize = mockRadarSize(360, 280);
+  const titles = ["Review payment retries", "Test failover alerts"];
+  const { container } = await openWorkspace(undefined, {
+    ...snapshot,
+    projects: Array.from({ length: 16 }, (_, sort) => ({
+      ...project,
+      id: sort === 0 ? project.id : `project-${sort}`,
+      name: `Project ${sort + 1}`,
+      sort,
+    })),
+    items: titles.map((title, index) => ({
+      ...goal,
+      id: `item-${index}`,
+      title,
+      progress: { done: 0, total: 0 },
+      priority: 10,
+      scheduled_on: tomorrow.scheduled_on,
+      layout_pos: '{"radar":{"angle":0.5,"radius":0.5}}',
+    })),
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const labels = () =>
+    [...container.querySelectorAll(".radar-band-label")].map(
+      (label) => label.textContent,
+    );
+  expect(labels()).toEqual(["Today · You", "Later", "Backlog"]);
+  const [a, b] = titles.map((name) => {
+    const bubble = radar.getByRole("button", { name });
+    const [x, y] = bubble
+      .parentElement!.getAttribute("transform")!
+      .slice("translate(".length, -1)
+      .split(",")
+      .map(Number);
+    const radius = Number(
+      bubble.querySelector(".radar-disc")!.getAttribute("r"),
+    );
+    expect(radius).toBeGreaterThan(0);
+    return { x, y, radius };
+  });
+  expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(
+    a.radius + b.radius,
+  );
+
+  resize(800, 655);
+  expect(labels()).toEqual(["Today · You", "This week", "Later", "Backlog"]);
+});
 
 it("keeps radar positions on status updates and filters attention and completed ghosts", async () => {
   await openWorkspace();

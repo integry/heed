@@ -41,7 +41,6 @@ import {
   readRadarPosition,
   ringLabel,
   scheduleForRing,
-  seedPosition,
   targetCell,
   truncateLabel,
   WIDTH,
@@ -97,11 +96,13 @@ function RadarField({
   highlight,
   scale,
   showLabels,
+  visibleBands,
 }: {
   projects: readonly Project[];
   highlight: Cell | null;
   scale: number;
   showLabels: boolean;
+  visibleBands: readonly RadarBand[];
 }) {
   const sectors = projects.length || 1;
   const labelId = useId();
@@ -179,23 +180,22 @@ function RadarField({
       {highlight && (
         <path d={pathForCell(highlight)} className="radar-drop-cell" />
       )}
-      {showLabels &&
-        RADAR_BANDS.map((band) => {
-          const { point, text } = ringLabel(band);
-          return (
-            <text
-              key={band}
-              x={point.x}
-              y={point.y}
-              dy="0.35em"
-              fontSize={font}
-              className="radar-band-label"
-              textAnchor="middle"
-            >
-              {text}
-            </text>
-          );
-        })}
+      {visibleBands.map((band) => {
+        const { point, text } = ringLabel(band);
+        return (
+          <text
+            key={band}
+            x={point.x}
+            y={point.y}
+            dy="0.35em"
+            fontSize={font}
+            className="radar-band-label"
+            textAnchor="middle"
+          >
+            {text}
+          </text>
+        );
+      })}
     </g>
   );
 }
@@ -372,39 +372,43 @@ export function RadarLens({
   const [layout, setLayout] = useState(buildLayout);
   if (layout.signature !== signature) setLayout(buildLayout());
 
+  const visibleBands = layout.radar?.visibleBands ?? [];
   const allItems = useMemo(() => [...items.values()], [items]);
   const bubbles = useMemo(
     () =>
-      setup.map(({ item, cell, position }) => {
+      setup.flatMap(({ item, cell, position }) => {
         const packed = layout.packed?.get(item.id);
-        const plotted = layout.radar?.get(item.id);
-        const scale = packed?.scale ?? plotted?.scale ?? 1;
+        const plotted = layout.radar?.placements.get(item.id);
+        const placement = goal ? packed : plotted;
+        if (!placement) return [];
+        const { scale } = placement;
         const radius = bubbleRadius(item.priority) * scale;
-        const point = goal
-          ? position
-            ? goalPoint(position, radius)
-            : (packed?.point ?? CENTER)
-          : cellPoint(
-              cell,
-              plotted?.position ?? position ?? seedPosition(item.id),
-            );
+        const point =
+          "point" in placement
+            ? position
+              ? goalPoint(position, radius)
+              : placement.point
+            : cellPoint(cell, placement.position);
 
         const ring = itemRing(item, now, items, dependencies);
         const rollup =
           item.progress.total > 0
             ? rollUpRing(item, allItems, dependencies, now)
             : null;
-        return {
-          item,
-          point,
-          radius,
-          scale,
-          ring,
-          rollup,
-          color:
-            projects[cell.sector].color ?? colors[cell.sector % colors.length],
-          opensGoal: Boolean(rows.get(item.id)?.children.length),
-        } satisfies Bubble;
+        return [
+          {
+            item,
+            point,
+            radius,
+            scale,
+            ring,
+            rollup,
+            color:
+              projects[cell.sector].color ??
+              colors[cell.sector % colors.length],
+            opensGoal: Boolean(rows.get(item.id)?.children.length),
+          } satisfies Bubble,
+        ];
       }),
     [setup, layout, goal, now, items, dependencies, projects, rows, allItems],
   );
@@ -421,8 +425,9 @@ export function RadarLens({
               ...radarTimeBadge(item, timeFormatter),
             })),
             labelScale,
+            visibleBands,
           ),
-    [bubbles, goal, labelScale, timeFormatter],
+    [bubbles, goal, labelScale, timeFormatter, visibleBands],
   );
   const drawOrder = useMemo(
     () =>
@@ -780,6 +785,7 @@ export function RadarLens({
                 highlight={highlight}
                 scale={labelScale}
                 showLabels={viewport.scale >= MIN_FIELD_SCALE}
+                visibleBands={visibleBands}
               />
             )}
             {displayed.map((bubble) => (

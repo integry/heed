@@ -109,8 +109,8 @@ it("places automatic bubbles deterministically in their cell and pins stored pos
       priority: 5,
     })),
   ];
-  const result = layoutRadar(nodes);
-  expect(layoutRadar([...nodes].reverse())).toEqual(result);
+  const { placements: result } = layoutRadar(nodes);
+  expect(layoutRadar([...nodes].reverse()).placements).toEqual(result);
   expect(result.get("fixed")?.position).toEqual(position);
   for (const placement of result.values()) {
     expect(targetCell(cellPoint(cell, placement.position), 4)).toEqual(cell);
@@ -178,10 +178,11 @@ it.each([false, true])(
         Math.min(width, height) - 50,
       );
       const layout = layoutRadar(nodes, scale);
-      expect(layout.size).toBe(dense ? 300 : 17);
+      expect(layout.placements.size).toBe(dense ? 300 : 17);
+      expect(layout.visibleBands).toEqual(RADAR_BANDS);
       expect(layoutRadar([...nodes].reverse(), scale)).toEqual(layout);
       const bubbles = nodes.map(({ id, cell, priority }) => {
-        const placement = layout.get(id)!;
+        const placement = layout.placements.get(id)!;
         const point = cellPoint(cell, placement.position);
         const radius = bubbleRadius(priority) * placement.scale;
         expect(targetCell(point, demoProjects.length)).toEqual(cell);
@@ -198,8 +199,10 @@ it.each([false, true])(
           ...radarTimeBadge(item, formatter),
         };
       });
-      const callouts = outsideLabels(bubbles, scale);
-      expect(outsideLabels([...bubbles].reverse(), scale)).toEqual(callouts);
+      const callouts = outsideLabels(bubbles, scale, layout.visibleBands);
+      expect(
+        outsideLabels([...bubbles].reverse(), scale, layout.visibleBands),
+      ).toEqual(callouts);
       if (!dense) expect(callouts.size).toBeGreaterThan(0);
       for (const [i, bubble] of bubbles.entries()) {
         for (const other of bubbles.slice(i + 1)) {
@@ -238,7 +241,7 @@ it("makes the largest priority three times the smallest", () => {
 it("packs colliding manual positions around the stored anchor", () => {
   const cell: Cell = { band: "later", sector: 1, sectors: 4 };
   const position = { angle: 0.45, radius: 0.5 };
-  const placements = layoutRadar([
+  const { placements } = layoutRadar([
     { id: "a", priority: 10, cell, position },
     { id: "b", priority: 10, cell, position },
   ]);
@@ -246,10 +249,62 @@ it("packs colliding manual positions around the stored anchor", () => {
   expect(placements.get("b")?.position).not.toEqual(position);
 });
 
+it.each([
+  [16, 280, ["today", "later", "backlog"]],
+  [2048, 225, []],
+] as const)(
+  "packs colliding items in a narrow cell with %i projects",
+  (sectors, height, expectedBands) => {
+    const cell: Cell = { band: "this-week", sector: 0, sectors };
+    const position = { angle: 0.5, radius: 0.5 };
+    const items = ["a", "b"].map((id) => ({
+      id,
+      priority: 10,
+      cell,
+      position,
+    }));
+    const { scale } = radarViewport(360, height, false);
+    const layout = layoutRadar(items, scale);
+    expect(layoutRadar([...items].reverse(), scale)).toEqual(layout);
+    expect(layout.visibleBands).toEqual(expectedBands);
+    const [a, b] = items.map(({ id, priority }) => {
+      const placement = layout.placements.get(id)!;
+      const point = cellPoint(cell, placement.position);
+      const radius = bubbleRadius(priority) * placement.scale;
+      expect(radius).toBeGreaterThan(0);
+      expect(targetCell(point, sectors)).toEqual(cell);
+      expect(
+        overlapsRingLabel(point, radius, scale * 0.65, layout.visibleBands),
+      ).toBe(false);
+      return { point, radius };
+    });
+    expect(
+      Math.hypot(a.point.x - b.point.x, a.point.y - b.point.y),
+    ).toBeGreaterThanOrEqual(a.radius + b.radius);
+  },
+);
+
 it("wraps titles to two lines before truncating", () => {
   expect(titleLines("Review payment reconciliation", 70, 11)).toEqual([
     "Review",
     "payment…",
   ]);
   expect(titleLines("Support templates", 50, 11)).toEqual(["Suppo…"]);
+});
+
+it("lets a bubble callout use space reserved only by a hidden ring label", () => {
+  const item = {
+    id: "a",
+    title: "Review payment reconciliation",
+    point: { x: 330, y: 240 },
+    radius: 10,
+    stamp: null,
+    badge: null,
+  };
+  expect(outsideLabels([item], 1, RADAR_BANDS).get(item.id)!.x).toBeLessThan(
+    item.point.x,
+  );
+  expect(
+    outsideLabels([item], 1, ["today", "later", "backlog"]).get(item.id)!.x,
+  ).toBeGreaterThan(item.point.x);
 });

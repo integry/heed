@@ -167,26 +167,21 @@ export function ringLabel(band: RadarBand) {
   return ringLabels[RADAR_BANDS.indexOf(band)];
 }
 
-function ringLabelClearance(point: Point, scale: number) {
-  if (scale === Infinity) return Infinity;
-  return Math.min(
-    ...ringLabels.map((label) =>
-      Math.hypot(
-        Math.max(
-          0,
-          Math.abs(point.x - label.point.x) - label.halfWidth / scale,
-        ),
-        Math.max(
-          0,
-          Math.abs(point.y - label.point.y) - label.halfHeight / scale,
-        ),
-      ),
-    ),
+function ringLabelClearance(point: Point, scale: number, band: RadarBand) {
+  const label = ringLabel(band);
+  return Math.hypot(
+    Math.max(0, Math.abs(point.x - label.point.x) - label.halfWidth / scale),
+    Math.max(0, Math.abs(point.y - label.point.y) - label.halfHeight / scale),
   );
 }
 
-export function overlapsRingLabel(point: Point, radius: number, scale: number) {
-  return ringLabelClearance(point, scale) < radius;
+export function overlapsRingLabel(
+  point: Point,
+  radius: number,
+  scale: number,
+  bands: readonly RadarBand[] = RADAR_BANDS,
+) {
+  return bands.some((band) => ringLabelClearance(point, scale, band) < radius);
 }
 
 function hash(value: string) {
@@ -218,13 +213,144 @@ export function readRadarPosition(
   };
 }
 
-export function layoutRadar(
-  items: readonly (LayoutItem & { cell: Cell })[],
-  fitScale = 1,
+type CellItem = LayoutItem & { cell: Cell };
+
+function cellClearance(cell: Cell, angle: number, distance: number) {
+  const { inner, outer, span } = cellBounds(cell);
+  const sectorEdge =
+    cell.sectors === 1
+      ? Infinity
+      : distance *
+        Math.min(Math.sin(span * angle), Math.sin(span * (1 - angle)));
+  return Math.min(distance - inner, outer - distance, sectorEdge);
+}
+
+function packCell(
+  group: readonly CellItem[],
+  labelScale: number,
+  bands: readonly RadarBand[],
 ) {
+  const { cell } = group[0];
+  const { inner, outer, start, span } = cellBounds(cell);
+  function clearance(point: Point, angle: number, distance: number) {
+    let space = cellClearance(cell, angle, distance);
+    for (const band of bands)
+      space = Math.min(space, ringLabelClearance(point, labelScale, band));
+    return space;
+  }
+  const area = ((outer ** 2 - inner ** 2) * span) / 2;
+  const step = Math.min(5, Math.sqrt(area / (12 * group.length)));
+  const radialSteps = Math.ceil((outer - inner) / step);
+  const candidates: { point: Point; position: Position; space: number }[] = [];
+  for (let row = 0; row < radialSteps; row++) {
+    const radius = (row + 0.5) / radialSteps;
+    const distance = inner + radius * (outer - inner);
+    const angularSteps = Math.ceil((distance * span) / step);
+    for (let column = 0; column < angularSteps; column++) {
+      const angle = (column + 0.5) / angularSteps;
+      const point = polar(start + angle * span, distance);
+      const space = clearance(point, angle, distance);
+      if (space > 0)
+        candidates.push({ position: { angle, radius }, point, space });
+    }
+  }
+
+  const ordered = group
+    .map((item) => {
+      const position = item.position ?? seedPosition(item.id);
+      const point = cellPoint(cell, position);
+      const space = clearance(
+        point,
+        position.angle,
+        inner + position.radius * (outer - inner),
+      );
+      return { ...item, preferred: { position, point, space } };
+    })
+    .sort(
+      (a, b) =>
+        Number(Boolean(b.position)) - Number(Boolean(a.position)) ||
+        b.priority - a.priority ||
+        a.id.localeCompare(b.id),
+    );
+
+  // Pack into each cell independently so crowding cannot shrink other cells.
+  // Try stored positions first, then use the nearest available slot.
+  let initialScale = 1;
+  for (const item of ordered) {
+    if (!item.position) continue;
+    const scale = (item.preferred.space - 2) / bubbleRadius(item.priority);
+    // A drop very near a boundary may shift inward to stay readable.
+    if (scale >= 0.5) initialScale = Math.min(scale, initialScale);
+  }
+  for (let scale = initialScale; scale >= 0.015; scale *= 0.88) {
+    const placed: { point: Point; radius: number; position: Position }[] = [];
+    for (const item of ordered) {
+      const radius =
+        bubbleRadius(item.priority) * scale + Math.min(2, scale * 8);
+      function fits({ point, space }: (typeof candidates)[number]) {
+        return (
+          space + 1e-9 >= radius &&
+          placed.every(
+            (other) =>
+              Math.hypot(point.x - other.point.x, point.y - other.point.y) >=
+              radius + other.radius,
+          )
+        );
+      }
+
+      let slot = fits(item.preferred) ? item.preferred : undefined;
+      if (!slot) {
+        let nearest = Infinity;
+        for (const candidate of candidates) {
+          const delta =
+            (candidate.point.x - item.preferred.point.x) ** 2 +
+            (candidate.point.y - item.preferred.point.y) ** 2;
+          if (delta < nearest && fits(candidate)) {
+            nearest = delta;
+            slot = candidate;
+          }
+        }
+      }
+      if (!slot) break;
+      placed.push({ ...slot, radius });
+    }
+    if (placed.length === ordered.length) {
+      return ordered.map(({ id }, index) => ({ id, ...placed[index], scale }));
+    }
+  }
+}
+
+function packCellAlongMidline(group: readonly CellItem[]) {
+  const { cell } = group[0];
+  const { inner, outer } = cellBounds(cell);
+  const spacing = (outer - inner) / group.length;
+  // Equally spaced centers fit even below the greedy packer's minimum scale.
+  const space = Math.min(
+    spacing / 2,
+    cellClearance(cell, 0.5, inner + spacing / 2),
+  );
+  const maxPriority = group.reduce(
+    (max, { priority }) => Math.max(max, priority),
+    1,
+  );
+  const scale = space / (bubbleRadius(maxPriority) + 8);
+  return group.map(({ id, priority }, index) => {
+    const position = { angle: 0.5, radius: (index + 0.5) / group.length };
+    return {
+      id,
+      position,
+      point: cellPoint(cell, position),
+      scale,
+      radius: (bubbleRadius(priority) + 8) * scale,
+    };
+  });
+}
+
+export function layoutRadar(items: readonly CellItem[], fitScale = 1) {
   // Keep the spoke clear at the overview's minimum zoom as well as at Fit.
-  const labelScale = fitScale >= MIN_FIELD_SCALE ? fitScale * 0.65 : Infinity;
-  const groups = new Map<string, (typeof items)[number][]>();
+  const labelScale = fitScale * 0.65;
+  let visibleBands = fitScale >= MIN_FIELD_SCALE ? [...RADAR_BANDS] : [];
+  const groups = new Map<string, CellItem[]>();
   for (const item of [...items].sort((a, b) => a.id.localeCompare(b.id))) {
     const key = `${item.cell.band}:${item.cell.sector}`;
     const group = groups.get(key);
@@ -232,109 +358,28 @@ export function layoutRadar(
     else groups.set(key, [item]);
   }
 
-  const result = new Map<string, { position: Position; scale: number }>();
+  const placements = new Map<string, { position: Position; scale: number }>();
   for (const group of groups.values()) {
-    const { cell } = group[0];
-    const { inner, outer, start, span } = cellBounds(cell);
-    function clearance(point: Point, angle: number, distance: number) {
-      const sectorEdge =
-        cell.sectors === 1
-          ? Infinity
-          : distance *
-            Math.min(Math.sin(span * angle), Math.sin(span * (1 - angle)));
-      return Math.min(
-        distance - inner,
-        outer - distance,
-        sectorEdge,
-        ringLabelClearance(point, labelScale),
+    let packed = packCell(group, labelScale, visibleBands);
+    if (!packed) {
+      const fallback =
+        (visibleBands.length ? packCell(group, labelScale, []) : undefined) ??
+        packCellAlongMidline(group);
+      // A label is shared across sectors. Remove it everywhere if it conflicts.
+      visibleBands = visibleBands.filter(
+        (band) =>
+          !fallback.some(
+            ({ point, radius }) =>
+              ringLabelClearance(point, labelScale, band) < radius,
+          ),
       );
+      packed = fallback;
     }
-    const area = ((outer ** 2 - inner ** 2) * span) / 2;
-    const step = Math.min(5, Math.sqrt(area / (12 * group.length)));
-    const radialSteps = Math.ceil((outer - inner) / step);
-    const candidates: { point: Point; position: Position; space: number }[] =
-      [];
-    for (let row = 0; row < radialSteps; row++) {
-      const radius = (row + 0.5) / radialSteps;
-      const distance = inner + radius * (outer - inner);
-      const angularSteps = Math.ceil((distance * span) / step);
-      for (let column = 0; column < angularSteps; column++) {
-        const angle = (column + 0.5) / angularSteps;
-        const point = polar(start + angle * span, distance);
-        const space = clearance(point, angle, distance);
-        if (space > 0)
-          candidates.push({ position: { angle, radius }, point, space });
-      }
-    }
-
-    const ordered = group
-      .map((item) => {
-        const position = item.position ?? seedPosition(item.id);
-        const point = cellPoint(cell, position);
-        const space = clearance(
-          point,
-          position.angle,
-          inner + position.radius * (outer - inner),
-        );
-        return { ...item, preferred: { position, point, space } };
-      })
-      .sort(
-        (a, b) =>
-          Number(Boolean(b.position)) - Number(Boolean(a.position)) ||
-          b.priority - a.priority ||
-          a.id.localeCompare(b.id),
-      );
-
-    // Pack into each cell independently so crowding cannot shrink other cells.
-    // Try stored positions first, then use the nearest available slot.
-    let initialScale = 1;
-    for (const item of ordered) {
-      if (!item.position) continue;
-      const scale = (item.preferred.space - 2) / bubbleRadius(item.priority);
-      // A drop very near a boundary may shift inward to stay readable.
-      if (scale >= 0.5) initialScale = Math.min(scale, initialScale);
-    }
-    for (let scale = initialScale; scale >= 0.015; scale *= 0.88) {
-      const placed: { point: Point; radius: number; position: Position }[] = [];
-      for (const item of ordered) {
-        const radius =
-          bubbleRadius(item.priority) * scale + Math.min(2, scale * 8);
-        function fits({ point, space }: (typeof candidates)[number]) {
-          return (
-            space + 1e-9 >= radius &&
-            placed.every(
-              (other) =>
-                Math.hypot(point.x - other.point.x, point.y - other.point.y) >=
-                radius + other.radius,
-            )
-          );
-        }
-
-        let slot = fits(item.preferred) ? item.preferred : undefined;
-        if (!slot) {
-          let nearest = Infinity;
-          for (const candidate of candidates) {
-            const delta =
-              (candidate.point.x - item.preferred.point.x) ** 2 +
-              (candidate.point.y - item.preferred.point.y) ** 2;
-            if (delta < nearest && fits(candidate)) {
-              nearest = delta;
-              slot = candidate;
-            }
-          }
-        }
-        if (!slot) break;
-        placed.push({ ...slot, radius });
-      }
-      if (placed.length === ordered.length) {
-        ordered.forEach(({ id }, index) => {
-          result.set(id, { position: placed[index].position, scale });
-        });
-        break;
-      }
+    for (const { id, position, scale } of packed) {
+      placements.set(id, { position, scale });
     }
   }
-  return result;
+  return { placements, visibleBands };
 }
 
 export function goalPosition(point: Point, radius: number): Position {

@@ -1,9 +1,9 @@
 import { workspaceInstant } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
+import type { RadarBand } from "../shared/workspace";
 import {
   CENTER,
   labelWidth,
-  RADAR_BANDS,
   RADAR_LABEL_FONT,
   RADAR_RADIUS,
   ringLabel,
@@ -123,9 +123,13 @@ function labelBoxOverlaps(a: LabelBox, b: LabelBox, gap: number) {
   );
 }
 
-export function outsideLabels(items: readonly LabelItem[], scale: number) {
+export function outsideLabels(
+  items: readonly LabelItem[],
+  scale: number,
+  visibleBands: readonly RadarBand[],
+) {
   const labels = new Map<string, OutsideLabel>();
-  const occupied = RADAR_BANDS.map((band) => {
+  const occupied = visibleBands.map((band) => {
     const { point, halfWidth, halfHeight } = ringLabel(band);
     return {
       ...point,
