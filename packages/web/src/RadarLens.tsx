@@ -481,11 +481,7 @@ export function RadarLens({
                 { ...cell, radial },
                 {
                   angle: placement.position.angle,
-                  radius: group
-                    ? (position?.radius ??
-                      group.orderedRadius ??
-                      placement.position.radius)
-                    : placement.position.radius,
+                  radius: group?.orderedRadius ?? placement.position.radius,
                 },
               );
 

@@ -1101,6 +1101,16 @@ it.each([
   },
 );
 
+function radarBubbleGeometry(bubble: Element) {
+  const [x, y] = bubble
+    .parentElement!.getAttribute("transform")!
+    .slice("translate(".length, -1)
+    .split(",")
+    .map(Number);
+  const radius = Number(bubble.querySelector(".radar-disc")!.getAttribute("r"));
+  return { x, y, radius };
+}
+
 it("renders packed bubbles and hides a ring label when its reservation fills their cell", async () => {
   mockViewport(false);
   const resize = mockRadarSize(360, 280);
@@ -1130,17 +1140,9 @@ it("renders packed bubbles and hides a ring label when its reservation fills the
     );
   expect(labels()).toEqual(["Today · You", "Later", "Backlog"]);
   const [a, b] = titles.map((name) => {
-    const bubble = radar.getByRole("button", { name });
-    const [x, y] = bubble
-      .parentElement!.getAttribute("transform")!
-      .slice("translate(".length, -1)
-      .split(",")
-      .map(Number);
-    const radius = Number(
-      bubble.querySelector(".radar-disc")!.getAttribute("r"),
-    );
-    expect(radius).toBeGreaterThan(0);
-    return { x, y, radius };
+    const geometry = radarBubbleGeometry(radar.getByRole("button", { name }));
+    expect(geometry.radius).toBeGreaterThan(0);
+    return geometry;
   });
   expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(
     a.radius + b.radius,
@@ -1248,6 +1250,96 @@ it("keeps bubble angles through a split and marks only today's local hard times"
     key: "Escape",
   });
   expect(coordinates()).toEqual(before);
+});
+
+it("keeps two saved center positions separated in the Needs me split", async () => {
+  mockRadarSize(800, 655);
+  const titles = ["Review retry policy", "Approve failover plan"];
+  const { container } = await openWorkspace(undefined, {
+    ...snapshot,
+    items: titles.map((title, index) => ({
+      ...goal,
+      id: `handoff-${index}`,
+      title,
+      progress: { done: 0, total: 0 },
+      handoff: 1,
+      layout_pos: '{"radar":{"angle":0.25,"radius":0}}',
+    })),
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+
+  fireEvent.click(radar.getByRole("button", { name: "Today" }));
+  const innerRingEdge = Number(
+    container.querySelector(".radar-subring")!.getAttribute("r"),
+  );
+  const [a, b] = titles.map((name) => {
+    const bubble = radarBubbleGeometry(radar.getByRole("button", { name }));
+    expect(bubble.radius).toBeGreaterThan(0);
+    expect(Math.hypot(bubble.x - CENTER.x, bubble.y - CENTER.y)).toBeLessThan(
+      innerRingEdge,
+    );
+    return bubble;
+  });
+  expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(
+    a.radius + b.radius,
+  );
+});
+
+it("uses manual order and priority in Next when saved radii run in reverse", async () => {
+  mockRadarSize(800, 655);
+  const tasks = [
+    {
+      id: "review-checklist",
+      title: "Review rollout checklist",
+      sort_key: 1,
+      priority: 4,
+      radius: 0.8,
+    },
+    {
+      id: "verify-failover",
+      title: "Plan failover drill",
+      sort_key: 2,
+      priority: 8,
+      radius: 0.5,
+    },
+    {
+      id: "update-runbook",
+      title: "Update runbook",
+      sort_key: 2,
+      priority: 5,
+      radius: 0.2,
+    },
+  ];
+  const { container } = await openWorkspace(undefined, {
+    ...snapshot,
+    items: tasks.map(({ radius, ...task }) => ({
+      ...goal,
+      ...task,
+      progress: { done: 0, total: 0 },
+      layout_pos: JSON.stringify({ radar: { angle: 0.35, radius } }),
+    })),
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const distances = () =>
+    tasks.map(({ title }) => {
+      const { x, y } = radarBubbleGeometry(
+        radar.getByRole("button", { name: title }),
+      );
+      return Math.hypot(x - CENTER.x, y - CENTER.y);
+    });
+  const [beforeFirst, beforeSecond, beforeThird] = distances();
+  expect(beforeFirst).toBeGreaterThan(beforeSecond);
+  expect(beforeSecond).toBeGreaterThan(beforeThird);
+
+  fireEvent.click(radar.getByRole("button", { name: "Today" }));
+  const [, inner, outer] = [
+    ...container.querySelectorAll(".radar-subring"),
+  ].map((ring) => Number(ring.getAttribute("r")));
+  const [first, second, third] = distances();
+  expect(first).toBeGreaterThan(inner);
+  expect(first).toBeLessThan(second);
+  expect(second).toBeLessThan(third);
+  expect(third).toBeLessThan(outer);
 });
 
 it("keeps radar positions on status updates and filters attention and completed ghosts", async () => {
