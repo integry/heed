@@ -1342,6 +1342,98 @@ it("uses manual order and priority in Next when saved radii run in reverse", asy
   expect(third).toBeLessThan(outer);
 });
 
+it("keeps manually ordered Next bubbles separated at their saved angles", async () => {
+  mockRadarSize(1350, 1350);
+  const positions = [
+    { angle: 0.5, radius: 0.31 },
+    { angle: 0.5, radius: 0.75 },
+    { angle: 0, radius: 0.75 },
+  ];
+  const titles = [
+    "Review rollout checklist",
+    "Plan failover drill",
+    "Update runbook",
+  ];
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: titles.map((title, index) => ({
+      ...goal,
+      id: `next-${index}`,
+      title,
+      sort_key: index + 1,
+      priority: 4,
+      progress: { done: 0, total: 0 },
+      layout_pos: JSON.stringify({ radar: positions[index] }),
+    })),
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const geometry = () =>
+    titles.map((name) =>
+      radarBubbleGeometry(radar.getByRole("button", { name })),
+    );
+  const [beforeFirst, beforeSecond] = geometry();
+  expect(beforeFirst.radius).toBe(20);
+  expect(beforeSecond.radius).toBe(20);
+  expect(beforeFirst.x).toBeCloseTo(beforeSecond.x);
+  expect(beforeSecond.y - beforeFirst.y).toBeCloseTo(45.32);
+
+  fireEvent.click(radar.getByRole("button", { name: "Today" }));
+  const after = geometry();
+  const distances = after.map(({ x, y }) =>
+    Math.hypot(x - CENTER.x, y - CENTER.y),
+  );
+  expect(distances[0]).toBeLessThan(distances[1]);
+  expect(distances[1]).toBeLessThan(distances[2]);
+  expect(after[0].x).toBeCloseTo(CENTER.x);
+  expect(after[1].x).toBeCloseTo(CENTER.x);
+  expect(after[2].x).toBeCloseTo(CENTER.x);
+  expect(after[0].y).toBeGreaterThan(CENTER.y);
+  expect(after[1].y).toBeGreaterThan(CENTER.y);
+  expect(after[2].y).toBeLessThan(CENTER.y);
+  for (const [index, bubble] of after.entries()) {
+    expect(bubble.radius).toBeGreaterThan(0);
+    for (const other of after.slice(index + 1)) {
+      expect(
+        Math.hypot(bubble.x - other.x, bubble.y - other.y),
+      ).toBeGreaterThanOrEqual(bubble.radius + other.radius);
+    }
+  }
+});
+
+it("keeps bubbles separated when a split shifts another band inward", async () => {
+  mockRadarSize(1350, 1350);
+  const titles = ["Audit retries", "Check alerts"];
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: titles.map((title, index) => ({
+      ...goal,
+      id: `week-${index}`,
+      title,
+      scheduled_on: tomorrow.scheduled_on,
+      priority: 4,
+      progress: { done: 0, total: 0 },
+      layout_pos: JSON.stringify({
+        radar: { angle: 0.5 + index * 0.0515, radius: 0.5 },
+      }),
+    })),
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const geometry = () =>
+    titles.map((name) =>
+      radarBubbleGeometry(radar.getByRole("button", { name })),
+    );
+  const [before] = geometry();
+  expect(before.radius).toBe(20);
+  expect(Math.hypot(before.x - CENTER.x, before.y - CENTER.y)).toBeCloseTo(140);
+
+  fireEvent.click(radar.getByRole("button", { name: "Backlog" }));
+  const [a, b] = geometry();
+  expect(Math.hypot(a.x - CENTER.x, a.y - CENTER.y)).toBeCloseTo(85);
+  expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(
+    a.radius + b.radius,
+  );
+});
+
 it("keeps radar positions on status updates and filters attention and completed ghosts", async () => {
   await openWorkspace();
   const radar = within(screen.getByRole("region", { name: "Radar" }));

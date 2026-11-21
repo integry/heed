@@ -81,6 +81,29 @@ type Gesture = {
 type Preview = { id: string; point: Point; priority?: number };
 type Subring = RadarSubgroup & RadialBounds;
 
+function fitOrderedBubbles(
+  ordered: { bubble: Bubble; edgeClearance: number }[],
+) {
+  let fit = 1;
+  const padded = ordered.map(({ bubble, edgeClearance }) => {
+    const radius = bubble.radius + Math.min(2, bubble.scale * 8);
+    fit = Math.min(fit, edgeClearance / radius);
+    return { point: bubble.point, radius };
+  });
+  for (const [index, a] of padded.entries()) {
+    for (let next = index + 1; next < padded.length; next++) {
+      const b = padded[next];
+      fit = Math.min(fit, distance(a.point, b.point) / (a.radius + b.radius));
+    }
+  }
+  if (fit < 1) {
+    for (const { bubble } of ordered) {
+      bubble.radius *= fit;
+      bubble.scale *= fit;
+    }
+  }
+}
+
 function subgroupLabel({ inner, outer }: RadialBounds) {
   return polar(-Math.PI / 2, (inner + outer) / 2);
 }
@@ -454,71 +477,82 @@ export function RadarLens({
     [markers, edges, labelScale],
   );
   const allItems = useMemo(() => [...items.values()], [items]);
-  const bubbles = useMemo(
-    () =>
-      setup.flatMap(({ item, cell, position }) => {
-        const packed = layout.packed?.get(item.id);
-        const plotted = layout.radar?.placements.get(item.id);
-        const placement = goal ? packed : plotted;
-        if (!placement) return [];
-        let { scale } = placement;
-        const size = bubbleRadius(item.priority);
-        const group = splitView.membership.get(item.id);
-        const radial = group?.radial ?? bandBounds(cell.band, splitView.edges);
-        const base = bandBounds(cell.band);
-        if (split && !goal)
-          scale *= Math.min(
-            1,
-            (radial.outer - radial.inner) / (base.outer - base.inner),
-          );
-        const radius = size * scale;
-        const point =
-          "point" in placement
-            ? position
-              ? goalPoint(position, radius)
-              : placement.point
-            : cellPoint(
-                { ...cell, radial },
-                {
-                  angle: placement.position.angle,
-                  radius: group?.orderedRadius ?? placement.position.radius,
-                },
-              );
+  const bubbles = useMemo(() => {
+    const ordered: { bubble: Bubble; edgeClearance: number }[] = [];
+    const projected = setup.flatMap(({ item, cell, position }) => {
+      const packed = layout.packed?.get(item.id);
+      const plotted = layout.radar?.placements.get(item.id);
+      const placement = goal ? packed : plotted;
+      if (!placement) return [];
+      let { scale } = placement;
+      const size = bubbleRadius(item.priority);
+      const group = splitView.membership.get(item.id);
+      const radial = group?.radial ?? bandBounds(cell.band, splitView.edges);
+      const base = bandBounds(cell.band);
+      const width = radial.outer - radial.inner;
+      if (split && !goal) {
+        // A band moved inward can lose more tangential than radial space.
+        scale *= Math.min(
+          1,
+          width / (base.outer - base.inner),
+          base.inner > 0 ? radial.inner / base.inner : 1,
+        );
+      }
+      const radius = size * scale;
+      const point =
+        "point" in placement
+          ? position
+            ? goalPoint(position, radius)
+            : placement.point
+          : cellPoint(
+              { ...cell, radial },
+              {
+                angle: placement.position.angle,
+                radius: group?.orderedRadius ?? placement.position.radius,
+              },
+            );
 
-        const ring = itemRing(item, now, items, dependencies);
-        const rollup =
-          item.progress.total > 0
-            ? rollUpRing(item, allItems, dependencies, now)
-            : null;
-        return [
-          {
-            item,
-            point,
-            radius,
-            scale,
-            ring,
-            rollup,
-            color:
-              projects[cell.sector].color ??
-              colors[cell.sector % colors.length],
-            opensGoal: Boolean(rows.get(item.id)?.children.length),
-          } satisfies Bubble,
-        ];
-      }),
-    [
-      setup,
-      layout,
-      goal,
-      now,
-      items,
-      dependencies,
-      projects,
-      rows,
-      allItems,
-      split,
-      splitView,
-    ],
-  );
+      const ring = itemRing(item, now, items, dependencies);
+      const rollup =
+        item.progress.total > 0
+          ? rollUpRing(item, allItems, dependencies, now)
+          : null;
+      const bubble: Bubble = {
+        item,
+        point,
+        radius,
+        scale,
+        ring,
+        rollup,
+        color:
+          projects[cell.sector].color ?? colors[cell.sector % colors.length],
+        opensGoal: Boolean(rows.get(item.id)?.children.length),
+      };
+      if (group?.orderedRadius !== undefined) {
+        ordered.push({
+          bubble,
+          edgeClearance:
+            width * Math.min(group.orderedRadius, 1 - group.orderedRadius),
+        });
+      }
+      return [bubble];
+    });
+    // Rank changes the packed distances, so fit the reordered group as a unit.
+    fitOrderedBubbles(ordered);
+    return projected;
+  }, [
+    setup,
+    layout,
+    goal,
+    now,
+    items,
+    dependencies,
+    projects,
+    rows,
+    allItems,
+    split,
+    splitView,
+  ]);
   const callouts = useMemo(() => {
     if (goal || labelScale < MIN_FIELD_SCALE) return;
     const reserved: LabelBox[] = [];
