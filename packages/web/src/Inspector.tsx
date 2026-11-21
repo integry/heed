@@ -1,3 +1,4 @@
+import { useResource } from "./api";
 import { useEffect, useRef, useState } from "react";
 import { LockableFieldSchema } from "@heedwork/core";
 import type { LockableField, UpdateItemInput } from "@heedwork/core";
@@ -13,7 +14,6 @@ import { depthLimitMessage } from "./QuickAdd";
 import {
   dateLabel,
   ProjectOptions,
-  readApi,
   TimeFields,
   timeInputInstant,
   timeInputValue,
@@ -51,10 +51,6 @@ function eventSummary(event: Event) {
 }
 
 function Activity({ item, timezone }: { item: Item; timezone: string }) {
-  const [result, setResult] = useState<{ events?: Event[]; error?: string }>(
-    {},
-  );
-  const [retry, setRetry] = useState(0);
   const itemId = item.id;
   // Heartbeat and layout broadcasts do not add activity entries.
   const eventFields = JSON.stringify([
@@ -67,44 +63,32 @@ function Activity({ item, timezone }: { item: Item; timezone: string }) {
     item.project_id,
     item.parent_id,
   ]);
-  useEffect(() => {
-    const controller = new AbortController();
-    void readApi<Event[]>(
-      `/api/items/${encodeURIComponent(itemId)}/events`,
-      controller.signal,
-    )
-      .then((events) => {
-        if (controller.signal.aborted) return;
-        if (!Array.isArray(events)) throw new Error("Couldn’t load activity.");
-        setResult({ events });
-      })
-      .catch((error: Error) => {
-        if (!controller.signal.aborted) setResult({ error: error.message });
-      });
-    return () => controller.abort();
-  }, [itemId, eventFields, retry]);
+  const { data, error, reload } = useResource<Event[]>(
+    `/api/items/${encodeURIComponent(itemId)}/events`,
+    eventFields,
+  );
+  const events = Array.isArray(data) ? data : undefined;
+  const message =
+    error?.message ??
+    (data !== undefined && !events ? "Couldn’t load activity." : "");
 
   return (
     <section className="inspector-section">
       <h3>Activity</h3>
-      {result.error ? (
+      {message ? (
         <div className="inline-actions">
-          <p role="alert">{result.error}</p>
-          <button
-            type="button"
-            className="subtle"
-            onClick={() => setRetry(retry + 1)}
-          >
+          <p role="alert">{message}</p>
+          <button type="button" className="subtle" onClick={reload}>
             Retry
           </button>
         </div>
-      ) : !result.events ? (
+      ) : !events ? (
         <p className="muted">Loading activity…</p>
-      ) : result.events.length === 0 ? (
+      ) : events.length === 0 ? (
         <p className="muted">No activity yet.</p>
       ) : (
         <ol className="activity-list">
-          {result.events.map((event) => (
+          {events.map((event) => (
             <li key={event.id}>
               <span>{eventSummary(event)}</span>
               <small>

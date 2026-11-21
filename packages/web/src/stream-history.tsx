@@ -1,3 +1,4 @@
+import { useApi } from "./api";
 import { useEffect, useRef, useState } from "react";
 import {
   ReopenBodySchema,
@@ -107,6 +108,7 @@ function HistoryResults({
   pendingIds,
   reopen,
 }: Omit<HistoryProps, "close"> & { query: string; project: string }) {
+  const { getJson } = useApi();
   const [page, setPage] = useState<HistoryPage | null>(null);
   const [request, setRequest] = useState<{ before?: string }>({});
   const [loading, setLoading] = useState(true);
@@ -121,11 +123,10 @@ function HistoryResults({
     if (request.before) params.set("before", request.before);
     async function load() {
       try {
-        const response = await fetch(`/api/history?${params}`, {
-          signal: controller.signal,
-        });
-        if (!response.ok) throw new Error("History request failed");
-        const next = (await response.json()) as HistoryPage;
+        const next = await getJson<HistoryPage>(
+          `/api/history?${params}`,
+          controller.signal,
+        );
         if (controller.signal.aborted) return;
         setPage((previous) => {
           const items = new Map(previous?.items.map((item) => [item.id, item]));
@@ -144,7 +145,7 @@ function HistoryResults({
     }
     void load();
     return () => controller.abort();
-  }, [project, query, request]);
+  }, [getJson, project, query, request]);
 
   useEffect(() => {
     const button = more.current;

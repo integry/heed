@@ -1,3 +1,4 @@
+import type { createApi } from "./api";
 import {
   VOICE_SAMPLE_RATE,
   VOICE_SECONDS,
@@ -142,27 +143,9 @@ async function record(stopped: AbortSignal, cancelled: AbortSignal) {
   }
 }
 
-export async function postCommandApi<T>(
-  path: string,
-  body: BodyInit,
-  type: string,
-  signal?: AbortSignal,
-): Promise<T> {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": type },
-    body,
-    signal,
-  });
-  if (!response.ok) {
-    const data = await response.json().catch(() => null);
-    throw new Error(data?.error?.message ?? "The request failed. Try again.");
-  }
-  return response.json();
-}
-
 export async function voiceTranscript({
   fallback,
+  requestJson,
   preferRecording,
   stopped,
   cancelled,
@@ -170,6 +153,7 @@ export async function voiceTranscript({
   onFallback,
 }: {
   fallback: boolean;
+  requestJson: ReturnType<typeof createApi>["requestJson"];
   preferRecording: boolean;
   stopped: AbortSignal;
   cancelled: AbortSignal;
@@ -200,11 +184,11 @@ export async function voiceTranscript({
   const context = new OfflineAudioContext(1, 1, VOICE_SAMPLE_RATE);
   const audio = await context.decodeAudioData(await recording.arrayBuffer());
   aborted(cancelled);
-  const result = await postCommandApi<{ text: string }>(
-    "/api/transcribe",
-    encodeWave(audio),
-    "audio/wav",
-    cancelled,
-  );
+  const result = await requestJson<{ text: string }>("/api/transcribe", {
+    method: "POST",
+    headers: { "Content-Type": "audio/wav" },
+    body: encodeWave(audio),
+    signal: cancelled,
+  });
   return result.text;
 }
