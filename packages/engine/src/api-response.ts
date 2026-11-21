@@ -17,7 +17,12 @@ export function workspaceOperationError(error: unknown) {
   }
   const message = error instanceof Error ? error.message : "";
   if (
-    ["Item not found", "Project not found", "Token not found"].includes(message)
+    [
+      "Item not found",
+      "Project not found",
+      "Token not found",
+      "Verdict not found",
+    ].includes(message)
   ) {
     return { status: 404, code: "not_found", message };
   }

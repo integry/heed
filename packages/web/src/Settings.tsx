@@ -9,6 +9,7 @@ import type {
   ConnectedApp,
   CreatedToken,
   Item,
+  JudgeAgreement,
   Project,
   Scope,
   TokenMetadata,
@@ -817,7 +818,40 @@ function WorkspaceData({ live, save }: SettingsActions) {
   );
 }
 
+function ShadowJudgeAgreement({ revision }: { revision: number }) {
+  const { data, error, reload } = useResource<JudgeAgreement>(
+    "/api/judge/agreement",
+    revision,
+  );
+  if (!data?.verdicts && !error) return null;
+  return (
+    <section
+      className="settings-section"
+      aria-labelledby="judge-agreement-heading"
+    >
+      <h3 id="judge-agreement-heading">Shadow judge agreement</h3>
+      {error ? (
+        <div className="inline-actions">
+          <p role="alert">Couldn’t load judge agreement.</p>
+          <button type="button" className="subtle" onClick={reload}>
+            Retry
+          </button>
+        </div>
+      ) : (
+        data && (
+          <p className="muted">
+            {data.reviewed} of {data.verdicts} verdicts reviewed.
+            {data.reviewed > 0 &&
+              ` Agreed with ${data.agreed} of ${data.reviewed} reviewed verdicts (${Math.round((100 * data.agreed) / data.reviewed)}%).`}
+          </p>
+        )
+      )}
+    </section>
+  );
+}
+
 export function Settings({
+  judgeAgreementRevision,
   projects,
   items,
   timezone,
@@ -833,6 +867,7 @@ export function Settings({
   openGuide,
   demoLoaded,
 }: SettingsActions & {
+  judgeAgreementRevision: number;
   projects: readonly Project[];
   items: ReadonlyMap<string, Item>;
   timezone: string;
@@ -868,6 +903,9 @@ export function Settings({
         </section>
       )}
       {show("notifications") && <PushSettings key={resetVersion} />}
+      {!focus && judgeAgreementRevision > 0 && (
+        <ShadowJudgeAgreement revision={judgeAgreementRevision} />
+      )}
       {show("projects") && (
         <Projects projects={projects} items={items} live={live} save={save} />
       )}

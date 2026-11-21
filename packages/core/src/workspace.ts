@@ -24,6 +24,8 @@ export const EventKindSchema = z.enum([
   "reopened",
   "moved",
   "notified",
+  "judged",
+  "judge_feedback",
 ]);
 
 export const DEFAULT_WORKSPACE_ID = "default";
