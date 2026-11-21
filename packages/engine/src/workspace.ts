@@ -2134,7 +2134,7 @@ export class Workspace<
 
         const response = await fetch(endpoint, {
           ...payload,
-          redirect: "error",
+          redirect: "manual",
         });
         void response.body?.cancel().catch(() => {});
         if (response.status === 404 || response.status === 410) {
