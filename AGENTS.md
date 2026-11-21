@@ -4,10 +4,15 @@
 
 ## Layout and testing
 
-- Put Worker routes, Durable Objects, and server-side operations in `src/worker`.
-- Put runtime-independent contracts and utilities in `src/shared`.
-- Put the React frontend in `src/web`. Vite builds its static assets into `dist/web`.
-- Co-locate tests with the code they cover. Worker tests run under Vitest in workerd. Web tests run under Vitest with jsdom. Run `npm run check` before handing off changes.
+- Put Worker routes, Durable Objects, and server-side operations in `packages/engine/src`. The self-hostable Worker entry is `packages/engine/src/worker.ts`. Keep Wrangler configuration, the local environment template, and the helper scripts at the repository root.
+- Put runtime-independent contracts and utilities in `packages/core/src`. Core builds to ESM and type declarations and has no Cloudflare or DOM dependencies.
+- Put the React frontend in `packages/web/src`. Vite builds its static assets into `packages/web/dist`.
+- Import other workspaces through their package entry points, such as `@heedwork/core`. Never import from another package's `src` directory.
+- Co-locate tests with the code they cover. Each package has a Vitest project. Engine tests run in workerd and web tests run in jsdom. Run `npm run check` from the root before handing off changes.
+
+## Seams
+
+Nothing in this repository may assume the cloud layer exists. Code that would differ in a hosted service goes behind a seam defined in [section 8 of the architecture spec](docs/architecture.md#8-open-core-and-cloud).
 
 ## Operations
 

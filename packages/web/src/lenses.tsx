@@ -1,0 +1,153 @@
+import type { ComponentType } from "react";
+import type { StreamRow } from "@heedwork/core";
+import type { CanvasItem } from "@heedwork/core";
+import type { Dependency, Project } from "@heedwork/core";
+import { GuideEmpty } from "./Onboarding";
+import { DemoBadge } from "./item-markers";
+import { itemStatus } from "./workspace-view";
+import { DependenciesLens } from "./DependenciesLens";
+import { BoardLens } from "./BoardLens";
+import type { StreamMove } from "./stream-move";
+import { RadarLens } from "./RadarLens";
+import { TreemapLens } from "./TreemapLens";
+import type { RadarPlacement } from "./radar-geometry";
+
+export interface LensProps {
+  openGuide?: () => void;
+  tree: readonly StreamRow<CanvasItem>[];
+  projects: readonly Project[];
+  items: ReadonlyMap<string, CanvasItem>;
+  dependencies: readonly Dependency[];
+  filtered: ReadonlyMap<string, CanvasItem>;
+  changeDependency: (edge: Dependency, action: "add" | "remove") => void;
+  savingDependency: boolean;
+  selectedId: string | null;
+  now: number;
+  timezone: string;
+  live: boolean;
+  showGhosts: boolean;
+  goalId: string | null;
+  focusGoal: (id: string | null) => void;
+  openDependencies?: () => void;
+  select: (id: string | null) => void;
+  move: (mutation: StreamMove) => boolean;
+  reschedule: (id: string, date: string | null) => void;
+  moveProject: (id: string, projectId: string) => void;
+  setPriority: (id: string, priority: number) => void;
+  setPosition: (id: string, position: Record<string, number>) => void;
+  moveRadar: (id: string, drop: RadarPlacement, layoutKey?: string) => void;
+}
+
+export interface Lens {
+  id: string;
+  label: string;
+  component: ComponentType<LensProps>;
+}
+
+function ListRows({
+  tree,
+  ...rowProps
+}: Pick<
+  LensProps,
+  "tree" | "items" | "dependencies" | "selectedId" | "now" | "select"
+>) {
+  const { items, dependencies, selectedId, now, select } = rowProps;
+  return (
+    <ul className="item-list">
+      {tree.map(({ item, children }) => {
+        const status = itemStatus(item, now, items, dependencies);
+        return (
+          <li key={item.id}>
+            <button
+              type="button"
+              className="item-row"
+              aria-pressed={selectedId === item.id}
+              onClick={() => select(item.id)}
+            >
+              <span className="item-title">{item.title}</span>
+              {item.demo === 1 && <DemoBadge />}
+              <span className="item-status" data-status={status}>
+                {status}
+              </span>
+            </button>
+            {children.length > 0 && <ListRows tree={children} {...rowProps} />}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function ListLens({
+  tree,
+  projects,
+  items,
+  dependencies,
+  selectedId,
+  now,
+  select,
+  openGuide,
+}: LensProps) {
+  if (!tree.length)
+    return (
+      <GuideEmpty openGuide={openGuide}>No items in this view.</GuideEmpty>
+    );
+  return projects.map(({ id, name, demo }) => {
+    const rows = tree.filter(({ item }) => item.project_id === id);
+    if (!rows.length) return null;
+    return (
+      <section className="project-group" key={id}>
+        <h3>
+          {name}
+          {demo === 1 && (
+            <>
+              {" "}
+              <DemoBadge />
+            </>
+          )}
+        </h3>
+        <ListRows
+          tree={rows}
+          items={items}
+          dependencies={dependencies}
+          selectedId={selectedId}
+          now={now}
+          select={select}
+        />
+      </section>
+    );
+  });
+}
+
+export const lensRegistry: readonly [Lens, ...Lens[]] = [
+  { id: "radar", label: "Radar", component: RadarLens },
+  { id: "board", label: "Board", component: BoardLens },
+  { id: "treemap", label: "Treemap", component: TreemapLens },
+  { id: "list", label: "List", component: ListLens },
+  { id: "dependencies", label: "Dependencies", component: DependenciesLens },
+];
+
+const storageKey = "heed.lens";
+
+export function resolveLens(
+  registry: readonly [Lens, ...Lens[]],
+  id: string | null,
+) {
+  return registry.find((lens) => lens.id === id) ?? registry[0];
+}
+
+export function readLensId() {
+  try {
+    return localStorage.getItem(storageKey);
+  } catch {
+    return null;
+  }
+}
+
+export function rememberLens(id: string) {
+  try {
+    localStorage.setItem(storageKey, id);
+  } catch {
+    // The current tab can still switch lenses with storage disabled.
+  }
+}

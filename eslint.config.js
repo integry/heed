@@ -5,9 +5,9 @@ import tseslint from "typescript-eslint";
 export default [
   {
     ignores: [
-      "dist/",
-      "coverage/",
-      ".wrangler/",
+      "**/dist/",
+      "**/coverage/",
+      "**/.wrangler/",
       ".propr/",
       "worker-configuration.d.ts",
     ],

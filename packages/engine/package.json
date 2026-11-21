@@ -1,0 +1,38 @@
+{
+  "name": "@heedwork/engine",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/integry/heed.git",
+    "directory": "packages/engine"
+  },
+  "files": [
+    "dist/index.js",
+    "dist/**/*.d.ts"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "wrangler --cwd ../.. types && wrangler --cwd ../.. deploy --dry-run --outdir packages/engine/dist && esbuild src/index.ts --bundle --format=esm --platform=neutral --packages=external --outfile=dist/index.js && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@block65/webcrypto-web-push": "^2.0.0",
+    "@heedwork/core": "0.1.0",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.23.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.165.0"
+  }
+}

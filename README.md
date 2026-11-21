@@ -19,7 +19,7 @@ Heed is a human-first attention view for work you do and work your agents do. Se
 
 **Deploy your own workspace** using the [self-hosting guide](docs/self-hosting.md). It covers Cloudflare deployment, Google sign-in, and creating your first agent token.
 
-**Try it locally** from a copy of the [Heed source](https://github.com/integry/heed/tree/1-epic-heed-mvp-nip). Use Node.js 22.22.2 or a newer release in the Node 22 series, with npm and OpenSSL installed. From the repository root:
+**Try it locally** from a copy of the [Heed source](https://github.com/integry/heed/tree/51-epic-heed-open-dcm). Use Node.js 22.22.2 or a newer release in the Node 22 series, with npm and OpenSSL installed. From the repository root:
 
 ```sh
 npm ci
@@ -35,6 +35,14 @@ npm run dev
 
 In another terminal, optionally run `npm run seed:radar` to populate a demo workspace. Use `npm run seed:radar -- --dense` for a larger demo. Open <http://localhost:8787/auth/dev-login> to sign in. Restart the dev command after frontend changes to rebuild its static assets.
 
+## Repository layout
+
+- `packages/core` (`@heedwork/core`) contains the shared types, schemas, and derived-state functions.
+- `packages/engine` (`@heedwork/engine`) contains the Cloudflare Worker and Workspace Durable Object.
+- `packages/web` (`@heedwork/web`) contains the React app. The root [Wrangler configuration](wrangler.jsonc) serves `packages/web/dist` and points to the Worker entry in the engine.
+
+Run `npm run check` from the repository root to typecheck, lint, test, and build all three workspaces.
+
 ## Documentation
 
 - [Self-hosting on Cloudflare](docs/self-hosting.md)
@@ -42,4 +50,4 @@ In another terminal, optionally run `npm run seed:radar` to populate a demo work
 - [Operating costs and the Workers Free plan](docs/cost.md)
 - [Product and architecture specification](docs/architecture.md)
 
-Run `npm run check` before submitting changes. Heed is released under the [MIT License](LICENSE).
+Heed is released under the [MIT License](LICENSE).
