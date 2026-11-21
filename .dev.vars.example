@@ -1,0 +1,45 @@
+# Copy to .dev.vars for local development.
+# Register http://localhost:8787/auth/callback as a redirect URI for your Google
+# OAuth web client. For a deployment, register its HTTPS /auth/callback URL.
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+
+# Generate a separate secret for each environment with: openssl rand -hex 32
+SESSION_SECRET=
+
+# Set a separate secret (openssl rand -hex 32) to enable the token bootstrap.
+# With Wrangler running, use npm run token:create -- "Build agent" report
+ADMIN_SECRET=
+
+# Approximate per-token request limit per minute (1–1000, defaults to 60).
+# TOKEN_RATE_LIMIT_PER_MINUTE=60
+
+# Comma-separated Google account emails. An empty list denies Google sign-ins.
+ALLOWED_EMAILS=
+
+# Optional local shortcut at http://localhost:8787/auth/dev-login.
+# Requires SESSION_SECRET and bypasses Google and ALLOWED_EMAILS.
+# DEV_LOGIN_EMAIL=dev@example.test
+
+# Enable the command bar with either a tool-calling Workers AI model or Anthropic.
+# If both are configured, Anthropic takes precedence. Use Wrangler secrets for deployed API keys.
+# WORKERS_AI_COMMAND_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast
+# ANTHROPIC_COMMAND_MODEL=
+# ANTHROPIC_API_KEY=
+#
+# Per-session, per-minute limit applied separately to commands and transcription.
+# COMMAND_RATE_LIMIT_PER_MINUTE=8
+# Daily per-workspace limits, reset at midnight UTC.
+# COMMAND_DAILY_LIMIT=100
+# TRANSCRIBE_DAILY_LIMIT=100
+
+# Generate a separate key pair for each environment with npm run vapid:generate.
+# Keep these three values in Wrangler secrets in deployed environments.
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=
+# Set to a contact URL or a mailto: address, such as mailto:admin@example.com.
+VAPID_SUBJECT=
+
+# Maximum agent handoff notifications per token per rolling hour (default 6).
+# Each handoff counts once and is delivered to all subscribed devices. Set 0 to disable.
+# PUSH_RATE_LIMIT_PER_HOUR=6

@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check documentation links
+        uses: lycheeverse/lychee-action@v2.9.0
+        with:
+          # Keep the generated report outside Prettier's workspace scan.
+          output: ${{ runner.temp }}/lychee-report.md
+          # The deploy link hands off to the authenticated Cloudflare dashboard.
+          args: >-
+            --no-progress --exclude-loopback --include-fragments=anchor-only
+            --exclude '^https://deploy\.workers\.cloudflare\.com/\?url='
+            README.md 'docs/**/*.md'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci && npm run check

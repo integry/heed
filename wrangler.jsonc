@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "heed",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-08-15",
+  "assets": {
+    "directory": "./dist/web",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/auth/*", "/ws", "/mcp"],
+  },
+  // Uncomment to use Workers AI for commands or Whisper transcription.
+  // "ai": { "binding": "AI" },
+  "durable_objects": {
+    "bindings": [{ "name": "WORKSPACE", "class_name": "Workspace" }],
+  },
+  "ratelimits": [
+    {
+      "name": "TOKEN_RATE_LIMITER",
+      "namespace_id": "1001",
+      // Requests are weighted in agent-auth.ts using TOKEN_RATE_LIMIT_PER_MINUTE.
+      "simple": { "limit": 1000000, "period": 60 },
+    },
+  ],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Workspace"] }],
+}

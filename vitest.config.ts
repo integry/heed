@@ -1,0 +1,44 @@
+import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  test: {
+    projects: [
+      {
+        test: {
+          name: "shared",
+          include: ["src/shared/**/*.test.ts"],
+        },
+      },
+      {
+        plugins: [
+          cloudflareTest({
+            wrangler: { configPath: "./wrangler.jsonc" },
+            remoteBindings: false,
+            miniflare: {
+              bindings: {
+                // Test-only P-256 key pair for signing requests to mocked endpoints.
+                VAPID_SUBJECT: "mailto:push@example.test",
+                VAPID_PUBLIC_KEY:
+                  "BPZgAepABXAFmhGrRJbv94iqTN8LjQtAzS5aQKPQ7l9h7G2C4IJvsMM9KbFxLxCnC5mgkAfPzKhC1lJ7R6I27U8",
+                VAPID_PRIVATE_KEY:
+                  "Vz_5Zt2i1QxMn423Vyn4SMmeyUrmeVxtI51zBbv9Gqw",
+              },
+            },
+          }),
+        ],
+        test: {
+          name: "worker",
+          include: ["src/worker/**/*.test.ts"],
+        },
+      },
+      {
+        test: {
+          name: "web",
+          environment: "jsdom",
+          include: ["src/web/**/*.test.{ts,tsx}"],
+        },
+      },
+    ],
+  },
+});
