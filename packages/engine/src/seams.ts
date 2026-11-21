@@ -11,8 +11,11 @@ export interface WorkspaceSession {
 export interface AuthProvider {
   /** Return the signed-in user and their current workspace, or null. */
   session(request: Request): Promise<WorkspaceSession | null>;
-  /** Handle every request under /auth/. */
+  /** Handle host sign-in routes under /auth/. */
   handleAuthRoute(request: Request): Promise<Response>;
+  /** Start browser sign-in and resume at the given same-origin path.
+   * Defaults to /auth/login with a returnTo query parameter. */
+  signIn?(request: Request, returnTo: string): Response | Promise<Response>;
   /** Route a full bearer token to an existing workspace without a Durable Object lookup. */
   workspaceForToken(token: string): Promise<string | null>;
 }

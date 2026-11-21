@@ -160,17 +160,18 @@ One Cloudflare Worker serves the frontend (Workers Static Assets), handles auth 
 |  Browser / Mobile PWA     |          |  Agents (Claude Code, Cursor,     |
 |  (React + D3 + WebSpeech) |          |  Codex) and session hooks         |
 +-------------+-------------+          +-----------------+-----------------+
-              | session cookie                           | Bearer API token
+              | session cookie                           | Bearer token
               | HTTPS (/, /api/*) & WSS (/ws)            | /mcp, /api/report
               v                                          v
 +--------------------------------------------------------------------------+
 |                          CLOUDFLARE WORKER                               |
 |  · /              -> static assets                                       |
-|  · /auth/*        -> Google sign-in, issues session cookie               |
+|  · /auth/*        -> browser sign-in and MCP OAuth endpoints            |
+|  · /.well-known/* -> MCP OAuth discovery documents                       |
 |  · /ws            -> checks session -> upgrades into Workspace DO        |
 |  · /api/*         -> checks session -> Workspace DO (RPC)                |
 |  · /api/command   -> checks session -> LLM tool loop -> Workspace DO     |
-|  · /mcp           -> checks token -> stateless MCP handler -> DO (RPC)   |
+|  · /mcp           -> route + limit token -> Workspace DO (one RPC)       |
 |  · /api/report    -> checks token -> Workspace DO (RPC)                  |
 +------------------------------------+-------------------------------------+
                                      |
@@ -185,7 +186,7 @@ One Cloudflare Worker serves the frontend (Workers Static Assets), handles auth 
 
 Design notes:
 
-* **MCP is a stateless Streamable HTTP handler in the Worker** that calls the workspace DO over RPC. No SSE transport, and no per-session MCP Durable Object. (Check the current Cloudflare `agents` SDK for the stateless handler helper before implementing.)
+* **MCP is stateless Streamable HTTP.** The Worker routes and rate-limits the token before one Workspace RPC. Inside that call, the Workspace verifies the secret and serves the MCP request using its existing operations. The handler keeps no MCP session and offers JSON responses.
 * **The DO is keyed by workspace ID, not user ID**, from day one. Self-hosted deployments use a single workspace, `default`. This keeps shared team workspaces possible later without a data migration.
 * **No alarm is needed.** The 24-hour ghost window, staleness and the time bands are all computed at query/render time.
 * **Schema versioning.** `settings.schema_version` is checked in the DO constructor and migrations run before any request is served.
@@ -200,6 +201,7 @@ Design notes:
 | --- | --- | --- |
 | Human (browser, PWA) | Google sign-in (OAuth code flow in the Worker) → signed, HttpOnly session cookie | `/`, `/ws`, `/api/*`, `/api/command` |
 | Agent / hook | Per-workspace API token, `Authorization: Bearer heed_<workspaceId>_<secret>` | `/mcp`, `/api/report` |
+| OAuth-capable MCP client | Browser sign-in and consent, then an audience-bound bearer access token | `/mcp` |
 
 * **Self-hosted:** the deployer supplies their own Google OAuth client ID/secret and an `ALLOWED_EMAILS` list. Anyone else is rejected.
 * **Hosted:** any Google account can sign in; a registry (D1) maps accounts to workspaces.
@@ -209,7 +211,8 @@ Design notes:
 * A token's label is the default `agent_name` for everything it reports, so one token per agent or machine gives stable names. A token can also carry a default project for new items.
 * The token's workspace ID lets the Worker route to the right DO without a lookup; the DO verifies the secret.
 * `/ws` and every mutating `/api/*` request check the `Origin` header; the session cookie is `SameSite=Lax`.
-* Later option: MCP OAuth, so clients that require it can connect without a pasted token.
+* **MCP sign-in** uses the active browser workspace and requires consent, including the agent label and scope. Codes expire after five minutes and require S256 PKCE. Access tokens last up to one hour. Clients that register for refresh tokens receive rotating credentials with a 90-day grant lifetime. Revocation in Connected apps removes the grant and its credentials.
+* OAuth is implemented directly in `createApp` following the [MCP 2026-07-28 authorization specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization). Client registration uses its Dynamic Client Registration compatibility path. Cloudflare’s provider [stores its OAuth state in KV](https://github.com/cloudflare/workers-oauth-provider/blob/main/storage-schema.md). Heed stores registration records in a dedicated, issuer-keyed instance of the Workspace Durable Object class, since registration precedes workspace selection. Consent and credentials live in the selected workspace’s SQLite database. This uses the existing binding and keeps credential rotation and revocation atomic.
 
 ---
 
@@ -438,7 +441,8 @@ A host replaces these and nothing else. Every method is async so a host may cons
 
 * **`AuthProvider`** — who is this, and which workspace are they in.
   * `session(request)` resolves a browser request to `{ workspaceId, user: { id, email, name }, role }` or nothing.
-  * `handleAuthRoute(request)` owns everything under `/auth/*` (sign-in, callback, sign-out).
+  * `handleAuthRoute(request)` owns the host’s sign-in, callback, and sign-out routes under `/auth/*`. The engine reserves its MCP OAuth routes under `/auth/mcp/*`.
+  * `signIn(request, returnTo)` optionally starts host sign-in for OAuth consent. The engine defaults to `/auth/login?returnTo=…`. Hosts validate the local return path and resume there after sign-in.
   * `workspaceForToken(token)` returns the workspace ID an agent token belongs to, or nothing, **without** instantiating a Durable Object, so tokens for workspaces that do not exist are rejected in the Worker.
   * Open build: `googleAllowlistAuth` — Google sign-in limited to `ALLOWED_EMAILS`, the single workspace `default`, role `owner`.
 * **`Limits`** — may this workspace do this. `check(workspaceId, action)` answers `{ ok: true }` or `{ ok: false, reason }` for `item.create`, `project.create`, `token.create`, `command`, `transcribe`, `push` and `connect` (opening a session or accepting an agent call at all, so a host can suspend a workspace). Refusals are explicit to both the UI and agents. Open build: `basicLimits` — the rate limits and fixed caps configured by vars.

@@ -112,6 +112,37 @@ const migrations = [
   (sql: SqlStorage) => {
     sql.exec("ALTER TABLE events ADD COLUMN actor_user TEXT");
   },
+  // Version 6
+  (sql: SqlStorage) => {
+    sql.exec(`
+      CREATE TABLE oauth_clients (
+        id TEXT PRIMARY KEY,
+        registration TEXT NOT NULL
+      );
+      CREATE TABLE oauth_consents (
+        hash TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        request TEXT NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE TABLE oauth_grants (
+        id TEXT PRIMARY KEY REFERENCES tokens(id) ON DELETE CASCADE,
+        client_name TEXT NOT NULL,
+        authorization TEXT NOT NULL,
+        resource TEXT NOT NULL,
+        code_hash TEXT UNIQUE,
+        code_expires_at INTEGER NOT NULL,
+        access_expires_at INTEGER,
+        refresh_hash TEXT UNIQUE,
+        refresh_expires_at INTEGER
+      );
+      CREATE TABLE oauth_used_refresh_tokens (
+        hash TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL REFERENCES oauth_grants(id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_oauth_used_refresh_grant ON oauth_used_refresh_tokens(grant_id);
+    `);
+  },
 ];
 
 export function migrateWorkspace(storage: DurableObjectStorage): void {

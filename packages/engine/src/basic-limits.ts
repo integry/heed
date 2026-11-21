@@ -35,7 +35,7 @@ export function basicLimits(
         const path = new URL(request.url).pathname;
         const token =
           (path === "/mcp" || path === "/api/report") && readBearer(request);
-        if (token && request.method === "POST") {
+        if (token && (path === "/mcp" || request.method === "POST")) {
           const limit = Number(env.TOKEN_RATE_LIMIT_PER_MINUTE ?? 60);
           if (!Number.isInteger(limit) || limit < 1 || limit > 1_000)
             throw new Error(

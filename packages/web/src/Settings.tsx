@@ -1,12 +1,18 @@
 import { useEffect, useId, useState } from "react";
 import { INBOX_PROJECT_ID, ScopeSchema, TimezoneSchema } from "@heedwork/core";
-import type { Item, Project, Scope, TokenMetadata } from "@heedwork/core";
+import type {
+  ConnectedApp,
+  Item,
+  Project,
+  Scope,
+  TokenMetadata,
+} from "@heedwork/core";
 import type { CreatedToken } from "@heedwork/core";
 import { Panel, ProjectOptions, useAction } from "./workspace-controls";
 import type { SaveMutation } from "./workspace-controls";
 import { PushSettings } from "./PushSettings";
 import { ModelKeyHint } from "./CommandBar";
-import { useApi } from "./api";
+import { useApi, useResource } from "./api";
 import type {
   MountAppOptions,
   SettingsScreen,
@@ -458,6 +464,84 @@ function Tokens({
         </form>
       )}
       {error && <p role="alert">{error}</p>}
+      <ConnectedApps live={live} save={save} />
+    </section>
+  );
+}
+
+function ConnectedApps({ live, save }: SettingsActions) {
+  const { data, error, loading, reload } = useResource<ConnectedApp[]>(
+    "/api/connected-apps",
+  );
+  const action = useAction();
+
+  return (
+    <section
+      className="connected-apps"
+      aria-labelledby="connected-apps-heading"
+    >
+      <h4 id="connected-apps-heading">Connected apps</h4>
+      {loading ? (
+        <p className="muted">Loading connected apps…</p>
+      ) : error || !Array.isArray(data) ? (
+        <div className="inline-actions">
+          <p role="alert">Couldn’t load connected apps.</p>
+          <button type="button" className="subtle" onClick={reload}>
+            Retry
+          </button>
+        </div>
+      ) : data.length ? (
+        <ul className="settings-list">
+          {data.map((grant) => (
+            <li key={grant.id} className="token-row">
+              <div>
+                <strong>{grant.client_name}</strong>
+                <small>
+                  {grant.label} · {scopeLabels[grant.scope]}
+                </small>
+                <small>
+                  {grant.last_used_at ? (
+                    <>
+                      Last used{" "}
+                      <time dateTime={grant.last_used_at}>
+                        {new Date(grant.last_used_at).toLocaleString()}
+                      </time>
+                    </>
+                  ) : (
+                    "Never used"
+                  )}
+                </small>
+              </div>
+              <button
+                type="button"
+                className="subtle danger"
+                disabled={!live || action.busy}
+                aria-label={`Revoke ${grant.client_name} (${grant.label})`}
+                onClick={() => {
+                  if (
+                    !window.confirm(
+                      `Revoke access for “${grant.client_name}” (${grant.label})?`,
+                    )
+                  )
+                    return;
+                  void action.run(async () => {
+                    await save({
+                      type: "REVOKE_CONNECTED_APP",
+                      input: { grant_id: grant.id },
+                    });
+                    reload();
+                  });
+                }}
+              >
+                Revoke
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">No apps connected with sign-in yet.</p>
+      )}
+      {action.error && <p role="alert">{action.error}</p>}
     </section>
   );
 }

@@ -60,6 +60,18 @@ export function googleAllowlistAuth(env: AuthEnv): AuthProvider {
     handleAuthRoute(request) {
       return handleAuth(request, new URL(request.url), env);
     },
+    signIn(request, returnTo) {
+      const url = new URL(request.url);
+      const path = devLoginEmail(url, env) ? "/auth/dev-login" : "/auth/login";
+      return new Response(null, {
+        status: 303,
+        headers: {
+          Location: `${path}?returnTo=${encodeURIComponent(returnTo)}`,
+          "Cache-Control": "no-store",
+          "Referrer-Policy": "no-referrer",
+        },
+      });
+    },
     async workspaceForToken(token) {
       return tokenParts(token)?.workspaceId === DEFAULT_WORKSPACE_ID
         ? DEFAULT_WORKSPACE_ID
@@ -182,6 +194,15 @@ function itemDestination(value: unknown): string {
   return item ? `/?item=${item}` : "/";
 }
 
+function oauthDestination(value: unknown): string | undefined {
+  return typeof value === "string" &&
+    value.length <= 2020 &&
+    value.startsWith("/auth/mcp/authorize?") &&
+    !/[\s\p{Cc}#\\]/u.test(value)
+    ? value
+    : undefined;
+}
+
 async function startLogin(
   url: URL,
   clientId: string,
@@ -213,6 +234,7 @@ async function startLogin(
         verifier,
         origin: url.origin,
         item: itemId(url.searchParams.get("item")),
+        returnTo: oauthDestination(url.searchParams.get("returnTo")),
       },
       secret,
       STATE_MAX_AGE,
@@ -337,7 +359,7 @@ async function finishLogin(
       response =
         email && allowed.includes(email)
           ? redirect(
-              itemDestination(state.item),
+              oauthDestination(state.returnTo) ?? itemDestination(state.item),
               await issueSession(email, secret),
             )
           : signInError(
@@ -381,7 +403,8 @@ async function handleAuth(
     const email = devLoginEmail(url, env);
     if (email && SESSION_SECRET) {
       return redirect(
-        itemDestination(url.searchParams.get("item")),
+        oauthDestination(url.searchParams.get("returnTo")) ??
+          itemDestination(url.searchParams.get("item")),
         await issueSession(email, SESSION_SECRET),
       );
     }
