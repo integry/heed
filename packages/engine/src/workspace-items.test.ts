@@ -1355,3 +1355,50 @@ it("enforces the rolling quota per token across eviction and item deletion", asy
   });
   expect(fetchMock).toHaveBeenCalledTimes(8);
 });
+
+it("answers a blocked item with one item write and one attributed event", async () => {
+  const stub = newWorkspace();
+  const user = { id: "user", email: "user@example.test", name: "Owner" };
+  const { item_id } = await stub.addItem(reporter, {
+    title: "Rollout",
+    status: "blocked",
+  });
+  await stub.flagHandoff(reporter, {
+    item_id,
+    note: "When?",
+    options: ["Today"],
+  });
+
+  await runInDurableObject(stub, (workspace, { storage: { sql } }) => {
+    const countWrites = () =>
+      sql.exec<{ count: number }>("SELECT total_changes() AS count").one()
+        .count;
+    const before = countWrites();
+    const input = { item_id, text: "Today" };
+    const result = workspace.answerHandoff({ kind: "human", user }, input);
+    expect(result.items).toMatchObject([
+      {
+        status: "active",
+        scheduled_on: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        handoff: 0,
+        handoff_note: "When?",
+        handoff_options: '["Today"]',
+        handoff_answer: "Today",
+        handoff_answered_at: expect.any(String),
+      },
+    ]);
+    expect(countWrites()).toBe(before + 2);
+    expect(workspace.getItemEvents({ item_id })[0]).toMatchObject({
+      kind: "answered",
+      actor: user,
+      detail: JSON.stringify({ text: "Today" }),
+      at: result.items[0].handoff_answered_at,
+    });
+    expect(() => workspace.answerHandoff(human, input)).toThrow(
+      "no open handoff",
+    );
+    workspace.clearHandoff(human, { item_id });
+    expect(countWrites()).toBe(before + 2);
+    expect(workspace.getItem({ item_id }).handoff_note).toBe("When?");
+  });
+});

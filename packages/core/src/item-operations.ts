@@ -153,9 +153,30 @@ export const ReopenItemSchema = itemSelector.safeExtend({
   reason: note.min(1),
 });
 export const ItemIdSchema = z.strictObject({ item_id: id });
+export const MAX_HANDOFF_ANSWER_LENGTH = 2_000;
+
+function handoffText(maxLength: number) {
+  return z
+    .string()
+    .min(1)
+    .refine(
+      (value) =>
+        value.length <= maxLength ||
+        (value.length <= maxLength * 2 && [...value].length <= maxLength),
+      `Use at most ${maxLength} characters`,
+    )
+    .meta({ maxLength });
+}
+
+export const HandoffOptionsSchema = z.array(handoffText(60)).max(4);
 export const FlagHandoffSchema = ItemIdSchema.extend({
   note: note.min(1),
+  options: HandoffOptionsSchema.optional(),
   notify: z.boolean().optional(),
+});
+
+export const AnswerHandoffSchema = ItemIdSchema.extend({
+  text: handoffText(MAX_HANDOFF_ANSWER_LENGTH),
 });
 
 export const DependencyBodySchema = ItemIdSchema.extend({
@@ -176,10 +197,13 @@ export type ReportProgressInput = z.infer<typeof ReportProgressSchema>;
 export type ReopenItemInput = z.infer<typeof ReopenItemSchema>;
 export type ItemIdInput = z.infer<typeof ItemIdSchema>;
 export type FlagHandoffInput = z.infer<typeof FlagHandoffSchema>;
+export type AnswerHandoffInput = z.infer<typeof AnswerHandoffSchema>;
 export type SetDependencyInput = z.infer<typeof SetDependencySchema>;
 
 export interface ItemOperationResult {
   item_id: string;
+  handoff_answer?: string;
+  handoff_note?: Item["handoff_note"];
   /** Changed rows, or the removed rows for deleteItem. */
   items: Item[];
   ignored_fields: (LockableField | "evidence")[];

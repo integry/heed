@@ -16,6 +16,7 @@ import type { JudgingInput } from "./judge.js";
 import {
   ActorSchema,
   AddItemSchema,
+  AnswerHandoffSchema,
   CanvasQuerySchema,
   FlagHandoffSchema,
   ItemIdSchema,
@@ -29,6 +30,7 @@ import {
 import type {
   Actor,
   AddItemInput,
+  AnswerHandoffInput,
   DependencyOperationResult,
   FlagHandoffInput,
   HandoffOperationResult,
@@ -123,6 +125,8 @@ type CanvasRow = Pick<
   | "ref_url"
   | "agent_name"
   | "acceptance"
+  | "handoff_answer"
+  | "handoff_note"
   | "scheduled_on"
   | "time_at"
   | "completed_at"
@@ -235,7 +239,15 @@ type Mutation = {
   removedDependencies?: Dependency[];
   ignored: Set<ItemOperationResult["ignored_fields"][number]>;
   pruneEvents: boolean;
+  handoffReply?: Pick<ItemOperationResult, "handoff_answer" | "handoff_note">;
 };
+
+function handoffReply({
+  handoff_answer,
+  handoff_note,
+}: Pick<Item, "handoff_answer" | "handoff_note">) {
+  return handoff_answer === null ? {} : { handoff_answer, handoff_note };
+}
 
 function isReport(actor: Actor): boolean {
   return actor.kind === "agent" && actor.scope === "report";
@@ -444,6 +456,9 @@ export class Workspace<
           break;
         case "FLAG_HANDOFF":
           await this.flagHandoff(actor, mutation.input);
+          break;
+        case "ANSWER_HANDOFF":
+          this.answerHandoff(actor, mutation.input);
           break;
         case "CLEAR_HANDOFF":
           this.clearHandoff(actor, mutation.input);
@@ -1307,7 +1322,8 @@ export class Workspace<
     const items = this.#sql
       .exec<CanvasRow>(
         `SELECT i.id, i.title, i.status, i.parent_id, i.ref_url, i.scheduled_on,
-              i.time_at, i.completed_at, i.agent_name, i.acceptance, p.name AS project
+              i.time_at, i.completed_at, i.agent_name, i.acceptance,
+              i.handoff_answer, i.handoff_note, p.name AS project
        FROM items i JOIN projects p ON p.id = i.project_id
        WHERE (?1 IS NULL OR p.id = ?1 OR p.name = ?1)
          AND (?2 OR i.parent_id IS ?3)
@@ -1364,6 +1380,8 @@ export class Workspace<
           ref_url,
           agent_name,
           acceptance,
+          handoff_answer,
+          handoff_note,
         }) => ({
           id,
           title,
@@ -1373,6 +1391,7 @@ export class Workspace<
           ref_url,
           agent_name,
           band: bands.get(id) ?? null,
+          ...handoffReply({ handoff_answer, handoff_note }),
           ...(acceptance !== "[]" && {
             acceptance: JSON.parse(acceptance) as string[],
           }),
@@ -1761,6 +1780,7 @@ export class Workspace<
       }
       const item = this.#requireItem(data);
       this.#editItem(mutation, item, data);
+      mutation.handoffReply = handoffReply(item);
       return item.id;
     });
   }
@@ -1778,6 +1798,7 @@ export class Workspace<
       if (data.evidence !== undefined && patch.status !== "done") {
         mutation.ignored.add("evidence");
       }
+      mutation.handoffReply = handoffReply({ ...item, ...patch });
       const statusEventId = this.#saveItem(mutation, item, patch, {
         heartbeat: actor.kind === "agent",
         evidence: patch.status === "done" ? data.evidence : undefined,
@@ -1830,7 +1851,13 @@ export class Workspace<
       this.#saveItem(
         mutation,
         item,
-        { handoff: 1, handoff_note: data.note },
+        {
+          handoff: 1,
+          handoff_note: data.note,
+          handoff_options: JSON.stringify(data.options ?? []),
+          handoff_answer: null,
+          handoff_answered_at: null,
+        },
         { notify },
       );
 
@@ -1960,12 +1987,39 @@ export class Workspace<
     return true;
   }
 
+  answerHandoff(actor: Actor, input: AnswerHandoffInput): ItemOperationResult {
+    const data = parseInput(AnswerHandoffSchema, input);
+    return this.#mutateItems(actor, (mutation) => {
+      requireSteering(mutation.actor, "answer a handoff");
+      const item = this.#requireItem(data);
+      if (!item.handoff || isTerminalStatus(item.status)) {
+        throw new Error("Item has no open handoff to answer");
+      }
+      const patch: ItemPatch = {
+        handoff: 0,
+        handoff_answer: data.text,
+        handoff_answered_at: mutation.now.toISOString(),
+      };
+      if (item.status === "blocked") {
+        this.#applyStatus(mutation, patch, "active", item);
+      }
+      this.#saveItem(mutation, item, patch, { answered: data.text });
+      return item.id;
+    });
+  }
+
   clearHandoff(actor: Actor, input: ItemIdInput): ItemOperationResult {
     const data = parseInput(ItemIdSchema, input);
     return this.#mutateItems(actor, (mutation) => {
       requireSteering(mutation.actor, "clear a handoff");
       const item = this.#requireItem(data);
-      this.#saveItem(mutation, item, { handoff: 0, handoff_note: null });
+      if (item.handoff_answer === null) {
+        this.#saveItem(mutation, item, {
+          handoff: 0,
+          handoff_note: null,
+          handoff_options: "[]",
+        });
+      }
       return item.id;
     });
   }
@@ -2209,6 +2263,7 @@ export class Workspace<
           item_id,
           items: mutation.changes.map(({ before, after }) => after ?? before),
           ignored_fields: [...mutation.ignored],
+          ...mutation.handoffReply,
           guidance_updated_at,
         },
       };
@@ -2514,6 +2569,10 @@ export class Workspace<
       );
     }
     patch.status = status;
+    if (isTerminalStatus(status)) {
+      patch.handoff_answer = null;
+      patch.handoff_answered_at = null;
+    }
     if (status === "done") {
       const placement = { ...item, ...patch };
       const ancestors = new Map<string, Item>();
@@ -2574,6 +2633,7 @@ export class Workspace<
       notify?: boolean;
       reopened?: boolean;
       evidence?: string;
+      answered?: string;
     } = {},
   ): number | undefined {
     const changes = (Object.keys(patch) as (keyof ItemPatch)[]).filter(
@@ -2613,6 +2673,13 @@ export class Workspace<
     }
     if (meaningful || options.notify) mutation.pruneEvents = true;
 
+    if (options.answered !== undefined) {
+      this.#appendEvent(mutation, item.id, "answered", {
+        text: options.answered,
+      });
+      return;
+    }
+
     const statusEventId =
       item.status !== updated.status
         ? this.#appendEvent(mutation, item.id, "status", {
@@ -2630,6 +2697,7 @@ export class Workspace<
     if (
       item.handoff !== updated.handoff ||
       item.handoff_note !== updated.handoff_note ||
+      item.handoff_options !== updated.handoff_options ||
       options.notify
     ) {
       this.#appendEvent(mutation, item.id, "handoff", {

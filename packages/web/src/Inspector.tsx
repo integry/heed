@@ -1,3 +1,4 @@
+import { HandoffReply } from "./HandoffReply";
 import { DemoBadge } from "./item-markers";
 import { useResource, type Resource } from "./api";
 import { useEffect, useRef, useState } from "react";
@@ -50,6 +51,8 @@ function eventSummary(event: Event, detail: Record<string, unknown> | null) {
       return detail?.handoff
         ? `Flagged handoff · ${detail.note ?? ""}`
         : "Cleared handoff";
+    case "answered":
+      return `Answered handoff · ${detail?.text ?? ""}`;
     case "reopened":
       return detail?.reason ? `Reopened · ${detail.reason}` : "Reopened";
     case "moved":
@@ -540,6 +543,7 @@ export function Inspector({
       item.note,
       item.handoff,
       item.handoff_note,
+      item.handoff_answered_at,
       item.reopen_count,
       item.scheduled_on,
       item.project_id,
@@ -811,8 +815,11 @@ export function Inspector({
         />
         {item.handoff === 1 && (
           <div className="handoff-card">
-            <strong>Needs input</strong>
-            {item.handoff_note && <p>{item.handoff_note}</p>}
+            <HandoffReply
+              item={item}
+              disabled={disabled || terminal}
+              save={save}
+            />
             <button
               type="button"
               className="subtle"
@@ -824,6 +831,13 @@ export function Inspector({
             >
               Edit handoff
             </button>
+          </div>
+        )}
+        {item.handoff_answer != null && (
+          <div className="handoff-card">
+            <strong>Handoff answered</strong>
+            {item.handoff_note && <p>{item.handoff_note}</p>}
+            <p>{item.handoff_answer}</p>
           </div>
         )}
         <section className="inspector-section">

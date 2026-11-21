@@ -4581,3 +4581,59 @@ it("replaces the canvas with labeled demo rows and exposes demo removal in Setti
   );
   expect(projects.queryByRole("button", { name: /Research/ })).toBeNull();
 });
+
+it.each(["suggestion", "typed reply"])(
+  "answers a radar handoff with a %s",
+  async (method) => {
+    const item = {
+      ...goal,
+      status: "blocked",
+      handoff: 1,
+      handoff_note: "Which rollout should we use?",
+      handoff_options: '["Staging","Production"]',
+      agent_name: "Release agent",
+    } as const;
+    await openWorkspace(undefined, { ...snapshot, items: [item] });
+    fireEvent.click(screen.getByRole("tab", { name: "Radar" }));
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    fireEvent.click(radar.getByRole("button", { name: item.title }));
+    const question = within(
+      radar.getByRole("region", { name: "Handoff question" }),
+    );
+    expect(question.getByText("Release agent asks")).toBeTruthy();
+    expect(question.getByText(item.handoff_note)).toBeTruthy();
+    const text = method === "suggestion" ? "Staging" : "Use a canary first";
+    if (method === "suggestion") {
+      fireEvent.click(question.getByRole("button", { name: text }));
+    } else {
+      fireEvent.click(question.getByRole("button", { name: "Type a reply" }));
+      fireEvent.change(
+        question.getByRole("textbox", { name: "Handoff reply" }),
+        {
+          target: { value: text },
+        },
+      );
+      fireEvent.click(question.getByRole("button", { name: "Send reply" }));
+    }
+    const socket = TestSocket.current;
+    expect(socket.latestRequest()).toMatchObject({
+      type: "ANSWER_HANDOFF",
+      input: { item_id: item.id, text },
+    });
+    socket.receive({
+      type: "ITEM_UPSERT",
+      seq: 2,
+      item: { ...item, status: "active", handoff: 0, handoff_answer: text },
+    });
+    await act(async () =>
+      socket.receive({
+        type: "ACK",
+        seq: 3,
+        requestId: socket.latestRequest().requestId,
+      }),
+    );
+    expect(
+      radar.queryByRole("region", { name: "Handoff question" }),
+    ).toBeNull();
+  },
+);

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AddItemSchema,
+  AnswerHandoffSchema,
   CanvasQuerySchema,
   FlagHandoffSchema,
   ReopenItemSchema,
@@ -65,11 +66,14 @@ function itemResult({
   item_id,
   guidance_updated_at,
   ignored_fields,
+  handoff_answer,
+  handoff_note,
 }: ItemOperationResult) {
   return {
     item_id,
     guidance_updated_at,
     ...(ignored_fields.length > 0 && { ignored_fields }),
+    ...(handoff_answer !== undefined && { handoff_answer, handoff_note }),
   };
 }
 
@@ -96,6 +100,8 @@ export function compactCanvas(
           band,
           ref_url,
           acceptance,
+          handoff_answer,
+          handoff_note,
         }) => ({
           id,
           title,
@@ -105,6 +111,11 @@ export function compactCanvas(
           band,
           ...(includeDetails && ref_url && { ref_url }),
           ...(includeDetails && acceptance && { acceptance }),
+          ...(includeDetails &&
+            handoff_answer !== undefined && {
+              handoff_answer,
+              handoff_note,
+            }),
         }),
       ),
     may_have_more: items.length > limit,
@@ -160,10 +171,17 @@ export const commandTools = [
   ),
   tool(
     "flag_handoff",
-    "Flag an item for a human decision and record what is needed. Only send a notification if requested or warranted by guidance.",
+    "Flag an item for a human decision and record what is needed. Pass up to four short suggested replies as options. Only send a notification if requested or warranted by guidance.",
     FlagHandoffSchema,
     async (workspace, input, actor) =>
       itemResult(await workspace.flagHandoff(actor, input)),
+  ),
+  tool(
+    "answer_handoff",
+    "Send the user's reply to an open handoff on the specified item. Use the user's own answer and ask for clarification if the item or reply is unclear.",
+    AnswerHandoffSchema,
+    (workspace, input, actor) =>
+      itemResult(workspace.answerHandoff(actor, input)),
   ),
   tool(
     "reopen_item",

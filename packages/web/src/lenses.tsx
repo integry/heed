@@ -10,6 +10,7 @@ import { BoardLens } from "./BoardLens";
 import type { StreamMove } from "./stream-move";
 import { RadarLens } from "./RadarLens";
 import { TreemapLens } from "./TreemapLens";
+import type { SaveMutation } from "./workspace-controls";
 import type { RadarPlacement } from "./radar-geometry";
 
 export interface LensProps {
@@ -22,6 +23,8 @@ export interface LensProps {
   changeDependency: (edge: Dependency, action: "add" | "remove") => void;
   savingDependency: boolean;
   selectedId: string | null;
+  save: SaveMutation;
+  inspectItem: (id: string) => void;
   now: number;
   timezone: string;
   live: boolean;

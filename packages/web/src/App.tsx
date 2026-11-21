@@ -778,6 +778,8 @@ function Workspace({
                     );
                     if (id) setHistory(false);
                   }}
+                  inspectItem={inspectItem}
+                  save={connection.save}
                   move={connection.mutate}
                   reschedule={(id, date) =>
                     updateItem(id, { scheduled_on: date })
