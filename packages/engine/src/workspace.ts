@@ -46,6 +46,7 @@ import {
   MoveProjectSchema,
   SocketRequestIdSchema,
   SocketRequestSchema,
+  WORKSPACE_RESET_CLOSE_CODE,
 } from "@heedwork/core";
 import type {
   ChildCounts,
@@ -61,6 +62,7 @@ import type {
   Guidance,
   Item,
   Project,
+  Scope,
   Setting,
   Settings,
   Status,
@@ -87,6 +89,8 @@ import type {
 } from "./web-push.js";
 import { basicPushCap } from "./basic-limits.js";
 import { migrateWorkspace } from "./workspace-migrations.js";
+import { readEvent, streamWorkspaceExport } from "./workspace-export.js";
+import type { EventRow } from "./workspace-export.js";
 import { OAuthStorage } from "./oauth-storage.js";
 import type {
   OAuthAuthorization,
@@ -95,7 +99,6 @@ import type {
 } from "./oauth-storage.js";
 import { handleMcp, mcpLimits } from "./mcp.js";
 import type { McpLimitCheck } from "./mcp.js";
-import type { Scope } from "@heedwork/core";
 import {
   checkLimit,
   LimitError,
@@ -171,10 +174,6 @@ type ItemPatch = Partial<Omit<Item, "id" | "created_at" | "updated_at">>;
 type ItemEdit = Partial<AddItemInput & UpdateItemInput>;
 export type WorkspaceEnv = PushEnv;
 type HumanActor = Extract<Actor, { kind: "human" }>;
-type EventRow = Omit<Event, "actor"> & {
-  actor: string;
-  actor_user: string | null;
-};
 
 const SOCKET_CREATE_LIMITS: Partial<
   Record<z.output<typeof SocketRequestSchema>["type"], LimitAction>
@@ -184,13 +183,19 @@ const SOCKET_CREATE_LIMITS: Partial<
 };
 
 const SOCKET_USER_HEADER = "X-Heed-Workspace-User";
+const SOCKET_ROLE_HEADER = "X-Heed-Workspace-Role";
 
-type SocketAttachment = { seq: number; user?: WorkspaceUser };
+type SocketAttachment = { seq: number; user?: WorkspaceUser; owner?: boolean };
 
-export function socketUpgrade(request: Request, user: WorkspaceUser) {
+export function socketUpgrade(
+  request: Request,
+  user: WorkspaceUser,
+  role: string,
+) {
   // The namespace is private. Always replace the identity header on the Worker ingress.
   const headers = new Headers(request.headers);
   headers.set(SOCKET_USER_HEADER, encodeURIComponent(JSON.stringify(user)));
+  headers.set(SOCKET_ROLE_HEADER, role);
   return new Request(request, { headers });
 }
 
@@ -274,8 +279,12 @@ export class Workspace<
     return noUsage;
   }
 
+  /** Hosted auth can revoke grants kept outside this Durable Object's storage. */
+  protected revokeWorkspaceGrants?(): Promise<void>;
+
   #commandEffects?: CommandEffect[];
   #undoBroadcasts?: WorkspaceMessage[];
+  #resetGeneration = 0;
 
   readonly #sql: SqlStorage;
   readonly #oauth: OAuthStorage;
@@ -312,7 +321,11 @@ export class Workspace<
     const [client, server] = Object.values(new WebSocketPair());
     const snapshot = this.#snapshot();
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ seq: 0, user } satisfies SocketAttachment);
+    server.serializeAttachment({
+      seq: 0,
+      user,
+      owner: request.headers.get(SOCKET_ROLE_HEADER) === "owner",
+    } satisfies SocketAttachment);
     this.#send(server, snapshot);
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -321,6 +334,7 @@ export class Workspace<
     socket: WebSocket,
     message: string | ArrayBuffer,
   ): Promise<void> {
+    if (socket.readyState !== WebSocket.OPEN) return;
     let data: unknown;
     if (typeof message === "string") {
       try {
@@ -358,21 +372,46 @@ export class Workspace<
       user: typeof attachment === "object" ? attachment?.user : undefined,
     };
     const { requestId } = request.data;
+    if (
+      request.data.type === "RESET_WORKSPACE" &&
+      (typeof attachment !== "object" || !attachment?.owner)
+    ) {
+      this.#send(socket, {
+        type: "ERROR",
+        requestId,
+        error: {
+          code: "forbidden",
+          message: "Workspace owner access required.",
+        },
+      });
+      return;
+    }
     let createdToken: CreatedToken | undefined;
     try {
       const mutation = request.data;
       const limit = SOCKET_CREATE_LIMITS[mutation.type];
       const limits = this.socketLimits;
-      if (limit && limits && this.ctx.id.name)
+      if (limit && limits && this.ctx.id.name) {
         await checkLimit(limits, this.ctx.id.name, limit);
+        if (socket.readyState !== WebSocket.OPEN) return;
+      }
       switch (mutation.type) {
+        case "RESET_WORKSPACE":
+          await this.#resetWorkspace(() =>
+            this.#send(socket, { type: "ACK", requestId }),
+          );
+          return;
         case "UNDO_COMMAND":
           this.#undoCommand(mutation.input.id, actor);
           break;
         case "ADD_ITEM":
           if (limits && this.ctx.id.name)
             await addItemWithLimit(
-              () => this,
+              () => {
+                if (socket.readyState !== WebSocket.OPEN)
+                  throw new Error("Workspace socket closed");
+                return this;
+              },
               actor,
               mutation.input,
               limits,
@@ -864,6 +903,35 @@ export class Workspace<
     return this.#readSettings().settings;
   }
 
+  /** Returns a streamed JSON export for trusted host callers. */
+  exportWorkspace(): ReadableStream<Uint8Array> {
+    const generation = this.#resetGeneration;
+    return streamWorkspaceExport(
+      this.#sql,
+      this.getSettings(),
+      () => generation !== this.#resetGeneration,
+    );
+  }
+
+  /** Wipes workspace storage and seeds a fresh Inbox for trusted host callers. */
+  resetWorkspace(): Promise<void> {
+    return this.#resetWorkspace();
+  }
+
+  #resetWorkspace(onReset?: () => void): Promise<void> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      await this.revokeWorkspaceGrants?.();
+      this.#resetGeneration++;
+      await this.ctx.storage.deleteAll();
+      migrateWorkspace(this.ctx.storage);
+      await this.ctx.storage.sync();
+      onReset?.();
+      for (const socket of this.ctx.getWebSockets()) {
+        socket.close(WORKSPACE_RESET_CLOSE_CODE, "Workspace reset");
+      }
+    });
+  }
+
   #readSettings(): { settings: Settings; timezoneConfigured: boolean } {
     const values = Object.fromEntries(
       this.#sql
@@ -903,7 +971,10 @@ export class Workspace<
     const workspaceId = this.ctx.id.name;
     if (!workspaceId) throw new Error("API tokens require a named workspace");
     const secret = newTokenSecret();
+    const generation = this.#resetGeneration;
     const hash = await hashSecret(secret);
+    if (generation !== this.#resetGeneration)
+      throw new Error("Workspace reset while creating the token");
     if (
       input.default_project_id &&
       !this.#sql
@@ -1128,13 +1199,7 @@ export class Workspace<
         data.item_id,
       )
       .toArray()
-      .map(({ actor_user, ...event }) => ({
-        ...event,
-        actor:
-          actor_user === null
-            ? event.actor
-            : WorkspaceUserSchema.parse(JSON.parse(actor_user)),
-      }));
+      .map(readEvent);
   }
 
   getCanvas(input: z.input<typeof CanvasQuerySchema> = {}) {

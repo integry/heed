@@ -622,6 +622,10 @@ fieldset {
   margin: 0;
   font-size: 0.96rem;
 }
+.settings-download {
+  color: inherit;
+  text-decoration: none;
+}
 .connected-apps {
   margin-top: 16px;
 }

@@ -1,13 +1,18 @@
-import { useEffect, useId, useState } from "react";
-import { INBOX_PROJECT_ID, ScopeSchema, TimezoneSchema } from "@heedwork/core";
+import { useEffect, useId, useRef, useState } from "react";
+import {
+  INBOX_PROJECT_ID,
+  RESET_WORKSPACE_CONFIRMATION,
+  ScopeSchema,
+  TimezoneSchema,
+} from "@heedwork/core";
 import type {
   ConnectedApp,
+  CreatedToken,
   Item,
   Project,
   Scope,
   TokenMetadata,
 } from "@heedwork/core";
-import type { CreatedToken } from "@heedwork/core";
 import { Panel, ProjectOptions, useAction } from "./workspace-controls";
 import type { SaveMutation } from "./workspace-controls";
 import { DemoDataButton, type OnboardingScreen } from "./Onboarding";
@@ -686,6 +691,132 @@ function ExtraSettings({
   );
 }
 
+function WorkspaceData({ live, save }: SettingsActions) {
+  const [confirming, setConfirming] = useState(false);
+  const [confirmation, setConfirmation] = useState("");
+  const [reset, setReset] = useState(false);
+  const resetButton = useRef<HTMLButtonElement>(null);
+  const confirmationInput = useRef<HTMLInputElement>(null);
+  const { busy, error, run } = useAction();
+  const confirmed = confirmation === RESET_WORKSPACE_CONFIRMATION;
+
+  useEffect(() => {
+    if (confirming) confirmationInput.current?.focus();
+  }, [confirming]);
+
+  return (
+    <section
+      className="settings-section"
+      aria-labelledby="workspace-data-heading"
+    >
+      <h3 id="workspace-data-heading">Data</h3>
+      <div className="settings-row form-stack">
+        <h4>Export</h4>
+        <p className="muted">
+          Download one JSON file with workspace settings and guidance, projects,
+          items, dependencies, and event history. API tokens, OAuth grants, and
+          push subscriptions are excluded.
+        </p>
+        <div className="inline-actions">
+          <a className="subtle settings-download" href="/api/export" download>
+            Export
+          </a>
+        </div>
+      </div>
+      <div className="settings-row form-stack">
+        <h4>Reset workspace</h4>
+        <p className="muted">
+          Permanently delete all workspace data, revoke API tokens and OAuth
+          grants, and remove push subscriptions. The workspace starts over with
+          an empty Inbox.
+        </p>
+        {!confirming && (
+          <div>
+            <button
+              ref={resetButton}
+              type="button"
+              className="subtle danger"
+              disabled={!live}
+              onClick={() => {
+                setConfirmation("");
+                setReset(false);
+                setConfirming(true);
+              }}
+            >
+              Reset workspace
+            </button>
+          </div>
+        )}
+        {confirming && (
+          <form
+            className="form-stack"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!confirmed || !live) return;
+              void run(async () => {
+                await save(
+                  {
+                    type: "RESET_WORKSPACE",
+                    input: { confirmation: RESET_WORKSPACE_CONFIRMATION },
+                  },
+                  { callerReportsError: true },
+                );
+                setReset(true);
+                setConfirming(false);
+              });
+            }}
+          >
+            <div className="inline-actions">
+              <a
+                className="subtle settings-download"
+                href="/api/export"
+                download
+              >
+                Export before resetting
+              </a>
+            </div>
+            <label className="form-field">
+              Type {RESET_WORKSPACE_CONFIRMATION} to confirm
+              <input
+                ref={confirmationInput}
+                value={confirmation}
+                disabled={busy}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setConfirmation(event.target.value)}
+              />
+            </label>
+            <div className="inline-actions">
+              <button
+                type="submit"
+                className="subtle danger"
+                disabled={!confirmed || !live || busy}
+              >
+                {busy ? "Resetting…" : "Permanently reset workspace"}
+              </button>
+              <button
+                type="button"
+                className="subtle"
+                disabled={busy}
+                onClick={() => {
+                  setConfirming(false);
+                  requestAnimationFrame(() => resetButton.current?.focus());
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+            {error && <p role="alert">{error}</p>}
+          </form>
+        )}
+        {reset && (
+          <p role="status">Workspace reset. Your Inbox is now empty.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export function Settings({
   projects,
   items,
@@ -696,6 +827,7 @@ export function Settings({
   onSignOut,
   live,
   save,
+  resetVersion,
   close,
   focus,
   openGuide,
@@ -707,6 +839,7 @@ export function Settings({
   screenProps: SettingsScreenProps;
   options?: MountAppOptions;
   showModelKeyHint: boolean;
+  resetVersion: number;
   onSignOut?: () => Promise<void>;
   close: () => void;
   focus?: OnboardingScreen;
@@ -734,11 +867,18 @@ export function Settings({
           </div>
         </section>
       )}
-      {show("notifications") && <PushSettings />}
+      {show("notifications") && <PushSettings key={resetVersion} />}
       {show("projects") && (
         <Projects projects={projects} items={items} live={live} save={save} />
       )}
-      {show("tokens") && <Tokens projects={projects} live={live} save={save} />}
+      {show("tokens") && (
+        <Tokens
+          key={resetVersion}
+          projects={projects}
+          live={live}
+          save={save}
+        />
+      )}
       {show("account") && (
         <Account
           timezone={timezone}
@@ -756,6 +896,9 @@ export function Settings({
           <h3 id="model-keys-heading">Model keys</h3>
           <ModelKeyHint />
         </section>
+      )}
+      {screenProps.role === "owner" && show("data") && (
+        <WorkspaceData live={live} save={save} />
       )}
       {!focus &&
         options?.extraSettingsScreens?.map((screen) => (

@@ -4,6 +4,7 @@ import {
   HandoffBodySchema,
   HistoryQuerySchema,
   ReopenBodySchema,
+  ResetWorkspaceBodySchema,
   TimezoneBodySchema,
 } from "@heedwork/core";
 import {
@@ -76,6 +77,23 @@ export async function handleHumanApi(
   try {
     const workspace = () => app.workspace(session.workspaceId);
     switch (`${method} ${pathname}`) {
+      case "GET /api/export":
+      case "POST /api/reset": {
+        if (session.role !== "owner")
+          return apiError(403, "forbidden", "Workspace owner access required.");
+        if (method === "POST") {
+          return await withJson(request, ResetWorkspaceBodySchema, async () => {
+            await workspace().resetWorkspace();
+            return { ok: true };
+          });
+        }
+        return new Response(await workspace().exportWorkspace(), {
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Disposition": 'attachment; filename="heed-workspace.json"',
+          },
+        });
+      }
       case "POST /api/push/status":
         return await withJson(request, PushSubscriptionSchema, (input) =>
           workspace().getPushStatus(input),

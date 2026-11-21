@@ -775,6 +775,7 @@ function Workspace({
           <div className="stream-panel" hidden={peek}>
             {history && (desktop || sheet.stop === "full") ? (
               <StreamHistory
+                key={state.resetVersion}
                 demoLoaded={state.onboarding?.hasDemoData}
                 openGuide={openGuide}
                 projects={projects}
@@ -943,6 +944,7 @@ function Workspace({
           screenProps={screenProps}
           options={options}
           showModelKeyHint={showModelKeyHint}
+          resetVersion={state.resetVersion}
           onSignOut={
             signOut &&
             (async () => {

@@ -9,7 +9,11 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { COMMAND_TEXT_LIMIT } from "@heedwork/core";
+import {
+  COMMAND_TEXT_LIMIT,
+  RESET_WORKSPACE_CONFIRMATION,
+  WORKSPACE_RESET_CLOSE_CODE,
+} from "@heedwork/core";
 import type { SocketMessage, SocketRequest } from "@heedwork/core";
 import { App } from "./App";
 import { onboardingCompletion } from "./Onboarding";
@@ -50,9 +54,9 @@ class TestSocket extends EventTarget {
     );
   }
 
-  close() {
+  close(code = 1000) {
     this.readyState = 3;
-    this.dispatchEvent(new Event("close"));
+    this.dispatchEvent(new CloseEvent("close", { code }));
   }
 }
 
@@ -204,7 +208,13 @@ it("mounts host settings and header slots and drops workspace state on switch", 
   expect(
     await within(settings).findByText("user-1 / launch / editor / Team"),
   ).toBeTruthy();
-  for (const name of ["Projects", "API tokens", "Notifications", "Model keys"])
+  for (const name of [
+    "Projects",
+    "API tokens",
+    "Notifications",
+    "Model keys",
+    "Data",
+  ])
     expect(within(settings).queryByRole("region", { name })).toBeNull();
   expect(screen.queryByText(/Configure Workers AI/)).toBeNull();
 
@@ -2271,6 +2281,47 @@ it("locks the timezone draft until its save is acknowledged", async () => {
   );
   expect(input.disabled).toBe(false);
   expect(input.value).toBe("Europe/Tallinn");
+});
+
+it("offers export and requires the exact reset phrase before sending a socket mutation", async () => {
+  await openWorkspace();
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  const data = within(screen.getByRole("region", { name: "Data" }));
+  expect(data.getByRole("link", { name: "Export" }).getAttribute("href")).toBe(
+    "/api/export",
+  );
+  fireEvent.click(data.getByRole("button", { name: "Reset workspace" }));
+  expect(
+    data
+      .getByRole("link", { name: "Export before resetting" })
+      .hasAttribute("download"),
+  ).toBe(true);
+  const input = data.getByLabelText(
+    `Type ${RESET_WORKSPACE_CONFIRMATION} to confirm`,
+  );
+  const submit = data.getByRole("button", {
+    name: "Permanently reset workspace",
+  }) as HTMLButtonElement;
+  fireEvent.change(input, { target: { value: "reset workspace" } });
+  expect(submit.disabled).toBe(true);
+  fireEvent.change(input, { target: { value: RESET_WORKSPACE_CONFIRMATION } });
+  expect(submit.disabled).toBe(false);
+  fireEvent.click(submit);
+  const socket = TestSocket.current;
+  const request = socket.latestRequest();
+  expect(request).toMatchObject({
+    type: "RESET_WORKSPACE",
+    input: { confirmation: RESET_WORKSPACE_CONFIRMATION },
+  });
+  expect(data.getByRole("button", { name: "Resetting…" })).toBeTruthy();
+  await act(async () => {
+    socket.receive({ type: "ACK", seq: 2, requestId: request.requestId });
+    socket.close(WORKSPACE_RESET_CLOSE_CODE);
+  });
+  expect(data.getByRole("status").textContent).toContain(
+    "Your Inbox is now empty.",
+  );
+  expect(screen.queryByRole("button", { name: goal.title })).toBeNull();
 });
 
 it("locks the new project name until creation succeeds or fails", async () => {
