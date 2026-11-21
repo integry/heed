@@ -13,7 +13,8 @@
     "typecheck": "npm run build --workspace @heedwork/core && wrangler types && npm run typecheck --workspaces && tsc -p tsconfig.json",
     "lint": "eslint . && prettier --check .",
     "test": "npm run build --workspace @heedwork/core && vitest run",
-    "check": "npm run typecheck && npm run lint && npm test && npm run build",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run pack-check",
+    "pack-check": "node scripts/pack-check.mjs",
     "seed:radar": "node scripts/seed-radar.mjs",
     "vapid:generate": "node scripts/generate-vapid.mjs"
   },

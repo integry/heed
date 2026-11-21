@@ -1,0 +1,53 @@
+name: Release npm packages
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Check the selected release tag without publishing to npm
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Validate release tag
+        run: |
+          node scripts/release-packages.mjs validate "$GITHUB_REF"
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "::error::The release tag must point to a commit in origin/main."
+            exit 1
+          fi
+      - name: Install workspace dependencies
+        run: npm ci
+      - name: Check workspaces
+        run: npm run check
+      - name: Stamp release versions
+        run: node scripts/release-packages.mjs stamp "$GITHUB_REF"
+      - name: Verify release tarballs
+        run: npm run pack-check -- "$RUNNER_TEMP/heed-packages"
+      - name: Publish release tarballs
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: node scripts/release-packages.mjs publish "$GITHUB_REF" "$RUNNER_TEMP/heed-packages"

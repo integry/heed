@@ -9,7 +9,8 @@
     "directory": "packages/engine"
   },
   "files": [
-    "dist"
+    "dist/index.js",
+    "dist/**/*.d.ts"
   ],
   "exports": {
     ".": {
@@ -18,7 +19,7 @@
     }
   },
   "scripts": {
-    "build": "wrangler --cwd ../.. deploy --dry-run --outdir packages/engine/dist && esbuild src/index.ts --bundle --format=esm --platform=neutral --packages=external --outfile=dist/index.js && tsc -p tsconfig.build.json",
+    "build": "wrangler --cwd ../.. types && wrangler --cwd ../.. deploy --dry-run --outdir packages/engine/dist && esbuild src/index.ts --bundle --format=esm --platform=neutral --packages=external --outfile=dist/index.js && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
