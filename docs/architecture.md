@@ -445,7 +445,7 @@ A host replaces these and nothing else. Every method is async so a host may cons
 * **`UsageSink`** — `record(workspaceId, event)` receives usage events: command-bar calls with model and token counts, transcription seconds, pushes sent, agent writes. Called with `ctx.waitUntil`, never awaited on the request path. Open build: `noUsage`.
 * **`KeyProvider`** — `commandProvider(workspaceId)` returns the LLM and transcription configuration for the command bar, or nothing when it is unavailable, plus `managed` (the UI then hides bring-your-own-key hints). Open build: `envKeys` — Workers AI or Anthropic from vars and secrets.
 
-`createApp(seams, options)` returns `{ fetch }`. `@heedwork/engine` also exports the `Workspace` Durable Object class, which the host must bind and re-export from its own Worker entry.
+`createApp(seams, options)` returns `{ fetch }`. `@heedwork/engine` also exports the `Workspace` Durable Object class, which the host must bind and re-export from its own Worker entry. When a host supplies limits for socket mutations or meters push delivery, it binds a subclass and exposes the same seams through the protected `socketLimits` and `pushUsage` getters. Hibernated sockets and background push deliveries run in the Durable Object isolate, outside the Worker request and its seam instances.
 
 The human actor carries the `user` from the session, and events record it, so a shared workspace shows who made each change. Lock semantics do not depend on which human it was.
 

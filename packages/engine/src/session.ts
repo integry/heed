@@ -1,38 +1,20 @@
-import { DEFAULT_WORKSPACE_ID } from "@heedwork/core";
-import { apiError } from "./api-response";
-import { readSignedCookie, signCookie } from "./signed-cookie";
+import { apiError, limitResponse } from "./api-response.js";
+import { checkLimit, LimitError } from "./seams.js";
+import type { AuthProvider, Limits, WorkspaceSession } from "./seams.js";
 
-export const SESSION_COOKIE = "__Host-heed_session";
-const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
-
-export interface HumanActor {
+export interface HumanActor extends WorkspaceSession {
   kind: "human";
-  email: string;
-  sessionId: string;
-  workspaceId: typeof DEFAULT_WORKSPACE_ID;
 }
 
 export function hasAppOrigin(request: Request, url: URL): boolean {
   return request.headers.get("Origin") === url.origin;
 }
 
-export function issueSession(
-  email: string,
-  secret: string,
-  sessionId: string = crypto.randomUUID(),
-): Promise<string> {
-  return signCookie(
-    SESSION_COOKIE,
-    { email, workspaceId: DEFAULT_WORKSPACE_ID, sessionId },
-    secret,
-    SESSION_MAX_AGE,
-  );
-}
-
 export async function requireSession(
   request: Request,
   url: URL,
-  secret: string | undefined,
+  auth: AuthProvider,
+  limits: Limits,
   handle: (actor: HumanActor) => Response | Promise<Response>,
 ): Promise<Response> {
   const isApi = url.pathname.startsWith("/api/");
@@ -45,15 +27,8 @@ export async function requireSession(
     return new Response("Forbidden origin", { status: 403 });
   }
 
-  const session =
-    secret && (await readSignedCookie(request, SESSION_COOKIE, secret));
-  if (
-    !secret ||
-    !session ||
-    typeof session.email !== "string" ||
-    !session.email ||
-    session.workspaceId !== DEFAULT_WORKSPACE_ID
-  ) {
+  const session = await auth.session(request);
+  if (!session) {
     if (isApi) return apiError(401, "unauthorized", "Unauthorized");
     return new Response("Unauthorized", {
       status: 401,
@@ -61,22 +36,15 @@ export async function requireSession(
     });
   }
 
-  const sessionId =
-    typeof session.sessionId === "string" ? session.sessionId : session.email;
-  let response = await handle({
-    kind: "human",
-    email: session.email,
-    sessionId,
-    workspaceId: session.workspaceId,
-  });
-  if (response.ok || response.status === 101) {
-    // Copy the response to make its headers mutable while preserving an upgraded socket.
-    response = new Response(response.body, response);
-    response.headers.set("Cache-Control", "no-store");
-    response.headers.append(
-      "Set-Cookie",
-      await issueSession(session.email, secret, sessionId),
-    );
+  try {
+    await checkLimit(limits, session.workspaceId, "connect");
+    const response = await handle({ kind: "human", ...session });
+    if (!response.ok && response.status !== 101) return response;
+    const privateResponse = new Response(response.body, response);
+    privateResponse.headers.set("Cache-Control", "no-store");
+    return privateResponse;
+  } catch (error) {
+    if (error instanceof LimitError) return limitResponse(error);
+    throw error;
   }
-  return response;
 }

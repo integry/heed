@@ -86,7 +86,10 @@ export function createWorkspaceConnection(notificationItemId: string | null) {
       // A failed WebSocket upgrade does not expose the HTTP status to browsers.
       try {
         const response = await fetch("/api/me", { signal: controller.signal });
-        if (response.status === 401 && !controller.signal.aborted) {
+        if (
+          (response.status === 401 || response.status === 403) &&
+          !controller.signal.aborted
+        ) {
           onSessionExpired();
           return;
         }

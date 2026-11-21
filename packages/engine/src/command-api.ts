@@ -6,20 +6,16 @@ import {
   WAV_HEADER_BYTES,
 } from "@heedwork/core";
 import type { CommandCapabilities, CommandResult } from "@heedwork/core";
-import { apiError } from "./api-response";
-import { commandProvider } from "./command-provider";
-import type {
-  CommandEnv,
-  CommandExchange,
-  CommandProvider,
-} from "./command-provider";
-import { commandTools } from "./command-tools";
-import type { HumanActor } from "./session";
-import { hashSecret } from "./token-secrets";
-import { getWorkspaceStub } from "./workspace";
+import { apiError } from "./api-response.js";
+import type { CommandExchange, CommandProvider } from "./command-provider.js";
+import { commandTools } from "./command-tools.js";
+import type { HumanActor } from "./session.js";
+import type { AppContext } from "./app.js";
+import { checkLimit, LimitError, recordUsage } from "./seams.js";
+import type { CommandConfiguration } from "./seams.js";
+import { getWorkspaceStub } from "./workspace.js";
 
 const MAX_STEPS = 6;
-const RATE_CAPACITY = 1_000_000;
 const commandBody = z.strictObject({
   text: z.string().trim().min(1).max(COMMAND_TEXT_LIMIT),
 });
@@ -55,6 +51,7 @@ export async function runCommand(
   workspace: WorkspaceStub,
   provider: CommandProvider,
   text: string,
+  request?: { app: AppContext; actor: HumanActor },
 ): Promise<CommandResult> {
   const context = await workspace.getCommandContext();
   const system =
@@ -71,9 +68,19 @@ export async function runCommand(
   let summary =
     "Command reached its step limit. Check the workspace for any changes already made.";
   let failed = false;
+  let refusal: LimitError | undefined;
   for (let step = 0; step < MAX_STEPS; step++) {
     try {
       const turn = await provider.next({ text, system, tools, history });
+      if (request) {
+        const { app, actor } = request;
+        recordUsage(app.ctx, app.usage, actor.workspaceId, {
+          type: "command",
+          model: provider.model ?? "unknown",
+          inputTokens: turn.usage?.inputTokens ?? null,
+          outputTokens: turn.usage?.outputTokens ?? null,
+        });
+      }
       if (!turn.calls.length) {
         summary =
           formatSummary(turn.text) ||
@@ -84,6 +91,7 @@ export async function runCommand(
         ({ name }) => name === clarificationTool.name,
       );
       if (clarification) {
+        if (refusal) break;
         // A continuation resubmits the original instruction, so it is safe
         // only if this command has made no changes.
         if (effects.length) {
@@ -101,11 +109,42 @@ export async function runCommand(
       if (turn.calls.length > callsRemaining) break;
       const replies = [];
       for (const call of turn.calls) {
+        if (request) {
+          const { app, actor } = request;
+          const action =
+            call.name === "add_item"
+              ? "item.create"
+              : call.name === "flag_handoff" &&
+                  call.input &&
+                  typeof call.input === "object" &&
+                  "notify" in call.input &&
+                  call.input.notify === true
+                ? "push"
+                : null;
+          if (action) {
+            try {
+              await checkLimit(app.limits, actor.workspaceId, action);
+            } catch (error) {
+              if (!(error instanceof LimitError)) throw error;
+              refusal ??= error;
+              replies.push({
+                call,
+                content: JSON.stringify({ error: error.detail }),
+                isError: true,
+              });
+              continue;
+            }
+          }
+        }
         const {
           content,
           isError,
           effects: writes,
-        } = await workspace.executeCommandTool(call.name, call.input);
+        } = await workspace.executeCommandTool(
+          call.name,
+          call.input,
+          request?.actor.user,
+        );
         effects.push(...writes);
         replies.push({ call, content, isError });
       }
@@ -122,6 +161,7 @@ export async function runCommand(
       break;
     }
   }
+  if (refusal && !effects.length) throw refusal;
   if (failed && !effects.length)
     throw new Error("Command provider unavailable");
   const changes = [
@@ -140,26 +180,18 @@ export async function runCommand(
     needsClarification: false,
     changes,
     ...(undoId && { undoId }),
+    ...(refusal && { refusal: refusal.detail }),
   };
 }
 
-export function commandCapabilities(env: CommandEnv): CommandCapabilities {
-  const command = Boolean(commandProvider(env));
-  return { command, transcription: command && Boolean(env.AI) };
-}
-
-function limitValue(raw: string | undefined, fallback: number, max: number) {
-  const value = Number(raw ?? fallback);
-  if (!Number.isSafeInteger(value) || value < 1 || value > max) {
-    throw new Error("Invalid usage limit");
-  }
-  return value;
-}
-
-function rateError(message: string, seconds: number) {
-  const response = apiError(429, "rate_limited", message);
-  response.headers.set("Retry-After", String(seconds));
-  return response;
+export function commandCapabilities(
+  configuration: CommandConfiguration | null,
+): CommandCapabilities {
+  const command = Boolean(configuration?.command);
+  return {
+    command,
+    transcription: command && Boolean(configuration?.transcribe),
+  };
 }
 
 async function readBody(request: Request, limit: number) {
@@ -208,16 +240,14 @@ function validWave(bytes: Uint8Array) {
   );
 }
 
-const transcriptSchema = z.object({ text: z.string() });
-
 export async function handleCommandApi(
   request: Request,
   actor: HumanActor,
-  env: Env & CommandEnv,
+  app: AppContext,
   kind: "command" | "transcribe",
-  provider = commandProvider(env),
 ): Promise<Response> {
-  if (kind === "command" ? !provider : !env.AI) {
+  const { configuration } = await app.keys.commandProvider(actor.workspaceId);
+  if (!configuration?.[kind]) {
     return apiError(
       503,
       "not_configured",
@@ -270,52 +300,27 @@ export async function handleCommandApi(
     return apiError(400, "invalid_input", "Could not read the request body.");
   }
 
-  let perMinute: number;
-  let daily: number;
+  await checkLimit(app.limits, actor.workspaceId, kind);
   try {
-    perMinute = limitValue(env.COMMAND_RATE_LIMIT_PER_MINUTE, 8, 1_000);
-    daily =
-      kind === "command"
-        ? limitValue(env.COMMAND_DAILY_LIMIT, 100, 100_000)
-        : limitValue(env.TRANSCRIBE_DAILY_LIMIT, 100, 100_000);
-  } catch {
-    return apiError(
-      503,
-      "invalid_configuration",
-      "The command bar usage limits are misconfigured.",
-    );
-  }
-  const { success } = await env.TOKEN_RATE_LIMITER.limit({
-    key: `${kind}:${await hashSecret(actor.sessionId)}`,
-    delta: Math.floor(RATE_CAPACITY / perMinute),
-  });
-  if (!success)
-    return rateError("Too many requests. Try again in a minute.", 60);
-
-  const workspace = getWorkspaceStub(env, actor.workspaceId);
-  if (!(await workspace.reserveCommandQuota(kind, daily))) {
-    const seconds = 86_400 - Math.floor((Date.now() % 86_400_000) / 1000);
-    return rateError(
-      "The workspace daily limit has been reached. Try again after midnight UTC.",
-      seconds,
-    );
-  }
-  try {
-    if (text !== undefined && provider)
-      return Response.json(await runCommand(workspace, provider, text));
-    // The runtime's typed array encoder avoids copying audio through a JS number array.
-    const base64 = (audio as Uint8Array & { toBase64(): string }).toBase64();
-    const result = transcriptSchema.parse(
-      await env.AI!.run(
-        "@cf/openai/whisper-large-v3-turbo",
-        { audio: base64 },
-        { signal: AbortSignal.timeout(25_000) },
-      ),
-    );
-    return Response.json({
-      text: result.text.trim().slice(0, COMMAND_TEXT_LIMIT),
+    if (text !== undefined && configuration.command) {
+      const workspace = app.workspace(actor.workspaceId);
+      return Response.json(
+        await runCommand(workspace, configuration.command, text, {
+          app,
+          actor,
+        }),
+      );
+    }
+    const transcript = await configuration.transcribe!(audio!);
+    recordUsage(app.ctx, app.usage, actor.workspaceId, {
+      type: "transcribe",
+      seconds: (audio!.byteLength - WAV_HEADER_BYTES) / (VOICE_SAMPLE_RATE * 2),
     });
-  } catch {
+    return Response.json({
+      text: transcript.trim().slice(0, COMMAND_TEXT_LIMIT),
+    });
+  } catch (error) {
+    if (error instanceof LimitError) throw error;
     return kind === "command"
       ? apiError(
           502,

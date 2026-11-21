@@ -1,7 +1,7 @@
 import { buildPushPayload } from "@block65/webcrypto-web-push";
 import type { PushSubscription, VapidKeys } from "@block65/webcrypto-web-push";
 import { z } from "zod";
-import { decodeBase64Url } from "./signed-cookie";
+import { decodeBase64Url } from "./signed-cookie.js";
 
 export interface PushEnv {
   VAPID_PUBLIC_KEY?: string;

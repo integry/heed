@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { expect, it, vi } from "vitest";
-import worker from "./worker";
+import { fetchOpen } from "./worker-test-helpers";
 import { newTokenSecret } from "./token-secrets";
 import { getWorkspaceStub } from "./workspace";
 
@@ -33,7 +33,7 @@ it("rejects malformed and unknown-workspace tokens before the limiter or Workspa
     `heed_default_${secret.slice(0, -1)}B`,
   ]) {
     for (const path of ["/api/report", "/mcp"]) {
-      const response = await worker.fetch(request(path, token), bindings);
+      const response = await fetchOpen(request(path, token), bindings);
       expect(response.status).toBe(401);
       expect(response.headers.get("WWW-Authenticate")).toBe("Bearer");
     }
@@ -50,7 +50,7 @@ it("limits each token before Workspace lookup across both agent routes", async (
     counts.set(key, count + delta);
     return { success: true };
   });
-  const stub = getWorkspaceStub(env);
+  const stub = getWorkspaceStub(env, "default");
   const getByName = vi.fn(() => stub);
   const bindings = {
     ...env,
@@ -60,18 +60,16 @@ it("limits each token before Workspace lookup across both agent routes", async (
   };
   const token = `heed_default_${newTokenSecret()}`;
   for (const path of ["/api/report", "/mcp"]) {
-    expect((await worker.fetch(request(path, token), bindings)).status).toBe(
-      401,
-    );
+    expect((await fetchOpen(request(path, token), bindings)).status).toBe(401);
   }
-  const throttled = await worker.fetch(request("/api/report", token), bindings);
+  const throttled = await fetchOpen(request("/api/report", token), bindings);
   expect(throttled.status).toBe(429);
   expect(throttled.headers.get("Retry-After")).toBe("60");
   expect(getByName).toHaveBeenCalledTimes(2);
 
   const another = `heed_default_${newTokenSecret()}`;
   expect(
-    (await worker.fetch(request("/api/report", another), bindings)).status,
+    (await fetchOpen(request("/api/report", another), bindings)).status,
   ).toBe(401);
   expect(limit).toHaveBeenCalledTimes(4);
   expect(limit.mock.calls[0][0]).toEqual({
@@ -83,7 +81,7 @@ it("limits each token before Workspace lookup across both agent routes", async (
 });
 
 it("returns JSON for an authenticated report and throttles the next report", async () => {
-  const stub = getWorkspaceStub(env);
+  const stub = getWorkspaceStub(env, "default");
   const { token } = await stub.createToken("Session hook");
   const { item_id } = await stub.addItem(
     { kind: "human" },
@@ -95,7 +93,7 @@ it("returns JSON for an authenticated report and throttles the next report", asy
     .mockResolvedValueOnce({ success: false });
   const bindings = { ...env, TOKEN_RATE_LIMITER: { limit } };
   const send = () =>
-    worker.fetch(
+    fetchOpen(
       request("/api/report", token, {
         external_key: "repo#branch",
         status: "active",
@@ -126,18 +124,18 @@ it("creates tokens through the guarded bootstrap and uses their scope on reports
   };
   expect(
     (
-      await worker.fetch(request(bootstrap, admin), {
+      await fetchOpen(request(bootstrap, admin), {
         ...bindings,
         ADMIN_SECRET: "",
       })
     ).status,
   ).toBe(404);
-  expect(
-    (await worker.fetch(request(bootstrap, "wrong"), bindings)).status,
-  ).toBe(401);
+  expect((await fetchOpen(request(bootstrap, "wrong"), bindings)).status).toBe(
+    401,
+  );
   expect(
     (
-      await worker.fetch(
+      await fetchOpen(
         request(bootstrap, admin, { label: "Bad", scope: "owner" }),
         bindings,
       )
@@ -145,7 +143,7 @@ it("creates tokens through the guarded bootstrap and uses their scope on reports
   ).toBe(400);
   expect(
     (
-      await worker.fetch(
+      await fetchOpen(
         request(bootstrap, admin, {
           label: "Bad",
           default_project_id: "missing",
@@ -155,7 +153,7 @@ it("creates tokens through the guarded bootstrap and uses their scope on reports
     ).status,
   ).toBe(400);
 
-  const response = await worker.fetch(
+  const response = await fetchOpen(
     request(bootstrap, admin, { label: "Build agent" }),
     bindings,
   );
@@ -168,16 +166,13 @@ it("creates tokens through the guarded bootstrap and uses their scope on reports
   }>();
   expect(scope).toBe("report");
 
-  const stub = getWorkspaceStub(env);
+  const stub = getWorkspaceStub(env, "default");
   const { item_id } = await stub.addItem(
     { kind: "human" },
     { title: "Backlog", scheduled_on: null },
   );
   const body = { item_id, status: "active" };
-  const report = await worker.fetch(
-    request("/api/report", token, body),
-    bindings,
-  );
+  const report = await fetchOpen(request("/api/report", token, body), bindings);
   expect(report.status).toBe(200);
   expect(await report.json()).toMatchObject({
     item_id,
@@ -185,7 +180,7 @@ it("creates tokens through the guarded bootstrap and uses their scope on reports
   });
   expect(
     (
-      await worker.fetch(
+      await fetchOpen(
         request("/api/report", token, { item_id: "missing" }),
         bindings,
       )
@@ -193,6 +188,6 @@ it("creates tokens through the guarded bootstrap and uses their scope on reports
   ).toBe(404);
   expect(await stub.revokeToken(id)).toBe(true);
   expect(
-    (await worker.fetch(request("/api/report", token, body), bindings)).status,
+    (await fetchOpen(request("/api/report", token, body), bindings)).status,
   ).toBe(401);
 });

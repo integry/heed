@@ -17,17 +17,17 @@ import {
   CreateTokenSchema,
   UpdateProjectSchema,
 } from "@heedwork/core";
-import { commandCapabilities, handleCommandApi } from "./command-api";
-import type { CommandEnv } from "./command-provider";
-import { apiError, workspaceOperationError } from "./api-response";
-import type { HumanActor } from "./session";
+import { commandCapabilities, handleCommandApi } from "./command-api.js";
+import type { AppContext } from "./app.js";
+import { checkLimit, LimitError } from "./seams.js";
+import { apiError, workspaceOperationError } from "./api-response.js";
+import type { HumanActor } from "./session.js";
 import {
   PushEndpointSchema,
   PushSubscriptionSchema,
   vapidKeys,
-} from "./web-push";
-import type { PushEnv } from "./web-push";
-import { getWorkspaceStub } from "./workspace";
+} from "./web-push.js";
+import type { PushEnv } from "./web-push.js";
 
 const updateItemBodySchema = UpdateItemSchema.omit({ item_id: true });
 
@@ -48,30 +48,36 @@ export async function handleHumanApi(
   request: Request,
   url: URL,
   session: HumanActor,
-  env: Env & CommandEnv & PushEnv,
+  env: PushEnv,
+  app: AppContext,
 ): Promise<Response> {
   const { method } = request;
   const { pathname } = url;
   if (method === "GET" && pathname === "/api/me") {
+    const keys = await app.keys.commandProvider(session.workspaceId);
     return Response.json({
-      email: session.email,
+      user: session.user,
+      // Retain the email field for existing clients.
+      email: session.user.email,
       workspaceId: session.workspaceId,
-      capabilities: commandCapabilities(env),
+      role: session.role,
+      managed: keys.managed,
+      capabilities: commandCapabilities(keys.configuration),
     });
   }
 
   if (method === "POST" && pathname === "/api/command")
-    return handleCommandApi(request, session, env, "command");
+    return handleCommandApi(request, session, app, "command");
   if (method === "POST" && pathname === "/api/transcribe")
-    return handleCommandApi(request, session, env, "transcribe");
+    return handleCommandApi(request, session, app, "transcribe");
 
-  const actor = { kind: "human" } as const;
+  const actor = { kind: "human", user: session.user } as const;
   try {
-    const workspace = getWorkspaceStub(env, session.workspaceId);
+    const workspace = () => app.workspace(session.workspaceId);
     switch (`${method} ${pathname}`) {
       case "POST /api/push/status":
         return await withJson(request, PushSubscriptionSchema, (input) =>
-          workspace.getPushStatus(input),
+          workspace().getPushStatus(input),
         );
       case "POST /api/push/subscribe":
         if (!vapidKeys(env))
@@ -81,59 +87,67 @@ export async function handleHumanApi(
             "Push notifications are not configured.",
           );
         return await withJson(request, PushSubscriptionSchema, (input) =>
-          workspace.subscribePush(input),
+          workspace().subscribePush(input),
         );
       case "DELETE /api/push/subscribe":
         return await withJson(request, PushEndpointSchema, (input) =>
-          workspace.unsubscribePush(input),
+          workspace().unsubscribePush(input),
         );
       case "POST /api/items":
         return await withJson(
           request,
           AddItemSchema,
-          (input) => workspace.addItem(actor, input),
+          async (input) => {
+            await checkLimit(app.limits, session.workspaceId, "item.create");
+            return workspace().addItem(actor, input);
+          },
           201,
         );
       case "POST /api/dependencies":
       case "DELETE /api/dependencies":
         return await withJson(request, DependencyBodySchema, (input) =>
-          workspace.setDependency(actor, {
+          workspace().setDependency(actor, {
             ...input,
             action: method === "POST" ? "add" : "remove",
           }),
         );
       case "GET /api/projects":
-        return Response.json(await workspace.listProjects());
+        return Response.json(await workspace().listProjects());
       case "POST /api/projects":
         return await withJson(
           request,
           CreateProjectSchema,
-          (input) => workspace.createProject(input),
+          async (input) => {
+            await checkLimit(app.limits, session.workspaceId, "project.create");
+            return workspace().createProject(input);
+          },
           201,
         );
       case "GET /api/settings":
-        return Response.json(await workspace.getSettings());
+        return Response.json(await workspace().getSettings());
       case "PUT /api/settings/timezone":
         return await withJson(
           request,
           TimezoneBodySchema,
           async ({ timezone }) => {
-            await workspace.setTimezone(timezone);
+            await workspace().setTimezone(timezone);
             return { timezone };
           },
         );
       case "PUT /api/settings/guidance":
         return await withJson(request, GuidanceBodySchema, ({ text }) =>
-          workspace.setGuidance(actor, text),
+          workspace().setGuidance(actor, text),
         );
       case "GET /api/tokens":
-        return Response.json(await workspace.listTokens());
+        return Response.json(await workspace().listTokens());
       case "POST /api/tokens":
         return await withJson(
           request,
           CreateTokenSchema,
-          ({ label, scope, default_project_id }) =>
-            workspace.createToken(label, scope, default_project_id),
+          async ({ label, scope, default_project_id }) => {
+            await checkLimit(app.limits, session.workspaceId, "token.create");
+            return workspace().createToken(label, scope, default_project_id);
+          },
           201,
         );
       case "GET /api/history": {
@@ -143,7 +157,7 @@ export async function handleHumanApi(
         if (!input.success) {
           return apiError(400, "invalid_input", input.error.issues[0].message);
         }
-        return Response.json(await workspace.getHistory(input.data));
+        return Response.json(await workspace().getHistory(input.data));
       }
     }
 
@@ -155,29 +169,31 @@ export async function handleHumanApi(
       const item_id = decodeURIComponent(item[1]);
       switch (`${method} ${item[2] ?? ""}`) {
         case "GET ":
-          return Response.json(await workspace.getItem({ item_id }));
+          return Response.json(await workspace().getItem({ item_id }));
         case "PATCH ":
           return await withJson(request, updateItemBodySchema, (input) =>
-            workspace.updateItem(actor, { ...input, item_id }),
+            workspace().updateItem(actor, { ...input, item_id }),
           );
         case "DELETE ":
-          return Response.json(await workspace.deleteItem(actor, { item_id }));
+          return Response.json(
+            await workspace().deleteItem(actor, { item_id }),
+          );
         case "POST status":
           return await withJson(request, SetStatusBodySchema, (input) =>
-            workspace.reportProgress(actor, { ...input, item_id }),
+            workspace().reportProgress(actor, { ...input, item_id }),
           );
         case "POST handoff":
           return await withJson(request, HandoffBodySchema, (input) =>
             "clear" in input
-              ? workspace.clearHandoff(actor, { item_id })
-              : workspace.flagHandoff(actor, { ...input, item_id }),
+              ? workspace().clearHandoff(actor, { item_id })
+              : workspace().flagHandoff(actor, { ...input, item_id }),
           );
         case "POST reopen":
           return await withJson(request, ReopenBodySchema, (input) =>
-            workspace.reopenItem(actor, { ...input, item_id }),
+            workspace().reopenItem(actor, { ...input, item_id }),
           );
         case "GET events":
-          return Response.json(await workspace.getItemEvents({ item_id }));
+          return Response.json(await workspace().getItemEvents({ item_id }));
       }
     }
 
@@ -185,16 +201,18 @@ export async function handleHumanApi(
     if (project && method === "PATCH") {
       const id = decodeURIComponent(project[1]);
       return await withJson(request, UpdateProjectSchema, (input) =>
-        workspace.updateProject(id, input),
+        workspace().updateProject(id, input),
       );
     }
     if (project && method === "DELETE") {
-      await workspace.deleteProject(decodeURIComponent(project[1]));
+      await workspace().deleteProject(decodeURIComponent(project[1]));
       return Response.json({ ok: true });
     }
     const token = /^\/api\/tokens\/([^/]+)$/.exec(pathname);
     if (token && method === "DELETE") {
-      const revoked = await workspace.revokeToken(decodeURIComponent(token[1]));
+      const revoked = await workspace().revokeToken(
+        decodeURIComponent(token[1]),
+      );
       return revoked
         ? Response.json({ ok: true })
         : apiError(404, "not_found", "Token not found");
@@ -202,6 +220,7 @@ export async function handleHumanApi(
 
     return apiError(404, "not_found", "Not found");
   } catch (error) {
+    if (error instanceof LimitError) throw error;
     const { status, code, message } = workspaceOperationError(error);
     return apiError(status, code, message);
   }

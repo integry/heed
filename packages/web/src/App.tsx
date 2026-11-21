@@ -34,7 +34,8 @@ import { workspaceView, type MutationInput } from "./workspace-state";
 import { selectWorkspace } from "./workspace-view";
 
 type Session =
-  | { status: "loading" | "error" }
+  | { status: "loading" }
+  | { status: "error"; message?: string }
   | { status: "signed-out"; devLoginEnabled: boolean }
   | {
       status: "signed-in";
@@ -874,6 +875,19 @@ export function App({
             });
           return;
         }
+        if (response.status === 403) {
+          const data = await response.json().catch(() => ({}));
+          if (!controller.signal.aborted)
+            setSession({
+              status: "error",
+              message:
+                data.error?.limit === "connect" &&
+                typeof data.error.message === "string"
+                  ? data.error.message
+                  : undefined,
+            });
+          return;
+        }
         if (!response.ok) throw new Error("Session lookup failed");
         const { email, workspaceId, capabilities } = await response.json();
         if (typeof email !== "string" || typeof workspaceId !== "string")
@@ -921,7 +935,9 @@ export function App({
         )}
         {session.status === "error" && (
           <>
-            <p role="alert">Couldn’t check your session.</p>
+            <p role="alert">
+              {session.message ?? "Couldn’t check your session."}
+            </p>
             <button type="button" className="primary" onClick={reauthenticate}>
               Try again
             </button>

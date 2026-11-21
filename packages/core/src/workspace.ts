@@ -125,11 +125,19 @@ export const DependencySchema = z
     "An item cannot depend on itself",
   );
 
+export const WorkspaceUserSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  name: z.string(),
+});
+
+export type WorkspaceUser = z.infer<typeof WorkspaceUserSchema>;
+
 export const EventSchema = z.object({
   id: z.int(),
   item_id: z.string(),
   at: z.string(),
-  actor: z.string(),
+  actor: z.union([z.string(), WorkspaceUserSchema]),
   kind: EventKindSchema,
   detail: nullableText,
 });

@@ -5,10 +5,10 @@ import {
   PROTOCOL_VERSION_META_KEY,
 } from "@modelcontextprotocol/server";
 import { expect, it } from "vitest";
-import worker from "./worker";
+import { fetchOpen } from "./worker-test-helpers";
 import { getWorkspaceStub } from "./workspace";
 
-const workspace = getWorkspaceStub(env);
+const workspace = getWorkspaceStub(env, "default");
 const human = { kind: "human" } as const;
 const bindings = {
   ...env,
@@ -21,7 +21,7 @@ function postMcp(
   params: object = {},
   headers: Record<string, string> = {},
 ) {
-  return worker.fetch(
+  return fetchOpen(
     new Request("https://heed.test/mcp", {
       method: "POST",
       headers: {
@@ -263,7 +263,7 @@ it("reports validation and scope errors with guidance and acknowledges ignored f
 
 it("rejects GET and DELETE for the stateless endpoint", async () => {
   for (const method of ["GET", "DELETE"]) {
-    const response = await worker.fetch(
+    const response = await fetchOpen(
       new Request("https://heed.test/mcp", { method }),
       env,
     );

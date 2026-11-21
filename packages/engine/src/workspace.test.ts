@@ -2,7 +2,6 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { expect, it } from "vitest";
 import {
-  DEFAULT_WORKSPACE_ID,
   INBOX_PROJECT_ID,
   MAX_GUIDANCE_LENGTH,
   SettingsSchema,
@@ -13,11 +12,7 @@ function newWorkspace() {
   return getWorkspaceStub(env, crypto.randomUUID());
 }
 
-it("routes the default workspace and isolates explicitly named workspaces", async () => {
-  const defaultStub = getWorkspaceStub(env);
-  const explicitlyDefault = getWorkspaceStub(env, DEFAULT_WORKSPACE_ID);
-  expect(defaultStub.id.equals(explicitlyDefault.id)).toBe(true);
-
+it("isolates explicitly named workspaces", async () => {
   const first = newWorkspace();
   const second = newWorkspace();
   await first.createProject({ name: "Engineering" });
@@ -30,7 +25,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
   const stub = newWorkspace();
   const settings = await stub.getSettings();
   expect(SettingsSchema.parse(settings)).toEqual({
-    schema_version: 4,
+    schema_version: 5,
     timezone: "UTC",
     guidance: "",
     guidance_updated_at: null,
@@ -73,7 +68,7 @@ it("keeps the migration and stored data intact across an eviction", async () => 
   await evictDurableObject(stub);
 
   expect(await stub.getSettings()).toEqual({
-    schema_version: 4,
+    schema_version: 5,
     timezone: "Europe/Tallinn",
     ...guidance,
   });

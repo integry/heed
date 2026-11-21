@@ -26,7 +26,10 @@ function newWorkspace() {
 async function events(stub: ReturnType<typeof newWorkspace>, itemId: string) {
   return runInDurableObject(stub, (_, { storage: { sql } }) =>
     sql
-      .exec<Event>("SELECT * FROM events WHERE item_id = ? ORDER BY id", itemId)
+      .exec<Omit<Event, "actor"> & { actor: string }>(
+        "SELECT id, item_id, at, actor, kind, detail FROM events WHERE item_id = ? ORDER BY id",
+        itemId,
+      )
       .toArray(),
   );
 }
