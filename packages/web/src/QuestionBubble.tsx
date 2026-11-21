@@ -4,11 +4,13 @@ import { useAction } from "./workspace-controls";
 export function QuestionBubble({
   item,
   disabled,
+  typeReplyDisabled,
   answer,
   typeReply,
 }: {
   item: Item;
   disabled: boolean;
+  typeReplyDisabled: boolean;
   answer: (text: string) => Promise<void>;
   typeReply: () => void;
 }) {
@@ -37,7 +39,11 @@ export function QuestionBubble({
             {option}
           </button>
         ))}
-        <button type="button" disabled={disabled || busy} onClick={typeReply}>
+        <button
+          type="button"
+          disabled={disabled || busy || typeReplyDisabled}
+          onClick={typeReply}
+        >
           Type a reply
         </button>
       </div>

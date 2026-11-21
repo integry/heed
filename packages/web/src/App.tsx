@@ -22,6 +22,7 @@ import {
   type HistoryPage,
   type Item,
   type RadarBand,
+  type Scope,
   type TokenMetadata,
 } from "@heedwork/core";
 import { CommandBar, useCommandBar } from "./CommandBar";
@@ -55,14 +56,12 @@ import { selectWorkspace } from "./workspace-view";
 
 type PanelState =
   | {
-      kind:
-        | "guidance"
-        | "host"
-        | "history"
-        | "hidden"
-        | "token-label"
-        | "judge"
-        | "push";
+      kind: "guidance" | "host" | "history" | "hidden" | "judge" | "push";
+    }
+  | {
+      kind: "token-label";
+      scope: Scope;
+      project?: { id: string; title: string };
     }
   | { kind: "token"; created: CreatedToken }
   | {
@@ -94,6 +93,12 @@ type Session =
 
 function Wordmark() {
   return <span className="wordmark">heed</span>;
+}
+
+function hasOpenHandoff(item: Item) {
+  return (
+    item.handoff === 1 && item.status !== "done" && item.status !== "cancelled"
+  );
 }
 
 function useMinuteClock() {
@@ -265,12 +270,16 @@ function Workspace({
       : undefined;
   const inspected = selected ?? fallback;
   const replyTarget =
-    replyId && inspected?.id === replyId && inspected.handoff === 1
+    replyId && inspected?.id === replyId && hasOpenHandoff(inspected)
       ? inspected
       : undefined;
+  const { setDraft } = command;
   useEffect(() => {
-    if (replyId && !replyTarget) setReplyId(undefined);
-  }, [replyId, replyTarget]);
+    if (replyId && !replyTarget) {
+      setReplyId(undefined);
+      setDraft("");
+    }
+  }, [replyId, replyTarget, setDraft]);
   const dependencies = useMemo(
     () => [...view.dependencies.values()],
     [view.dependencies],
@@ -444,10 +453,10 @@ function Workspace({
       item.status !== "done" &&
       item.status !== "cancelled",
   );
-  const questions: Item[] = visibleItems.filter(({ handoff }) => handoff === 1);
+  const questions: Item[] = visibleItems.filter(hasOpenHandoff);
   if (
-    inspected?.handoff === 1 &&
-    selectedItem?.fromNotification &&
+    inspected &&
+    hasOpenHandoff(inspected) &&
     !questions.some(({ id }) => id === inspected.id)
   )
     questions.push(inspected);
@@ -524,14 +533,11 @@ function Workspace({
       { type: "ANSWER_HANDOFF", input: { item_id: id, text } },
       `Answered “${item?.title ?? "question"}”.`,
     );
-    if (replyId === id) {
-      setReplyId(undefined);
-      command.setDraft("");
-    }
     command.setSummary(result);
   }
 
   async function executeCommand(text: string): Promise<string | undefined> {
+    if (replyId && !replyTarget) return "That question is no longer open.";
     const context = {
       selected: inspected,
       items:
@@ -552,6 +558,14 @@ function Workspace({
         return capabilities.command ? undefined : COMMAND_HELP;
       case "message":
         return intent.text;
+      case "token-label":
+        allowed("tokens");
+        setActivePanel({
+          kind: "token-label",
+          scope: intent.scope,
+          project: intent.project,
+        });
+        return "";
       case "select":
         selectStreamItem(intent.id);
         return `Selected “${context.items.find(({ id }) => id === intent.id)?.title}”.`;
@@ -701,10 +715,6 @@ function Workspace({
             if (!state.settings)
               return "Guidance will be available when the workspace connects.";
             setActivePanel({ kind: "guidance" });
-            return "";
-          case "new token":
-            allowed("tokens");
-            setActivePanel({ kind: "token-label" });
             return "";
           case "history":
           case "hidden items":
@@ -968,6 +978,7 @@ function Workspace({
                   key={item.id}
                   item={item}
                   disabled={!live || command.action.busy}
+                  typeReplyDisabled={command.clarification}
                   answer={(text) => answerQuestion(item.id, text)}
                   typeReply={() => {
                     if (item.id !== selectedId) selectStreamItem(item.id);
@@ -1107,12 +1118,22 @@ function Workspace({
           />
         </Panel>
       )}
-      {panel === "token-label" && (
+      {activePanel?.kind === "token-label" && (
         <TokenLabel
           close={closePanel}
+          scope={activePanel.scope}
+          projectName={activePanel.project?.title ?? "Inbox"}
           create={async (label) => {
+            const { scope, project } = activePanel;
             await saveCommand(
-              { type: "CREATE_TOKEN", input: { label, scope: "report" } },
+              {
+                type: "CREATE_TOKEN",
+                input: {
+                  label,
+                  scope,
+                  ...(project && { default_project_id: project.id }),
+                },
+              },
               "",
             );
           }}

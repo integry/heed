@@ -3,6 +3,7 @@ import {
   CreateTokenSchema,
   type CreatedToken,
   type JudgeAgreement,
+  type Scope,
 } from "@heedwork/core";
 import { useResource } from "./api";
 import { Panel, useAction } from "./workspace-controls";
@@ -97,14 +98,25 @@ export function TokenSecret({ created }: { created: CreatedToken }) {
 export function TokenLabel({
   create,
   close,
+  scope,
+  projectName,
 }: {
   create: (label: string) => Promise<void>;
   close: () => void;
+  scope: Scope;
+  projectName: string;
 }) {
   const [label, setLabel] = useState("");
   const { run, busy, error } = useAction();
   return (
     <Panel title="New API token" close={close} busy={busy}>
+      <p>
+        Scope {scope} · Default project {projectName}
+      </p>
+      <p className="muted">
+        To choose options from the command line, try{" "}
+        <code>new steer token in &lt;project&gt;</code>.
+      </p>
       <form
         className="form-stack"
         onSubmit={(event) => {

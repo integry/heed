@@ -1,7 +1,7 @@
 import { workspaceCalendar } from "./derived-state.js";
 import { LockableFieldSchema } from "./item-operations.js";
-import { INBOX_PROJECT_ID, RadarBandSchema } from "./workspace.js";
-import type { RadarBand } from "./workspace.js";
+import { INBOX_PROJECT_ID, RadarBandSchema, ScopeSchema } from "./workspace.js";
+import type { RadarBand, Scope } from "./workspace.js";
 import type { WorkspaceMutation } from "./workspace-socket.js";
 import { z } from "zod";
 
@@ -21,7 +21,6 @@ export interface CommandContext {
 
 const workspaceCommands = [
   "edit guidance",
-  "new token",
   "sign out",
   "what needs me",
   "what is blocked",
@@ -55,6 +54,11 @@ export type CommandIntent =
   | { type: "zoom"; band: RadarBand | null }
   | { type: "lens"; id: string }
   | { type: "select" | "details"; id: string }
+  | {
+      type: "token-label";
+      scope: Scope;
+      project?: { id: string; title: string };
+    }
   | { type: "workspace"; command: WorkspaceCommand }
   | {
       type: "time";
@@ -172,7 +176,7 @@ const builtInLenses = ["radar", "board", "treemap", "list", "dependencies"].map(
 );
 
 export const COMMAND_HELP =
-  "Try add <title>, zoom into today, fit, a lens name, what needs me, what is blocked, edit guidance, new token, enable notifications, export workspace, reset workspace, or sign out. Select or name an item to change its date, priority, visibility, or status.";
+  "Try add <title>, zoom into today, fit, a lens name, what needs me, what is blocked, edit guidance, new token, enable notifications, export workspace, reset workspace, or sign out. Select or name an item to change its date, priority, visibility, or status. For token options, try new steer token in <project> for <label>.";
 
 export function interpretCommand(
   raw: string,
@@ -256,11 +260,36 @@ export function interpretCommand(
         `Marked “${title}” done.`,
       ),
     );
-  if ((match = /^new token for (.+)$/i.exec(text))) {
-    return mutate(
-      { type: "CREATE_TOKEN", input: { label: match[1], scope: "report" } },
-      "Token created.",
-    );
+  if (
+    (match =
+      /^new (?:(report|steer) )?token(?:\?|(?: in ("[^"]+"|[^"].*?))?(?: for (.+))?)$/i.exec(
+        text,
+      ))
+  ) {
+    const [, scopeName, projectName, label] = match;
+    const scope = ScopeSchema.parse(scopeName?.toLowerCase() ?? "report");
+    const create = (defaultProject?: {
+      id: string;
+      title: string;
+    }): CommandIntent =>
+      label
+        ? mutate(
+            {
+              type: "CREATE_TOKEN",
+              input: {
+                label,
+                scope,
+                ...(defaultProject && {
+                  default_project_id: defaultProject.id,
+                }),
+              },
+            },
+            "Token created.",
+          )
+        : { type: "token-label", scope, project: defaultProject };
+    return projectName
+      ? project(projectName, (id, title) => create({ id, title }))
+      : create();
   }
   if ((match = /^add child (.+?)(?: under (.+))?$/i.exec(text))) {
     const [, title, parent] = match;

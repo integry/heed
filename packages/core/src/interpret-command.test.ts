@@ -99,6 +99,58 @@ describe("interpretCommand", () => {
   });
 
   it.each([
+    ["new steer token", { type: "token-label", scope: "steer" }],
+    [
+      'new steer token in "Ops for Release"',
+      {
+        type: "token-label",
+        scope: "steer",
+        project: { id: "release", title: "Ops for Release" },
+      },
+    ],
+    [
+      'new steer token in "Ops for Release" for Claude Code',
+      {
+        type: "mutate",
+        mutation: {
+          type: "CREATE_TOKEN",
+          input: {
+            label: "Claude Code",
+            scope: "steer",
+            default_project_id: "release",
+          },
+        },
+      },
+    ],
+    [
+      "new token in Release for Runner in CI",
+      {
+        type: "mutate",
+        mutation: {
+          type: "CREATE_TOKEN",
+          input: {
+            label: "Runner in CI",
+            scope: "report",
+            default_project_id: "release",
+          },
+        },
+      },
+    ],
+    ["new steer token in Missing for Runner", { type: "message" }],
+    ["new steer token in Ops for Runner", { type: "message" }],
+  ])("resolves token options in %s", (command, intent) => {
+    expect(
+      interpretCommand(command, {
+        ...context,
+        projects: [
+          { id: "release", name: "Ops for Release" },
+          { id: "design", name: "Ops for Design" },
+        ],
+      }),
+    ).toMatchObject(intent);
+  });
+
+  it.each([
     ["urgent", 10],
     ["high", 8],
     ["normal", 5],

@@ -38,6 +38,7 @@ export function useCommandBar(
   const [request, setRequest] = useState<{
     original: string;
     replies: string[];
+    question: string;
   }>();
   const [clarificationTooLong, setClarificationTooLong] = useState(false);
   const [preferRecording, setPreferRecording] = useState(false);
@@ -114,19 +115,20 @@ export function useCommandBar(
     void action.run(async () => {
       setClarificationTooLong(false);
       setVoiceError("");
-      const local = await execute(input);
-      if (local !== undefined) {
-        setDraft("");
-        setSummary(local);
-        setRequest(undefined);
-        return;
+      if (!request) {
+        const local = await execute(input);
+        if (local !== undefined) {
+          setDraft("");
+          setSummary(local);
+          return;
+        }
+        if (!model) return;
       }
-      if (!model) return;
       const original = request?.original ?? input;
       const replies = request
         ? [
             ...request.replies,
-            `Clarifying question: ${summary}\nUser's answer: ${input}`,
+            `Clarifying question: ${request.question}\nUser's answer: ${input}`,
           ]
         : [];
       const text = request
@@ -143,7 +145,11 @@ export function useCommandBar(
           ? `${result.summary} ${result.refusal.message}`
           : result.summary,
       );
-      setRequest(result.needsClarification ? { original, replies } : undefined);
+      setRequest(
+        result.needsClarification
+          ? { original, replies, question: result.summary }
+          : undefined,
+      );
       if (result.changes.length) setUndoId(result.undoId);
     });
   }
@@ -179,7 +185,7 @@ export function useCommandBar(
     clarificationTooLong,
     draft,
     setDraft,
-    summary,
+    summary: request?.question ?? summary,
     undoId,
     voice,
     voiceError,
@@ -339,7 +345,7 @@ export function CommandBar({
           Send
         </button>
       </form>
-      {!replyName && (
+      {!replyName && !command.clarification && (
         <div className="command-examples" aria-label="Example commands">
           {[
             "what needs me?",

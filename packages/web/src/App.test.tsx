@@ -507,6 +507,104 @@ it("keeps each clarification reply once, including when retrying a failed submis
   ]);
 });
 
+it.each([true, false])(
+  "continues a model clarification with a built-in date (item selected: %s)",
+  async (selected) => {
+    const original = "Could you arrange the billing review?";
+    const question = "Which date should I use?";
+    const { send, submit } = await openCommandBar(
+      Response.json({
+        summary: question,
+        needsClarification: true,
+        changes: [],
+      }),
+      Response.json({
+        summary: "The review is scheduled.",
+        needsClarification: false,
+        changes: [],
+      }),
+    );
+    if (selected) {
+      const field = within(
+        screen.getByRole("region", { name: "Attention field" }),
+      );
+      fireEvent.click(field.getByRole("button", { name: goal.title }));
+    }
+    send(original);
+    await screen.findByText(question);
+    send("Friday");
+    await screen.findByText("The review is scheduled.");
+    expect(submit.mock.calls).toEqual([
+      [original],
+      [
+        `Original request: ${original}\nClarifying question: ${question}\nUser's answer: Friday`,
+      ],
+    ]);
+    expect(TestSocket.current.send).not.toHaveBeenCalled();
+  },
+);
+
+it("keeps the model question when a handoff answer is acknowledged", async () => {
+  const original = "Could you arrange the billing review?";
+  const question = "Which date should I use?";
+  const { send, submit } = await openCommandBar(
+    Response.json({ summary: question, needsClarification: true, changes: [] }),
+    Response.json({
+      summary: "Scheduled.",
+      needsClarification: false,
+      changes: [],
+    }),
+  );
+  const item = { ...goal, handoff: 1, handoff_options: '["Staging"]' } as const;
+  const socket = TestSocket.current;
+  socket.receive({ type: "ITEM_UPSERT", seq: 2, item });
+  send(original);
+  await screen.findByText(question);
+  const bubble = within(
+    screen.getByRole("region", { name: `Question about ${item.title}` }),
+  );
+  expect(
+    bubble.getByRole<HTMLButtonElement>("button", { name: "Type a reply" })
+      .disabled,
+  ).toBe(true);
+  fireEvent.click(bubble.getByRole("button", { name: "Staging" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "ANSWER_HANDOFF",
+    input: { item_id: item.id, text: "Staging" },
+  });
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 3,
+    item: { ...item, handoff: 0 },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 4,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  expect(screen.getByText(question)).toBeTruthy();
+  send("Friday");
+  await screen.findByText("Scheduled.");
+  expect(submit.mock.lastCall).toEqual([
+    `Original request: ${original}\nClarifying question: ${question}\nUser's answer: Friday`,
+  ]);
+});
+
+it("runs a standalone built-in after New command cancels a clarification", async () => {
+  const question = "Which date should I use?";
+  const { send, submit } = await openCommandBar(
+    Response.json({ summary: question, needsClarification: true, changes: [] }),
+  );
+  send("Could you arrange the billing review?");
+  await screen.findByText(question);
+  fireEvent.click(screen.getByRole("button", { name: "New command" }));
+  send("zoom into today");
+  await screen.findByText(/^Today split/);
+  expect(submit).toHaveBeenCalledTimes(1);
+});
+
 it("starts a fresh command after an ordinary result ending in a question mark", async () => {
   const summary = 'No item has the title "Ready?" — could it be archived?';
   const { draft, send, submit } = await openCommandBar(
@@ -600,6 +698,32 @@ async function openNotificationItem(lookup: () => Response) {
   );
   return TestSocket.current;
 }
+
+it.each(["blocked", "done"])(
+  "shows only open handoffs for off-canvas notification items (status: %s)",
+  async (status) => {
+    const item = {
+      ...notificationItem,
+      status,
+      handoff: 1,
+      handoff_note: "Which alerts should we keep?",
+      handoff_options: '["Payment failures"]',
+    };
+    await openNotificationItem(() => Response.json(item));
+    await screen.findByRole("heading", { name: item.title });
+    const bubble = screen.queryByRole("region", {
+      name: `Question about ${item.title}`,
+    });
+    if (status === "blocked") {
+      expect(within(bubble!).getByText(item.handoff_note)).toBeTruthy();
+      expect(
+        within(bubble!).getByRole("button", { name: "Payment failures" }),
+      ).toBeTruthy();
+    } else {
+      expect(bubble).toBeNull();
+    }
+  },
+);
 
 it("discards the notification fallback when a reopened item enters the canvas", async () => {
   const lookup = vi
@@ -3201,57 +3325,105 @@ it("reveals a collapsed descendant in the day list when its bubble is selected",
   ).toBeTruthy();
 });
 
-it.each(["suggestion", "typed reply"])(
-  "answers a radar handoff with a %s",
-  async (method) => {
-    const item = {
-      ...goal,
-      status: "blocked",
-      handoff: 1,
-      handoff_note: "Which rollout should we use?",
-      handoff_options: '["Staging","Production"]',
-      agent_name: "Release agent",
-    } as const;
-    await openWorkspace(undefined, { ...snapshot, items: [item] });
-    const radar = within(
-      screen.getByRole("region", { name: "Attention field" }),
-    );
-    const question = within(
-      radar.getByRole("region", { name: `Question about ${item.title}` }),
-    );
-    expect(question.getByText(/Release agent asks/)).toBeTruthy();
-    expect(question.getByText(item.handoff_note)).toBeTruthy();
-    const text = method === "suggestion" ? "Staging" : "Use a canary first";
-    if (method === "suggestion") {
-      fireEvent.click(question.getByRole("button", { name: text }));
-    } else {
-      fireEvent.click(question.getByRole("button", { name: "Type a reply" }));
-      expect(commandInput().placeholder).toBe("Reply to Release agent…");
-      expect(document.activeElement).toBe(commandInput());
-      await sendCommand(text);
-    }
-    const socket = TestSocket.current;
-    expect(socket.latestRequest()).toMatchObject({
-      type: "ANSWER_HANDOFF",
-      input: { item_id: item.id, text },
-    });
-    socket.receive({
-      type: "ITEM_UPSERT",
-      seq: 2,
-      item: { ...item, status: "active", handoff: 0, handoff_answer: text },
-    });
-    await act(async () =>
-      socket.receive({
-        type: "ACK",
-        seq: 3,
-        requestId: socket.latestRequest().requestId,
-      }),
-    );
+it.each([
+  ["visible", "suggestion"],
+  ["visible", "typed reply"],
+  ["hidden", "suggestion"],
+  ["hidden", "typed reply"],
+])("answers a %s item's handoff with a %s", async (visibility, method) => {
+  const item = {
+    ...goal,
+    status: "blocked",
+    handoff: 1,
+    handoff_note: "Which rollout should we use?",
+    handoff_options: '["Staging","Production"]',
+    agent_name: "Release agent",
+    hidden: visibility === "hidden" ? (1 as const) : (0 as const),
+  } as const;
+  await openWorkspace(undefined, { ...snapshot, items: [item] });
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  if (visibility === "hidden") {
     expect(
       radar.queryByRole("region", { name: `Question about ${item.title}` }),
     ).toBeNull();
-  },
-);
+    await sendCommand("hidden items");
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Hidden items" })).getByRole(
+        "button",
+        { name: item.title },
+      ),
+    );
+  }
+  const question = within(
+    radar.getByRole("region", { name: `Question about ${item.title}` }),
+  );
+  expect(question.getByText(/Release agent asks/)).toBeTruthy();
+  expect(question.getByText(item.handoff_note)).toBeTruthy();
+  const text = method === "suggestion" ? "Staging" : "Use a canary first";
+  if (method === "suggestion") {
+    fireEvent.click(question.getByRole("button", { name: text }));
+  } else {
+    fireEvent.click(question.getByRole("button", { name: "Type a reply" }));
+    expect(commandInput().placeholder).toBe("Reply to Release agent…");
+    expect(document.activeElement).toBe(commandInput());
+    await sendCommand(text);
+  }
+  const socket = TestSocket.current;
+  expect(socket.latestRequest()).toMatchObject({
+    type: "ANSWER_HANDOFF",
+    input: { item_id: item.id, text },
+  });
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 2,
+    item: { ...item, status: "active", handoff: 0, handoff_answer: text },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 3,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  expect(
+    radar.queryByRole("region", { name: `Question about ${item.title}` }),
+  ).toBeNull();
+});
+
+it("keeps one selected question as visibility changes and removes it when terminal", async () => {
+  const item = {
+    ...goal,
+    hidden: 1,
+    handoff: 1,
+    handoff_note: "Which rollout should we use?",
+  } as const;
+  await openWorkspace(undefined, { ...snapshot, items: [item] });
+  await sendCommand("hidden items");
+  fireEvent.click(
+    within(screen.getByRole("dialog", { name: "Hidden items" })).getByRole(
+      "button",
+      { name: item.title },
+    ),
+  );
+  const question = { name: `Question about ${item.title}` };
+  const socket = TestSocket.current;
+  socket.receive({ type: "ITEM_UPSERT", seq: 2, item: { ...item, hidden: 0 } });
+  expect(screen.getAllByRole("region", question)).toHaveLength(1);
+  fireEvent.click(
+    within(screen.getByRole("region", question)).getByRole("button", {
+      name: "Type a reply",
+    }),
+  );
+  fireEvent.change(commandInput(), { target: { value: "Friday" } });
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 3,
+    item: { ...item, status: "cancelled" },
+  });
+  expect(screen.queryByRole("region", question)).toBeNull();
+  expect(commandInput().value).toBe("");
+  expect(socket.send).not.toHaveBeenCalled();
+});
 
 it("applies built-in commands before handing unknown input to the host", async () => {
   const freeText = vi.fn(async () => ({ text: "Host reply" }));
@@ -3340,6 +3512,55 @@ it("creates a report token with one field and discards its secret when closed", 
   expect(screen.queryByDisplayValue(createdToken.token)).toBeNull();
   expect(document.querySelector("select")).toBeNull();
 });
+
+it.each([true, false])(
+  "creates a steering token for a named project (label in command: %s)",
+  async (inlineLabel) => {
+    const release = { ...project, id: "release", name: "Release Operations" };
+    const label = "Release agent";
+    await openWorkspace(undefined, {
+      ...snapshot,
+      projects: [project, release],
+    });
+    await sendCommand(
+      `new steer token in Release Operations${inlineLabel ? ` for ${label}` : ""}`,
+    );
+    if (!inlineLabel) {
+      const dialog = within(
+        screen.getByRole("dialog", { name: "New API token" }),
+      );
+      expect(
+        dialog.getByText("Scope steer · Default project Release Operations"),
+      ).toBeTruthy();
+      fireEvent.change(dialog.getByRole("textbox", { name: "Token label" }), {
+        target: { value: label },
+      });
+      fireEvent.click(dialog.getByRole("button", { name: "Create token" }));
+    }
+    const socket = TestSocket.current;
+    expect(socket.latestRequest()).toMatchObject({
+      type: "CREATE_TOKEN",
+      input: { label, scope: "steer", default_project_id: release.id },
+    });
+    await act(async () =>
+      socket.receive({
+        type: "ACK",
+        seq: 2,
+        requestId: socket.latestRequest().requestId,
+        createdToken: {
+          id: "token",
+          label,
+          scope: "steer",
+          default_project_id: release.id,
+          created_at: goal.created_at,
+          last_used_at: null,
+          token: "example-once-only-secret",
+        },
+      }),
+    );
+    expect(screen.getByRole("dialog", { name: "Token created" })).toBeTruthy();
+  },
+);
 
 it("requires a separate typed confirmation for workspace reset", async () => {
   await openWorkspace();
