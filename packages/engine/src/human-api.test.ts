@@ -11,7 +11,7 @@ import type { ItemOperationResult } from "@heedwork/core";
 import type { Event, Guidance, Project, TokenMetadata } from "@heedwork/core";
 import { fetchOpen } from "./worker-test-helpers";
 import { issueSession } from "./auth";
-import { tokenParts } from "./token-secrets";
+import { hashSecret, tokenParts } from "./token-secrets";
 import type { PushEnv } from "./web-push";
 import { getWorkspaceStub } from "./workspace";
 
@@ -74,6 +74,36 @@ async function addItem(title: string, fields: object = {}) {
       201,
     )
   ).items[0];
+}
+
+async function authorizeApp(name: string) {
+  const csrf = crypto.randomUUID();
+  const userId = "human@example.test";
+  const resource = `${origin}/mcp`;
+  await workspace.beginOAuthConsent(csrf, userId, {
+    client: {
+      id: "client",
+      name,
+      authMethod: "none",
+      secretHash: null,
+      refresh: false,
+    },
+    redirectUri: "https://client.example.test/callback",
+    challenge: await hashSecret("test-verifier"),
+    resource,
+    state: null,
+  });
+  const grant = await workspace.finishOAuthConsent(csrf, userId, resource, {
+    label: name,
+    scope: "report",
+  });
+  expect(grant?.code).toEqual(expect.any(String));
+}
+
+function withoutDemo<T extends { demo?: number }>(record: T): Omit<T, "demo"> {
+  const fields = { ...record };
+  delete fields.demo;
+  return fields;
 }
 
 it("requires a signed session and a same-origin mutation before looking up the workspace", async () => {
@@ -156,12 +186,11 @@ it("exports workspace data and history without credentials or internal settings"
   await workspace.setTimezone("Europe/Tallinn");
   await workspace.setGuidance({ kind: "human" }, "Review before merging.");
   const token = await workspace.createToken("Private token label");
+  await authorizeApp("private-grant");
   await runInDurableObject(workspace, (_instance, state) => {
     state.storage.sql.exec(
       "INSERT INTO push_subscriptions (endpoint, keys) VALUES ('private-endpoint', 'private-keys')",
     );
-    state.storage.sql.exec("CREATE TABLE oauth_grants (secret TEXT)");
-    state.storage.sql.exec("INSERT INTO oauth_grants VALUES ('private-grant')");
     state.storage.sql.exec(
       "INSERT INTO settings VALUES ('command_undo', 'private-undo')",
     );
@@ -185,9 +214,9 @@ it("exports workspace data and history without credentials or internal settings"
     },
     projects: expect.arrayContaining([
       expect.objectContaining({ id: INBOX_PROJECT_ID }),
-      project,
+      withoutDemo(project),
     ]),
-    items: expect.arrayContaining([active, archived, blocker]),
+    items: expect.arrayContaining([active, archived, blocker].map(withoutDemo)),
     dependencies: [{ item_id: active.id, blocked_by_id: blocker.id }],
     events: expect.arrayContaining(
       await workspace.getItemEvents({ item_id: active.id }),
@@ -261,10 +290,9 @@ it("requires exact confirmation and resets storage, sockets and agent access", a
   const { token } = await workspace.createToken("Before reset");
   await workspace.setTimezone("Europe/Tallinn");
   await workspace.setGuidance({ kind: "human" }, "Remove me too");
+  await authorizeApp("Old app");
   await runInDurableObject(workspace, async (_instance, { storage }) => {
     await storage.put("grant", "old grant");
-    storage.sql.exec("CREATE TABLE oauth_grants (secret TEXT)");
-    storage.sql.exec("INSERT INTO oauth_grants VALUES ('old grant')");
     storage.sql.exec(
       "INSERT INTO push_subscriptions (endpoint, keys) VALUES ('old-endpoint', 'old-keys')",
     );
@@ -315,7 +343,14 @@ it("requires exact confirmation and resets storage, sockets and agent access", a
 
   expect(await workspace.getSettings()).toEqual(defaultSettings);
   expect(await workspace.listProjects()).toEqual([
-    { id: INBOX_PROJECT_ID, name: "Inbox", color: null, hidden: 0, sort: 0 },
+    {
+      id: INBOX_PROJECT_ID,
+      name: "Inbox",
+      color: null,
+      hidden: 0,
+      sort: 0,
+      demo: 0,
+    },
   ]);
   expect(await workspace.listTokens()).toEqual([]);
   expect((await report()).status).toBe(401);
@@ -326,11 +361,9 @@ it("requires exact confirmation and resets storage, sockets and agent access", a
   expect(empty.events).toEqual([]);
   await runInDurableObject(workspace, async (_instance, { storage }) => {
     expect(await storage.get("grant")).toBeUndefined();
-    expect(
-      storage.sql
-        .exec("SELECT name FROM sqlite_master WHERE name = 'oauth_grants'")
-        .toArray(),
-    ).toEqual([]);
+    expect(storage.sql.exec("SELECT * FROM oauth_grants").toArray()).toEqual(
+      [],
+    );
     expect(
       storage.sql.exec("SELECT * FROM push_subscriptions").toArray(),
     ).toEqual([]);
