@@ -17,11 +17,13 @@ Each item has an `id`, `project_id`, optional parent reference `parent_id`, and 
 
 - Identity and content include `external_key`, `title`, `tags`, `acceptance`, `agent_name`, `created_by`, `ref_url`, and `note`.
 - Placement and scheduling include `depth`, `priority`, `scheduled_on`, `sort_key`, `layout_pos`, `locked_fields`, `time_type`, `time_at`, and `hidden`.
-- Workflow includes `status`, `handoff`, `handoff_note`, `reopen_count`, `reopen_reason`, `last_heartbeat_at`, `completed_at`, `completed_band`, `created_at`, and `updated_at`.
+- Workflow includes `status`, `handoff`, `handoff_note`, `handoff_options`, `handoff_answer`, `handoff_answered_at`, `reopen_count`, `reopen_reason`, `last_heartbeat_at`, `completed_at`, `completed_band`, `created_at`, and `updated_at`.
 
-Arrays can be empty and their order has no semantic meaning. Flags such as `hidden` and `handoff` are integers (`0` or `1`). The `tags`, `acceptance`, `layout_pos`, and `locked_fields` item fields are strings containing JSON. Decode `acceptance` to get an array of up to eight criteria of up to 200 characters each. Items without criteria use `"[]"`. Earlier version 1 exports may omit the field.
+Arrays can be empty and their order has no semantic meaning. Flags such as `hidden` and `handoff` are integers (`0` or `1`). The `tags`, `acceptance`, `layout_pos`, and `locked_fields` item fields are strings containing JSON. Decode `acceptance` to get an array of up to eight criteria of up to 200 characters each. Items without criteria use `"[]"`. Earlier version 1 exports may omit `acceptance` and the three handoff reply fields.
 
-Event `detail` is a string or `null` and can contain JSON depending on the event kind. The decoded detail of a `status` event contains `old` and `new` statuses. When a report changes the status to `done` and supplies evidence, that detail also contains an `evidence` string of up to 4,000 characters. Timestamps can use ISO 8601 or SQLite's UTC `YYYY-MM-DD HH:MM:SS` representation.
+Decode `handoff_options` as a JSON array of up to four suggested replies of 1 to 60 characters each. An item without suggestions uses `"[]"`. The `handoff_answer` field contains the latest reply, up to 2,000 characters, and `handoff_answered_at` records when it was sent. Both are `null` when there is no current reply.
+
+Event `detail` is a string or `null` and can contain JSON depending on the event kind. The decoded detail of a `status` event contains `old` and `new` statuses. When a report changes the status to `done` and supplies evidence, that detail also contains an `evidence` string of up to 4,000 characters. The decoded detail of an `answered` event has a `text` field with the reply. Timestamps can use ISO 8601 or SQLite's UTC `YYYY-MM-DD HH:MM:SS` representation.
 
 The export excludes API token records and hashes, OAuth grants, push subscriptions, quotas, and other internal state. Workspace content and event actors can contain sensitive information. Import is out of scope.
 

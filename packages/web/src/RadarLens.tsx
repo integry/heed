@@ -19,6 +19,7 @@ import {
 } from "@heedwork/core";
 import type { CanvasItem } from "@heedwork/core";
 import type { Project, RadarBand } from "@heedwork/core";
+import { HandoffReply } from "./HandoffReply";
 import type { LensProps } from "./lenses";
 import { RadarBubble, bubbleDetails, type Bubble } from "./RadarBubble";
 import { itemRing } from "./workspace-view";
@@ -288,6 +289,8 @@ export function RadarLens({
   live,
   showGhosts,
   select,
+  inspectItem,
+  save,
   focusGoal,
   openDependencies,
   moveRadar,
@@ -299,6 +302,7 @@ export function RadarLens({
   const clearPreview = useCallback(() => setPreview(null), []);
   const drag = useCanvasDrag<Gesture>(clearPreview);
   const { cancel: cancelGesture, start: startDrag } = drag;
+  const [handoffId, setHandoffId] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [splitBand, setSplitBand] = useState<RadarBand | null>(null);
@@ -795,6 +799,7 @@ export function RadarLens({
 
   const navigate = useCallback(
     (id: string | null) => {
+      setHandoffId(null);
       focusGoal(id);
       setTooltip(null);
       setDropMessage(null);
@@ -803,12 +808,28 @@ export function RadarLens({
     [focusGoal, cancelGesture],
   );
 
-  const onActivate = useCallback(
+  const openBubbleDetails = useCallback(
     (bubble: Bubble) => {
       select(bubble.item.id);
       if (bubble.opensGoal) navigate(bubble.item.id);
     },
     [select, navigate],
+  );
+
+  const onActivate = useCallback(
+    (bubble: Bubble) => {
+      if (
+        bubble.item.handoff &&
+        bubble.item.handoff_note &&
+        bubble.item.status !== "done"
+      ) {
+        setHandoffId(bubble.item.id);
+        return;
+      }
+      setHandoffId(null);
+      openBubbleDetails(bubble);
+    },
+    [openBubbleDetails],
   );
 
   function goBack(id: string | null) {
@@ -834,9 +855,13 @@ export function RadarLens({
   const selected = selectedId ? bubbleById.get(selectedId) : undefined;
   const activeTooltip =
     tooltip ?? (selected && bubbleDetails(selected, now, timeFormatter).detail);
+  const handoff = handoffId ? bubbleById.get(handoffId) : undefined;
+  const openHandoff = handoff?.item.handoff === 1 ? handoff : undefined;
+  if (handoffId && !openHandoff) setHandoffId(null);
   const font = RADAR_LABEL_FONT / labelScale;
 
   function toggleBand(band: RadarBand) {
+    setHandoffId(null);
     setSplitBand((previous) => (previous === band ? null : band));
     setTooltip(null);
     setDropMessage(null);
@@ -846,6 +871,11 @@ export function RadarLens({
     <div
       className="radar"
       onKeyDown={(event) => {
+        if (event.key === "Escape" && openHandoff) {
+          event.stopPropagation();
+          setHandoffId(null);
+          return;
+        }
         if (event.key === "Escape" && split) {
           event.stopPropagation();
           setSplitBand(null);
@@ -1134,7 +1164,41 @@ export function RadarLens({
             ? `${RADAR_LABELS[split]} split${subrings.length ? `: ${subrings.map(({ label }) => label).join(", ")}` : ""}.`
             : "Whole radar."}
         </div>
-        {!dropMessage && activeTooltip && !preview && (
+        {openHandoff && !preview && (
+          <section
+            className="handoff-card radar-handoff"
+            aria-label="Handoff question"
+          >
+            <header>
+              <h3>{openHandoff.item.title}</h3>
+              <button
+                type="button"
+                className="subtle"
+                aria-label="Close handoff question"
+                onClick={() => setHandoffId(null)}
+              >
+                ×
+              </button>
+            </header>
+            <HandoffReply
+              key={openHandoff.item.id}
+              item={openHandoff.item}
+              disabled={!live}
+              save={save}
+            />
+            <button
+              type="button"
+              className="subtle"
+              onClick={() => {
+                setHandoffId(null);
+                inspectItem(openHandoff.item.id);
+              }}
+            >
+              Item details
+            </button>
+          </section>
+        )}
+        {!openHandoff && !dropMessage && activeTooltip && !preview && (
           <p className="radar-tooltip">{activeTooltip}</p>
         )}
       </div>

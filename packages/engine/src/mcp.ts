@@ -8,6 +8,7 @@ import type { CallToolResult, Tool } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import {
   AddItemSchema,
+  AnswerHandoffSchema,
   CanvasQuerySchema,
   FlagHandoffSchema,
   MAX_CANVAS_ITEMS,
@@ -44,6 +45,7 @@ type McpWorkspace = Pick<
   | "updateItem"
   | "setDependency"
   | "flagHandoff"
+  | "answerHandoff"
   | "reopenItem"
   | "setGuidance"
 >;
@@ -124,8 +126,15 @@ function itemResult({
   item_id,
   ignored_fields,
   guidance_updated_at,
+  handoff_answer,
+  handoff_note,
 }: ItemOperationResult) {
-  return { item_id, ignored_fields, guidance_updated_at };
+  return {
+    item_id,
+    ignored_fields,
+    guidance_updated_at,
+    ...(handoff_answer !== undefined && { handoff_answer, handoff_note }),
+  };
 }
 
 const tools = [
@@ -180,7 +189,7 @@ const tools = [
   ),
   defineTool(
     "flag_handoff",
-    "Use when the user must decide or provide something before the work can continue or be trusted: a decision, a review, a credential, a manual step. Say exactly what you need in the note, phrased so it can be answered in one line. Set notify to true only if the user's guidance says this kind of thing is worth interrupting them for; a notification reaches their phone immediately. When in doubt, flag without notifying.",
+    "Use when the user must decide or provide something before the work can continue or be trusted: a decision, a review, a credential, a manual step. Say exactly what you need in the note, phrased so it can be answered in one line. When there are obvious answers, pass up to four as options. The user's reply comes back as handoff_answer on your next report_progress for the item; while you wait, report on it no more than once a minute. Set notify to true only if the user's guidance says this kind of thing is worth interrupting them for; a notification reaches their phone immediately. When in doubt, flag without notifying.",
     FlagHandoffSchema,
     async (workspace, actor, input, { pushCap }) => {
       const result = await workspace.flagHandoff(actor, input, pushCap);
@@ -195,6 +204,13 @@ const tools = [
       };
     },
     (input) => (input.notify === true ? "push" : undefined),
+  ),
+  defineTool(
+    "answer_handoff",
+    "Record the user's reply to an open handoff. Only call when the user provides the answer. This requires a steer token.",
+    AnswerHandoffSchema,
+    async (workspace, actor, input) =>
+      itemResult(await workspace.answerHandoff(actor, input)),
   ),
   defineTool(
     "reopen_item",
@@ -263,7 +279,11 @@ function createServer(
 ) {
   const server = new HeedMcpServer(workspace);
   server.setRequestHandler("tools/list", () => ({
-    tools: tools.map(({ definition }) => definition),
+    tools: tools
+      .map(({ definition }) => definition)
+      .filter(
+        ({ name }) => name !== "answer_handoff" || actor.scope === "steer",
+      ),
   }));
   server.setRequestHandler("tools/call", async ({ params }) => {
     const tool = tools.find(

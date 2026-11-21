@@ -166,6 +166,14 @@ const migrations = [
       "ALTER TABLE items ADD COLUMN acceptance TEXT NOT NULL DEFAULT '[]'",
     );
   },
+  // Version 9
+  (sql: SqlStorage) => {
+    sql.exec(`
+      ALTER TABLE items ADD COLUMN handoff_options TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE items ADD COLUMN handoff_answer TEXT;
+      ALTER TABLE items ADD COLUMN handoff_answered_at TEXT;
+    `);
+  },
 ];
 
 export function migrateWorkspace(storage: DurableObjectStorage): void {

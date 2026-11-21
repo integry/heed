@@ -25,7 +25,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
   const stub = newWorkspace();
   const settings = await stub.getSettings();
   expect(SettingsSchema.parse(settings)).toEqual({
-    schema_version: 8,
+    schema_version: 9,
     onboarding_dismissed: false,
     timezone: "UTC",
     guidance: "",
@@ -71,7 +71,8 @@ it("migrates a fresh object and seeds Inbox", async () => {
 });
 
 it.each([
-  { layout: "current", version: 8, dropColumns: [], hasOAuth: true },
+  { layout: "current", version: 9, dropColumns: [], hasOAuth: true },
+  { layout: "version 8", version: 8, dropColumns: [], hasOAuth: true },
   { layout: "version 7", version: 7, dropColumns: [], hasOAuth: true },
   {
     layout: "version 5 with demo flags",
@@ -106,9 +107,13 @@ it.each([
     const actor = { kind: "human", user } as const;
     const guidance = await stub.setGuidance(actor, "Start with billing");
     const project = await stub.createProject({ name: "Billing" });
-    const { item_id, items } = await stub.addItem(actor, {
+    const { item_id } = await stub.addItem(actor, {
       title: "Send invoice",
       project: project.id,
+    });
+    const { items } = await stub.flagHandoff(actor, {
+      item_id,
+      note: "Send this invoice today?",
     });
     const client = {
       id: "client",
@@ -120,10 +125,15 @@ it.each([
     };
     if (hasOAuth) await stub.registerOAuthClient(client);
 
-    if (version < 8) {
+    if (version < 9) {
       // Recreate the schema persisted by the older workspace.
       await runInDurableObject(stub, (_, { storage: { sql } }) => {
-        sql.exec("ALTER TABLE items DROP COLUMN acceptance");
+        sql.exec(`
+          ALTER TABLE items DROP COLUMN handoff_options;
+          ALTER TABLE items DROP COLUMN handoff_answer;
+          ALTER TABLE items DROP COLUMN handoff_answered_at;
+        `);
+        if (version < 8) sql.exec("ALTER TABLE items DROP COLUMN acceptance");
         for (const path of dropColumns) {
           const [table, column] = path.split(".");
           sql.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
@@ -145,7 +155,7 @@ it.each([
     await evictDurableObject(stub);
 
     expect(await stub.getSettings()).toEqual({
-      schema_version: 8,
+      schema_version: 9,
       onboarding_dismissed: false,
       timezone: "Europe/Tallinn",
       ...guidance,
@@ -156,6 +166,7 @@ it.each([
     ]);
     expect(await stub.getItem({ item_id })).toEqual(items[0]);
     expect(await stub.getItemEvents({ item_id })).toMatchObject([
+      { kind: "handoff" },
       {
         kind: "created",
         actor: dropColumns.includes("events.actor_user") ? user.name : user,

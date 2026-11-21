@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AddItemSchema,
+  AnswerHandoffSchema,
   FlagHandoffSchema,
   ItemIdSchema,
   ReopenItemSchema,
@@ -61,6 +62,7 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
   mutation("REOPEN_ITEM", ReopenItemSchema),
   mutation("FLAG_HANDOFF", FlagHandoffSchema.omit({ notify: true })),
   mutation("CLEAR_HANDOFF", ItemIdSchema),
+  mutation("ANSWER_HANDOFF", AnswerHandoffSchema),
   mutation(
     "JUDGE_FEEDBACK",
     ItemIdSchema.extend(JudgeFeedbackDetailSchema.shape),

@@ -876,3 +876,39 @@ it("loads and removes demo rows atomically and preserves real workspace content"
     requestId: "remove-again",
   });
 });
+
+it("publishes handoff suggestions and accepts a human reply over the socket", async () => {
+  const item_id = await addItem("Rollout");
+  await workspace.flagHandoff(human, {
+    item_id,
+    note: "Which rollout?",
+    options: ["Staging", "Production"],
+  });
+  const client = await connect();
+  expect(await client.next()).toMatchObject({
+    type: "SNAPSHOT",
+    items: [{ id: item_id, handoff_options: '["Staging","Production"]' }],
+  });
+  client.send({
+    type: "ANSWER_HANDOFF",
+    requestId: "reply",
+    input: { item_id, text: "Staging" },
+  });
+  expect(await client.next()).toMatchObject({
+    type: "ITEM_UPSERT",
+    item: {
+      id: item_id,
+      status: "queued",
+      handoff: 0,
+      handoff_answer: "Staging",
+    },
+  });
+  expect(await client.next()).toMatchObject({
+    type: "ACK",
+    requestId: "reply",
+  });
+  expect((await workspace.getItemEvents({ item_id }))[0]).toMatchObject({
+    kind: "answered",
+    actor: { email: "human@example.test" },
+  });
+});

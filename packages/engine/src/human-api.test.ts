@@ -170,7 +170,35 @@ it("requires a signed session and a same-origin mutation before looking up the w
 it("exports workspace data and history without credentials or internal settings", async () => {
   const project = await workspace.createProject({ name: "Archive", hidden: 1 });
   const acceptance = ["Publish the release", "Verify the smoke tests"];
-  const active = await addItem('Release "α"', { acceptance });
+  const item = await addItem('Release "α"', { acceptance });
+  const handoff = `/api/items/${item.id}/handoff`;
+  await error(
+    await request(handoff, "POST", { text: "Staging" }),
+    409,
+    "conflict",
+  );
+  await json(
+    await request(handoff, "POST", {
+      note: "Which rollout?",
+      options: ["Staging"],
+    }),
+  );
+  await error(
+    await request(handoff, "POST", { text: "" }),
+    400,
+    "invalid_input",
+  );
+  const {
+    items: [active],
+  } = await json<ItemOperationResult>(
+    await request(handoff, "POST", { text: "Staging" }),
+  );
+  expect(active).toMatchObject({
+    handoff: 0,
+    handoff_options: '["Staging"]',
+    handoff_answer: "Staging",
+    handoff_answered_at: expect.any(String),
+  });
   const archive = await addItem("Archived", {
     project: project.id,
   });

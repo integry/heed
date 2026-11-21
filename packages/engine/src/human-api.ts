@@ -213,7 +213,9 @@ export async function handleHumanApi(
           return await withJson(request, HandoffBodySchema, (input) =>
             "clear" in input
               ? workspace().clearHandoff(actor, { item_id })
-              : workspace().flagHandoff(actor, { ...input, item_id }),
+              : "text" in input
+                ? workspace().answerHandoff(actor, { ...input, item_id })
+                : workspace().flagHandoff(actor, { ...input, item_id }),
           );
         case "POST reopen":
           return await withJson(request, ReopenBodySchema, (input) =>
