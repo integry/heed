@@ -4,8 +4,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ItemOperationResult } from "@heedwork/core";
 import type { SocketMessage, SocketRequest } from "@heedwork/core";
 import type { Project } from "@heedwork/core";
-import worker from "./worker";
-import { issueSession } from "./session";
+import { fetchOpen } from "./worker-test-helpers";
+import { issueSession } from "./auth";
 import { getWorkspaceStub } from "./workspace";
 
 const origin = "https://heed.test";
@@ -40,7 +40,7 @@ function request(
   body?: object,
   headers?: HeadersInit,
 ) {
-  return worker.fetch(
+  return fetchOpen(
     new Request(new URL(path, origin), {
       method,
       headers: headers ?? {
@@ -312,7 +312,14 @@ it("applies human edits and status changes, then replies only to the requesting 
   }
   expect(await first.next()).toMatchObject({ type: "ACK", requestId: "done" });
   expect(await workspace.getItemEvents({ item_id: item })).toContainEqual(
-    expect.objectContaining({ actor: "human", kind: "status" }),
+    expect.objectContaining({
+      actor: {
+        id: "human@example.test",
+        email: "human@example.test",
+        name: "human@example.test",
+      },
+      kind: "status",
+    }),
   );
 
   first.send({

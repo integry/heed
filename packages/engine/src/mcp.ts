@@ -18,7 +18,15 @@ import {
   UpdateItemSchema,
 } from "@heedwork/core";
 import type { Actor, ItemOperationResult } from "@heedwork/core";
-import type { getWorkspaceStub } from "./workspace";
+import { addItemWithLimit } from "./workspace.js";
+import type { getWorkspaceStub } from "./workspace.js";
+import type { AppContext } from "./app.js";
+import {
+  checkLimit,
+  LimitError,
+  OpenPushAllowance,
+  recordUsage,
+} from "./seams.js";
 
 const instructions =
   "Heed is the user's live view of everything they and their agents are working on. It only stays accurate if you report to it. Whenever you do work for the user: find or create the matching item, mark it active when you start, report after each meaningful step, and mark it done, blocked or flagged for handoff when you stop. Heed does not assign work — never pick up items from it on your own initiative. The user's current guidance follows; it decides where items go, how important they are and when the user may be interrupted. Follow it over your own judgement.";
@@ -39,7 +47,9 @@ function defineTool<T>(
     workspace: WorkspaceStub,
     actor: Agent,
     input: T,
+    context: { pushCap: number | null; app: AppContext; workspaceId: string },
   ) => Promise<Record<string, unknown>>,
+  limit?: (input: T) => "push" | undefined,
 ) {
   const inputSchema = z.toJSONSchema(schema, { io: "input" });
   const definition: Tool = {
@@ -49,7 +59,13 @@ function defineTool<T>(
   };
   return {
     definition,
-    call(workspace: WorkspaceStub, actor: Agent, args: unknown) {
+    async call(
+      workspace: WorkspaceStub,
+      actor: Agent,
+      args: unknown,
+      workspaceId: string,
+      app: AppContext,
+    ) {
       const input = schema.safeParse(args ?? {});
       if (!input.success) {
         const { path, message } = input.error.issues[0];
@@ -57,7 +73,22 @@ function defineTool<T>(
           path.length ? `${path.join(".")}: ${message}` : message,
         );
       }
-      return run(workspace, actor, input.data);
+      const action = limit?.(input.data);
+      const decision =
+        action && (await checkLimit(app.limits, workspaceId, action));
+      const pushCap =
+        decision instanceof OpenPushAllowance ? decision.cap : null;
+      const result = await run(workspace, actor, input.data, {
+        pushCap,
+        app,
+        workspaceId,
+      });
+      if (name !== "get_canvas")
+        recordUsage(app.ctx, app.usage, workspaceId, {
+          type: "agent.write",
+          operation: name,
+        });
+      return result;
     },
   };
 }
@@ -83,8 +114,16 @@ const tools = [
     "add_item",
     "Add work to the user's view. Use it when you start something that has no item yet, when you split a task into parts (pass parent_id), or when you discover follow-up work that should not be forgotten (leave it in the backlog). Call get_canvas first to avoid duplicates, and pass external_key (PR URL or repo#branch) so retries update the same item.",
     AddItemSchema,
-    async (workspace, actor, input) =>
-      itemResult(await workspace.addItem(actor, input)),
+    async (workspace, actor, input, { app, workspaceId }) =>
+      itemResult(
+        await addItemWithLimit(
+          () => workspace,
+          actor,
+          input,
+          app.limits,
+          workspaceId,
+        ),
+      ),
   ),
   defineTool(
     "report_progress",
@@ -113,8 +152,8 @@ const tools = [
     "flag_handoff",
     "Use when the user must decide or provide something before the work can continue or be trusted: a decision, a review, a credential, a manual step. Say exactly what you need in the note, phrased so it can be answered in one line. Set notify to true only if the user's guidance says this kind of thing is worth interrupting them for; a notification reaches their phone immediately. When in doubt, flag without notifying.",
     FlagHandoffSchema,
-    async (workspace, actor, input) => {
-      const result = await workspace.flagHandoff(actor, input);
+    async (workspace, actor, input, { pushCap }) => {
+      const result = await workspace.flagHandoff(actor, input, pushCap);
       const { notification } = result;
       return {
         ...itemResult(result),
@@ -125,6 +164,7 @@ const tools = [
         }),
       };
     },
+    (input) => (input.notify === true ? "push" : undefined),
   ),
   defineTool(
     "reopen_item",
@@ -185,7 +225,12 @@ class HeedMcpServer extends Server {
   }
 }
 
-function createServer(actor: Agent, workspace: WorkspaceStub) {
+function createServer(
+  actor: Agent,
+  workspace: WorkspaceStub,
+  workspaceId: string,
+  app: AppContext,
+) {
   const server = new HeedMcpServer(workspace);
   server.setRequestHandler("tools/list", () => ({
     tools: tools.map(({ definition }) => definition),
@@ -199,8 +244,18 @@ function createServer(actor: Agent, workspace: WorkspaceStub) {
         throw new Error(
           "Unknown tool. Call tools/list to see the available tools.",
         );
-      return toolResult(await tool.call(workspace, actor, params.arguments));
+      return toolResult(
+        await tool.call(workspace, actor, params.arguments, workspaceId, app),
+      );
     } catch (error) {
+      if (error instanceof LimitError)
+        return toolResult(
+          {
+            error: `${error.action}: ${error.message}`.slice(0, 1_000),
+            limit: error.action,
+          },
+          true,
+        );
       let message =
         error instanceof Error ? error.message : "The operation failed.";
       if (message === "Item not found") {
@@ -226,18 +281,23 @@ export async function handleMcp(
   request: Request,
   actor: Agent,
   workspace: WorkspaceStub,
+  workspaceId: string,
+  app: AppContext,
 ) {
   // The SDK's built-in compatibility fallback uses SSE for 2025 requests.
   if (!(await isLegacyRequest(request))) {
-    const handler = createMcpHandler(() => createServer(actor, workspace), {
-      legacy: "reject",
-      responseMode: "json",
-      maxSubscriptions: 0,
-    });
+    const handler = createMcpHandler(
+      () => createServer(actor, workspace, workspaceId, app),
+      {
+        legacy: "reject",
+        responseMode: "json",
+        maxSubscriptions: 0,
+      },
+    );
     return handler.fetch(request);
   }
 
-  const server = createServer(actor, workspace);
+  const server = createServer(actor, workspace, workspaceId, app);
   const transport = new WebStandardStreamableHTTPServerTransport({
     enableJsonResponse: true,
   });

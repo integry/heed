@@ -3,7 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import { z, type ZodType } from "zod";
 import { bandsFor, completionBand, isGhost } from "@heedwork/core";
 import type { CommandChange } from "@heedwork/core";
-import { commandTools, compactCanvas } from "./command-tools";
+import { commandTools, compactCanvas } from "./command-tools.js";
 import { HistoryQuerySchema } from "@heedwork/core";
 import type { HistoryItem, HistoryPage, HistoryQuery } from "@heedwork/core";
 import {
@@ -36,11 +36,11 @@ import type {
 import {
   CreateProjectSchema,
   CreateTokenSchema,
-  DEFAULT_WORKSPACE_ID,
   GuidanceTextSchema,
   INBOX_PROJECT_ID,
   TimezoneSchema,
   UpdateProjectSchema,
+  WorkspaceUserSchema,
 } from "@heedwork/core";
 import {
   MoveProjectSchema,
@@ -53,7 +53,7 @@ import type {
   OnboardingStatus,
   WorkspaceMessage,
 } from "@heedwork/core";
-import { workspaceOperationError } from "./api-response";
+import { workspaceOperationError } from "./api-response.js";
 import type {
   Dependency,
   Event,
@@ -66,21 +66,35 @@ import type {
   Status,
   Token,
   TokenMetadata,
+  WorkspaceUser,
 } from "@heedwork/core";
 import {
   equalSecretHashes,
   hashSecret,
   isTokenSecret,
   newTokenSecret,
-} from "./token-secrets";
+} from "./token-secrets.js";
 import {
   preparePush,
   PushEndpointSchema,
   PushSubscriptionSchema,
   vapidKeys,
-} from "./web-push";
-import type { HandoffPush, PushEnv, PushSubscriptionInput } from "./web-push";
-import { migrateWorkspace } from "./workspace-migrations";
+} from "./web-push.js";
+import type {
+  HandoffPush,
+  PushEnv,
+  PushSubscriptionInput,
+} from "./web-push.js";
+import { basicPushCap } from "./basic-limits.js";
+import { migrateWorkspace } from "./workspace-migrations.js";
+import {
+  checkLimit,
+  LimitError,
+  noUsage,
+  recordUsage,
+  withItemCreateLimit,
+} from "./seams.js";
+import type { LimitAction, Limits, UsageSink } from "./seams.js";
 
 type CanvasRow = Pick<
   Item,
@@ -95,8 +109,31 @@ type CanvasRow = Pick<
   | "completed_at"
 > & { project: string };
 
-export function getWorkspaceStub(env: Env, workspaceId = DEFAULT_WORKSPACE_ID) {
+export function getWorkspaceStub(
+  env: { WORKSPACE: DurableObjectNamespace<Workspace> },
+  workspaceId: string,
+) {
   return env.WORKSPACE.getByName(workspaceId);
+}
+
+export function addItemWithLimit(
+  workspace: () => Pick<
+    Workspace | ReturnType<typeof getWorkspaceStub>,
+    "addItem" | "updateExistingItem"
+  >,
+  actor: Actor,
+  input: AddItemInput,
+  limits: Limits,
+  workspaceId: string,
+) {
+  return withItemCreateLimit(
+    limits,
+    workspaceId,
+    () => workspace().addItem(actor, input),
+    input.external_key
+      ? () => workspace().updateExistingItem(actor, input)
+      : undefined,
+  );
 }
 
 function parseInput<T>(schema: ZodType<T>, input: unknown): T {
@@ -123,7 +160,31 @@ const MOVE_FIELDS = ["scheduled_on", "project_id", "parent_id"] as const;
 
 type ItemPatch = Partial<Omit<Item, "id" | "created_at" | "updated_at">>;
 type ItemEdit = Partial<AddItemInput & UpdateItemInput>;
-type WorkspaceEnv = Env & PushEnv;
+export type WorkspaceEnv = PushEnv;
+type HumanActor = Extract<Actor, { kind: "human" }>;
+type EventRow = Omit<Event, "actor"> & {
+  actor: string;
+  actor_user: string | null;
+};
+
+const SOCKET_CREATE_LIMITS: Partial<
+  Record<z.output<typeof SocketRequestSchema>["type"], LimitAction>
+> = {
+  CREATE_PROJECT: "project.create",
+  CREATE_TOKEN: "token.create",
+};
+
+const SOCKET_USER_HEADER = "X-Heed-Workspace-User";
+
+type SocketAttachment = { seq: number; user?: WorkspaceUser };
+
+export function socketUpgrade(request: Request, user: WorkspaceUser) {
+  // The namespace is private. Always replace the identity header on the Worker ingress.
+  const headers = new Headers(request.headers);
+  headers.set(SOCKET_USER_HEADER, encodeURIComponent(JSON.stringify(user)));
+  return new Request(request, { headers });
+}
+
 type PushRow = { endpoint: string; keys: string };
 type ItemChange =
   { before?: Item; after: Item } | { before: Item; after?: undefined };
@@ -189,13 +250,25 @@ function timestamp(value: string): number {
   );
 }
 
-export class Workspace extends DurableObject<WorkspaceEnv> {
+export class Workspace<
+  Bindings extends WorkspaceEnv = WorkspaceEnv,
+> extends DurableObject<Bindings> {
+  /** A host can supply its Limits seam for hibernating socket mutations. */
+  protected get socketLimits(): Limits | undefined {
+    return undefined;
+  }
+
+  /** A host can supply its UsageSink to meter successful background push deliveries. */
+  protected get pushUsage(): UsageSink {
+    return noUsage;
+  }
+
   #commandEffects?: CommandEffect[];
   #undoBroadcasts?: WorkspaceMessage[];
 
   readonly #sql: SqlStorage;
 
-  constructor(ctx: DurableObjectState, env: WorkspaceEnv) {
+  constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
     this.#sql = ctx.storage.sql;
     ctx.setWebSocketAutoResponse(
@@ -213,9 +286,20 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     ) {
       return new Response("Expected a WebSocket upgrade", { status: 426 });
     }
+    let user: WorkspaceUser;
+    try {
+      user = WorkspaceUserSchema.parse(
+        JSON.parse(
+          decodeURIComponent(request.headers.get(SOCKET_USER_HEADER) ?? ""),
+        ),
+      );
+    } catch {
+      return new Response("Unauthorized", { status: 401 });
+    }
     const [client, server] = Object.values(new WebSocketPair());
     const snapshot = this.#snapshot();
     this.ctx.acceptWebSocket(server);
+    server.serializeAttachment({ seq: 0, user } satisfies SocketAttachment);
     this.#send(server, snapshot);
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -254,17 +338,34 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       return;
     }
 
-    const actor = { kind: "human" } as const;
+    const attachment = socket.deserializeAttachment() as
+      SocketAttachment | number | null;
+    const actor: HumanActor = {
+      kind: "human",
+      user: typeof attachment === "object" ? attachment?.user : undefined,
+    };
     const { requestId } = request.data;
     let createdToken: CreatedToken | undefined;
     try {
       const mutation = request.data;
+      const limit = SOCKET_CREATE_LIMITS[mutation.type];
+      const limits = this.socketLimits;
+      if (limit && limits && this.ctx.id.name)
+        await checkLimit(limits, this.ctx.id.name, limit);
       switch (mutation.type) {
         case "UNDO_COMMAND":
-          this.#undoCommand(mutation.input.id);
+          this.#undoCommand(mutation.input.id, actor);
           break;
         case "ADD_ITEM":
-          this.addItem(actor, mutation.input);
+          if (limits && this.ctx.id.name)
+            await addItemWithLimit(
+              () => this,
+              actor,
+              mutation.input,
+              limits,
+              this.ctx.id.name,
+            );
+          else this.addItem(actor, mutation.input);
           break;
         case "DELETE_ITEM":
           this.deleteItem(actor, mutation.input);
@@ -343,11 +444,14 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
           break;
       }
     } catch (cause) {
-      const { code, message } = workspaceOperationError(cause);
+      const { code, message } =
+        cause instanceof LimitError
+          ? cause.detail
+          : workspaceOperationError(cause);
       this.#send(socket, {
         type: "ERROR",
         requestId,
-        error: { code, message },
+        error: cause instanceof LimitError ? cause.detail : { code, message },
       });
       return;
     }
@@ -358,14 +462,17 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
   #send(socket: WebSocket, message: WorkspaceMessage): void {
     if (socket.readyState !== WebSocket.OPEN) return;
     // The attachment survives eviction and keeps unicast replies from creating gaps in other tabs.
-    const seq = ((socket.deserializeAttachment() as number | null) ?? 0) + 1;
+    const stored = socket.deserializeAttachment() as
+      SocketAttachment | number | null;
+    const attachment = typeof stored === "number" ? { seq: stored } : stored;
+    const seq = (attachment?.seq ?? 0) + 1;
     try {
       socket.send(JSON.stringify({ ...message, seq }));
     } catch {
       socket.close(1011, "Workspace message delivery failed");
       return;
     }
-    socket.serializeAttachment(seq);
+    socket.serializeAttachment({ ...attachment, seq });
   }
 
   #broadcast(
@@ -522,10 +629,13 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
   async executeCommandTool(
     name: string,
     input: unknown,
+    user?: WorkspaceUser,
+    allowItemCreation = true,
   ): Promise<{
     content: string;
     isError: boolean;
     effects: CommandEffect[];
+    needsItemCreation?: true;
   }> {
     const tool = commandTools.find(
       ({ definition }) => definition.name === name,
@@ -543,7 +653,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       this.#commandEffects = effects;
       // Operations record their writes synchronously, including handoffs before
       // external notification delivery. Never keep the capture open across I/O.
-      operation = tool.execute(this, input);
+      operation = tool.execute(this, input, user, allowItemCreation);
     } catch (error) {
       operation = Promise.reject(error);
     } finally {
@@ -551,6 +661,13 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     }
     try {
       const output = await operation;
+      if (output === null && name === "add_item")
+        return {
+          content: "",
+          isError: false,
+          effects,
+          needsItemCreation: true,
+        };
       const content = JSON.stringify(output);
       if (content.length > 20_000)
         return {
@@ -598,7 +715,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     return id;
   }
 
-  #undoCommand(id: string): void {
+  #undoCommand(id: string, actor: HumanActor): void {
     const messages: WorkspaceMessage[] = [];
     try {
       this.#undoBroadcasts = messages;
@@ -616,7 +733,8 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         if (!plan || plan.id !== id || plan.expires <= Date.now()) {
           throw new Error("This command is no longer available to undo.");
         }
-        for (const undo of plan.actions.reverse()) this.#applyCommandUndo(undo);
+        for (const undo of plan.actions.reverse())
+          this.#applyCommandUndo(undo, actor);
         this.#sql.exec("DELETE FROM settings WHERE key = 'command_undo'");
       });
     } finally {
@@ -625,11 +743,10 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     for (const message of messages) this.#broadcast(message);
   }
 
-  #applyCommandUndo(undo: CommandUndo): void {
-    const actor = { kind: "human" } as const;
+  #applyCommandUndo(undo: CommandUndo, actor: HumanActor): void {
     switch (undo.type) {
       case "items":
-        this.#undoCommandItems(undo);
+        this.#undoCommandItems(undo, actor);
         return;
       case "project": {
         const project = this.#sql
@@ -664,11 +781,11 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     }
   }
 
-  #undoCommandItems({
-    root,
-    rows,
-  }: Extract<CommandUndo, { type: "items" }>): void {
-    this.#mutateItems({ kind: "human" }, (mutation) => {
+  #undoCommandItems(
+    { root, rows }: Extract<CommandUndo, { type: "items" }>,
+    actor: HumanActor,
+  ): void {
+    this.#mutateItems(actor, (mutation) => {
       const current = rows.map(({ id, after }) => {
         const item = this.#findItem({ item_id: id });
         if (
@@ -906,11 +1023,18 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     const data = parseInput(ItemIdSchema, input);
     this.#requireItem(data);
     return this.#sql
-      .exec<Event>(
+      .exec<EventRow>(
         "SELECT * FROM events WHERE item_id = ? ORDER BY julianday(at) DESC, id DESC",
         data.item_id,
       )
-      .toArray();
+      .toArray()
+      .map(({ actor_user, ...event }) => ({
+        ...event,
+        actor:
+          actor_user === null
+            ? event.actor
+            : WorkspaceUserSchema.parse(JSON.parse(actor_user)),
+      }));
   }
 
   getCanvas(input: z.input<typeof CanvasQuerySchema> = {}) {
@@ -1281,23 +1405,38 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
 
   addItem(actor: Actor, input: AddItemInput): ItemOperationResult {
     const data = parseInput(AddItemSchema, input);
-    return this.#mutateItems(
-      actor,
-      (mutation) => this.#addItem(mutation, data).id,
+    return this.#mutateItems(actor, (mutation) => {
+      const existing = this.#findItemByExternalKey(data);
+      return existing
+        ? this.#editExternalKeyItem(mutation, existing, data)
+        : this.#addItem(mutation, data).id;
+    });
+  }
+
+  updateExistingItem(
+    actor: Actor,
+    input: AddItemInput,
+  ): ItemOperationResult | null {
+    const data = parseInput(AddItemSchema, input);
+    const existing = this.#findItemByExternalKey(data);
+    if (!existing) return null;
+    return this.#mutateItems(actor, (mutation) =>
+      this.#editExternalKeyItem(mutation, existing, data),
     );
   }
 
-  #addItem(mutation: Mutation, data: AddItemInput, demo: 0 | 1 = 0): Item {
-    const existing = data.external_key
-      ? this.#findItem({ external_key: data.external_key })
-      : undefined;
-    if (existing) {
-      this.#editItem(mutation, existing, data, {
-        heartbeat: data.status === "active",
-      });
-      return existing;
-    }
+  #findItemByExternalKey({ external_key }: AddItemInput) {
+    return external_key ? this.#findItem({ external_key }) : undefined;
+  }
 
+  #editExternalKeyItem(mutation: Mutation, existing: Item, data: AddItemInput) {
+    this.#editItem(mutation, existing, data, {
+      heartbeat: data.status === "active",
+    });
+    return existing.id;
+  }
+
+  #addItem(mutation: Mutation, data: AddItemInput, demo: 0 | 1 = 0): Item {
     const placement = this.#placement(mutation, data);
     const patch = this.#editPatch(mutation, data);
     if (patch.agent_name === undefined && mutation.actor.kind === "agent") {
@@ -1372,11 +1511,17 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
   async flagHandoff(
     actor: Actor,
     input: FlagHandoffInput,
+    pushCap: number | null = basicPushCap(this.env),
   ): Promise<HandoffOperationResult> {
     const data = parseInput(FlagHandoffSchema, input);
     const vapid = vapidKeys(this.env);
     let delivery:
-      | { actorName: string; payload: HandoffPush; subscriptions: PushRow[] }
+      | {
+          actorName: string;
+          user?: WorkspaceUser;
+          payload: HandoffPush;
+          subscriptions: PushRow[];
+        }
       | undefined;
     let notification: HandoffOperationResult["notification"];
     const result = this.#mutateItems(actor, (mutation) => {
@@ -1404,13 +1549,18 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
           notification = "unavailable";
         } else if (
           tokenId &&
-          !this.#reservePush(tokenId, mutation.now.getTime())
+          pushCap !== null &&
+          !this.#reservePush(tokenId, mutation.now.getTime(), pushCap)
         ) {
           notification = "rate_limited";
         } else {
           notification = "queued";
           delivery = {
             actorName: agent ? agent.name : "Command bar",
+            user:
+              mutation.actor.kind === "command"
+                ? mutation.actor.user
+                : undefined,
             payload: {
               title: item.title,
               body: data.note,
@@ -1435,6 +1585,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
       this.ctx.waitUntil(
         this.#notifyHandoff(
           delivery.actorName,
+          delivery.user,
           data.item_id,
           delivery.payload,
           delivery.subscriptions,
@@ -1485,9 +1636,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     );
   }
 
-  #reservePush(tokenId: string, now: number): boolean {
-    const limit = Number(this.env.PUSH_RATE_LIMIT_PER_HOUR ?? 6);
-    const cap = Number.isSafeInteger(limit) && limit >= 0 ? limit : 6;
+  #reservePush(tokenId: string, now: number, cap: number): boolean {
     const row = this.#sql
       .exec<{ attempts: string | null }>(
         `SELECT attempts FROM tokens
@@ -1659,6 +1808,7 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
 
   async #notifyHandoff(
     actorName: string,
+    user: WorkspaceUser | undefined,
     itemId: string,
     data: HandoffPush,
     subscriptions: PushRow[],
@@ -1702,18 +1852,24 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
         return response.ok;
       }),
     );
-    if (
-      attempts.some(
-        (attempt) => attempt.status === "fulfilled" && attempt.value,
-      )
-    ) {
+    const sent = attempts.filter(
+      (attempt) => attempt.status === "fulfilled" && attempt.value,
+    ).length;
+    if (sent) {
+      const workspaceId = this.ctx.id.name;
+      if (workspaceId)
+        recordUsage(this.ctx, this.pushUsage, workspaceId, {
+          type: "push",
+          count: sent,
+        });
       // The item may have been deleted after the request reached the provider.
       this.#sql.exec(
-        `INSERT INTO events (item_id, at, actor, kind, detail)
-         SELECT id, ?, ?, 'notified', ? FROM items WHERE id = ?`,
+        `INSERT INTO events (item_id, at, actor, kind, detail, actor_user)
+         SELECT id, ?, ?, 'notified', ?, ? FROM items WHERE id = ?`,
         new Date().toISOString(),
-        actorName,
+        user?.name || user?.email || actorName,
         JSON.stringify(data),
+        user ? JSON.stringify(user) : null,
         itemId,
       );
     }
@@ -2201,13 +2357,18 @@ export class Workspace extends DurableObject<WorkspaceEnv> {
     kind: EventKind,
     detail: object,
   ): void {
+    const { actor } = mutation;
+    const user = actor.kind === "agent" ? undefined : actor.user;
     this.#sql.exec(
-      "INSERT INTO events (item_id, at, actor, kind, detail) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO events (item_id, at, actor, kind, detail, actor_user) VALUES (?, ?, ?, ?, ?, ?)",
       id,
       mutation.now.toISOString(),
-      mutation.actor.kind === "agent" ? mutation.actor.name : "human",
+      actor.kind === "agent"
+        ? actor.name
+        : user?.name || user?.email || "human",
       kind,
       JSON.stringify(detail),
+      user ? JSON.stringify(user) : null,
     );
   }
 

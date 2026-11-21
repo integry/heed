@@ -21,4 +21,5 @@ export interface CommandResult {
   needsClarification: boolean;
   changes: CommandChange[];
   undoId?: string;
+  refusal?: { code: string; message: string; limit: string };
 }

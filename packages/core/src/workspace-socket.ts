@@ -136,7 +136,7 @@ export type WorkspaceMessage = { onboarding?: OnboardingStatus } & (
   | {
       type: "ERROR";
       requestId: string | null;
-      error: { code: string; message: string; reason?: string };
+      error: { code: string; message: string; limit?: string; reason?: string };
     }
 );
 

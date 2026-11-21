@@ -132,7 +132,11 @@ export function useCommandBar(
       setVoiceError("");
       const result = await postJson<CommandResult>("/api/command", { text });
       setDraft("");
-      setSummary(result.summary);
+      setSummary(
+        result.refusal && !result.summary.includes(result.refusal.message)
+          ? `${result.summary} ${result.refusal.message}`
+          : result.summary,
+      );
       setRequest(result.needsClarification ? { original, replies } : undefined);
       if (result.changes.length) setUndoId(result.undoId);
     });

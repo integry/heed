@@ -1,7 +1,8 @@
 import { CreateTokenSchema } from "@heedwork/core";
-import { bearerUnauthorized, readBearer } from "./agent-auth";
-import { equalSecretHashes, hashSecret } from "./token-secrets";
-import { getWorkspaceStub } from "./workspace";
+import { bearerUnauthorized, readBearer } from "./agent-auth.js";
+import { equalSecretHashes, hashSecret } from "./token-secrets.js";
+import type { AppContext } from "./app.js";
+import { checkLimit } from "./seams.js";
 
 export interface TokenAdminEnv {
   ADMIN_SECRET?: string;
@@ -9,9 +10,12 @@ export interface TokenAdminEnv {
 
 export async function handleTokenBootstrap(
   request: Request,
-  env: Env & TokenAdminEnv,
+  env: TokenAdminEnv,
+  app: AppContext,
+  workspaceId: string | undefined,
 ): Promise<Response> {
-  if (!env.ADMIN_SECRET) return new Response("Not found", { status: 404 });
+  if (!env.ADMIN_SECRET || !workspaceId)
+    return new Response("Not found", { status: 404 });
   const bearer = readBearer(request);
   if (
     !bearer ||
@@ -34,7 +38,8 @@ export async function handleTokenBootstrap(
   }
 
   const { label, scope, default_project_id } = input.data;
-  const workspace = getWorkspaceStub(env);
+  await checkLimit(app.limits, workspaceId, "token.create");
+  const workspace = app.workspace(workspaceId);
   try {
     const token = await workspace.createToken(label, scope, default_project_id);
     return Response.json(token, {

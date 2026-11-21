@@ -5,8 +5,109 @@ import {
   encodeBase64Url,
   readSignedCookie,
   signCookie,
-} from "./signed-cookie";
-import { hasAppOrigin, issueSession, SESSION_COOKIE } from "./session";
+} from "./signed-cookie.js";
+import { DEFAULT_WORKSPACE_ID } from "@heedwork/core";
+import { hasAppOrigin } from "./session.js";
+import type { AuthProvider } from "./seams.js";
+import { tokenParts } from "./token-secrets.js";
+
+export const SESSION_COOKIE = "__Host-heed_session";
+const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
+const verifiedSessions = new WeakMap<
+  Request,
+  { email: string; sessionId: string }
+>();
+
+export function issueSession(
+  email: string,
+  secret: string,
+  sessionId: string = crypto.randomUUID(),
+): Promise<string> {
+  return signCookie(
+    SESSION_COOKIE,
+    { email, workspaceId: DEFAULT_WORKSPACE_ID, sessionId },
+    secret,
+    SESSION_MAX_AGE,
+  );
+}
+
+/** Google and localhost sign-in for the self-hosted, single-workspace deployment. */
+export function googleAllowlistAuth(env: AuthEnv): AuthProvider {
+  return {
+    async session(request) {
+      const session =
+        env.SESSION_SECRET &&
+        (await readSignedCookie(request, SESSION_COOKIE, env.SESSION_SECRET));
+      if (
+        !session ||
+        typeof session.email !== "string" ||
+        !session.email ||
+        session.workspaceId !== DEFAULT_WORKSPACE_ID
+      )
+        return null;
+      const { email } = session;
+      verifiedSessions.set(request, {
+        email,
+        sessionId:
+          typeof session.sessionId === "string" ? session.sessionId : email,
+      });
+      return {
+        user: { id: email, email, name: email },
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        role: "owner",
+      };
+    },
+    handleAuthRoute(request) {
+      return handleAuth(request, new URL(request.url), env);
+    },
+    async workspaceForToken(token) {
+      return tokenParts(token)?.workspaceId === DEFAULT_WORKSPACE_ID
+        ? DEFAULT_WORKSPACE_ID
+        : null;
+    },
+  };
+}
+
+export function openSessionId(request: Request) {
+  return verifiedSessions.get(request)?.sessionId;
+}
+
+/** Sliding session cookies, the dev login hint and the self-hosted token bootstrap. */
+export const openAuthOptions = {
+  async sessionResponse(request: Request, response: Response, env: AuthEnv) {
+    const session = verifiedSessions.get(request);
+    if (
+      session &&
+      env.SESSION_SECRET &&
+      (response.ok || response.status === 101)
+    ) {
+      response.headers.append(
+        "Set-Cookie",
+        await issueSession(
+          session.email,
+          env.SESSION_SECRET,
+          session.sessionId,
+        ),
+      );
+    }
+    const url = new URL(request.url);
+    if (
+      response.status === 401 &&
+      request.method === "GET" &&
+      url.pathname === "/api/me"
+    ) {
+      return Response.json(
+        {
+          ...(await response.json<object>()),
+          devLoginEnabled: Boolean(devLoginEmail(url, env)),
+        },
+        response,
+      );
+    }
+    return response;
+  },
+  bootstrapWorkspace: DEFAULT_WORKSPACE_ID,
+};
 
 export interface AuthEnv {
   GOOGLE_CLIENT_ID?: string;
@@ -256,13 +357,13 @@ async function finishLogin(
   return response;
 }
 
-export function devLoginEmail(url: URL, env: AuthEnv): string | undefined {
+function devLoginEmail(url: URL, env: AuthEnv): string | undefined {
   if (url.hostname === "localhost" && env.SESSION_SECRET) {
     return env.DEV_LOGIN_EMAIL?.trim().toLowerCase() || undefined;
   }
 }
 
-export async function handleAuth(
+async function handleAuth(
   request: Request,
   url: URL,
   env: AuthEnv,

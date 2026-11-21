@@ -1,14 +1,13 @@
 import { z } from "zod";
-import type { ToolDefinition } from "./command-tools";
+import type { ToolDefinition } from "./command-tools.js";
 
-export interface CommandEnv {
+import type { KeyProvider } from "./seams.js";
+
+export interface EnvKeysEnv {
   AI?: Ai;
   WORKERS_AI_COMMAND_MODEL?: string;
   ANTHROPIC_API_KEY?: string;
   ANTHROPIC_COMMAND_MODEL?: string;
-  COMMAND_RATE_LIMIT_PER_MINUTE?: string;
-  COMMAND_DAILY_LIMIT?: string;
-  TRANSCRIBE_DAILY_LIMIT?: string;
 }
 
 export interface ToolCall {
@@ -20,6 +19,8 @@ export interface ToolCall {
 export interface CommandTurn {
   text: string;
   calls: ToolCall[];
+  /** Provider-reported token counts for this model call, when available. */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 export interface ToolReply {
@@ -34,6 +35,8 @@ export interface CommandExchange {
 }
 
 export interface CommandProvider {
+  /** Model identifier used when recording usage. */
+  model?: string;
   next(input: {
     system: string;
     text: string;
@@ -41,6 +44,17 @@ export interface CommandProvider {
     history: CommandExchange[];
   }): Promise<CommandTurn>;
 }
+
+const tokenCount = z.int().nonnegative();
+const workersUsage = z.object({
+  prompt_tokens: tokenCount,
+  completion_tokens: tokenCount,
+});
+const anthropicUsage = z.object({
+  input_tokens: tokenCount,
+  output_tokens: tokenCount,
+});
+const transcriptSchema = z.object({ text: z.string() });
 
 const anthropicMessage = z.object({
   content: z.array(
@@ -89,7 +103,7 @@ function toolInput(value: unknown): unknown {
   }
 }
 
-export function commandProvider(env: CommandEnv): CommandProvider | undefined {
+function commandProvider(env: EnvKeysEnv): CommandProvider | undefined {
   const {
     AI,
     WORKERS_AI_COMMAND_MODEL,
@@ -98,6 +112,7 @@ export function commandProvider(env: CommandEnv): CommandProvider | undefined {
   } = env;
   if (ANTHROPIC_COMMAND_MODEL?.trim() && ANTHROPIC_API_KEY?.trim()) {
     return {
+      model: ANTHROPIC_COMMAND_MODEL,
       async next({ system, text, tools, history }) {
         const response = await fetch("https://api.anthropic.com/v1/messages", {
           method: "POST",
@@ -147,8 +162,16 @@ export function commandProvider(env: CommandEnv): CommandProvider | undefined {
           void response.body?.cancel();
           throw new Error(`Anthropic command failed (${response.status})`);
         }
-        const { content } = anthropicMessage.parse(await response.json());
+        const data = await response.json<{ usage?: unknown }>();
+        const { content } = anthropicMessage.parse(data);
+        const usage = anthropicUsage.safeParse(data.usage);
         return {
+          ...(usage.success && {
+            usage: {
+              inputTokens: usage.data.input_tokens,
+              outputTokens: usage.data.output_tokens,
+            },
+          }),
           text: content
             .flatMap((block) => ("text" in block ? [block.text] : []))
             .join("\n"),
@@ -163,6 +186,7 @@ export function commandProvider(env: CommandEnv): CommandProvider | undefined {
   }
   if (AI && WORKERS_AI_COMMAND_MODEL?.trim()) {
     return {
+      model: WORKERS_AI_COMMAND_MODEL,
       async next({ system, text, tools, history }) {
         const messages = [
           { role: "system", content: system },
@@ -205,7 +229,16 @@ export function commandProvider(env: CommandEnv): CommandProvider | undefined {
               tool_calls: native.data.tool_calls,
             }
           : chatResponse.parse(response).choices[0].message;
+        const usage = workersUsage.safeParse(
+          (response as { usage?: unknown })?.usage,
+        );
         return {
+          ...(usage.success && {
+            usage: {
+              inputTokens: usage.data.prompt_tokens,
+              outputTokens: usage.data.completion_tokens,
+            },
+          }),
           text: message.content ?? "",
           calls: (message.tool_calls ?? []).map((call, i) => {
             const fn = "function" in call ? call.function : call;
@@ -220,4 +253,38 @@ export function commandProvider(env: CommandEnv): CommandProvider | undefined {
       },
     };
   }
+}
+
+/** Uses self-hosted model settings and the Workers AI binding when available. */
+export function envKeys(env: EnvKeysEnv): KeyProvider {
+  return {
+    async commandProvider() {
+      const command = commandProvider(env);
+      const ai = env.AI;
+      return {
+        managed: false,
+        configuration:
+          command || ai
+            ? {
+                command,
+                transcribe: ai
+                  ? async (audio) => {
+                      const base64 = (
+                        audio as Uint8Array & { toBase64(): string }
+                      ).toBase64();
+                      const result = transcriptSchema.parse(
+                        await ai.run(
+                          "@cf/openai/whisper-large-v3-turbo",
+                          { audio: base64 },
+                          { signal: AbortSignal.timeout(25_000) },
+                        ),
+                      );
+                      return result.text;
+                    }
+                  : undefined,
+              }
+            : null,
+      };
+    },
+  };
 }

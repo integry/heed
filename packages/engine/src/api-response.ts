@@ -1,3 +1,5 @@
+import type { LimitError } from "./seams.js";
+
 export function apiError(status: number, code: string, message: string) {
   return Response.json(
     { error: { code, message } },
@@ -51,4 +53,14 @@ export function workspaceOperationError(error: unknown) {
     code: "internal_error",
     message: "Workspace operation failed",
   };
+}
+
+export function limitResponse(error: LimitError) {
+  const headers = new Headers({ "Cache-Control": "no-store" });
+  if (error.retryAfter !== undefined)
+    headers.set("Retry-After", String(error.retryAfter));
+  return Response.json(
+    { error: error.detail },
+    { status: error.status, headers },
+  );
 }

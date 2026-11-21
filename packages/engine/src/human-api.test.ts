@@ -4,8 +4,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { HistoryPage } from "@heedwork/core";
 import type { ItemOperationResult } from "@heedwork/core";
 import type { Event, Guidance, Project, TokenMetadata } from "@heedwork/core";
-import worker from "./worker";
-import { issueSession } from "./session";
+import { fetchOpen } from "./worker-test-helpers";
+import { issueSession } from "./auth";
 import type { PushEnv } from "./web-push";
 import { getWorkspaceStub } from "./workspace";
 
@@ -34,7 +34,7 @@ async function request(
   body?: object,
   headers?: HeadersInit,
 ) {
-  return worker.fetch(
+  return fetchOpen(
     new Request(new URL(path, origin), {
       method,
       headers: headers ?? {
@@ -264,11 +264,17 @@ it("changes status, sets and clears a handoff, reopens, and reads the item timel
     "handoff",
     "created",
   ]);
-  expect(
-    events.every(
-      ({ item_id, actor }) => item_id === item.id && actor === "human",
-    ),
-  ).toBe(true);
+  expect(events).toEqual(
+    events.map((event) => ({
+      ...event,
+      item_id: item.id,
+      actor: {
+        id: "human@example.test",
+        email: "human@example.test",
+        name: "human@example.test",
+      },
+    })),
+  );
 });
 
 it("adds and removes dependencies, and reports invalid or conflicting edges", async () => {

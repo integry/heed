@@ -92,6 +92,10 @@ export function createWorkspaceConnection(notificationItemId: string | null) {
             onSessionExpired(data?.devLoginEnabled === true);
           return;
         }
+        if (response.status === 403 && !controller.signal.aborted) {
+          onSessionExpired();
+          return;
+        }
       } catch {
         // The next socket attempt can recover after a temporary network failure.
       }

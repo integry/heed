@@ -1,4 +1,4 @@
-import { encodeBase64Url } from "./signed-cookie";
+import { encodeBase64Url } from "./signed-cookie.js";
 
 const encoder = new TextEncoder();
 
@@ -23,4 +23,12 @@ export function equalSecretHashes(left: string, right: string): boolean {
     leftBytes.byteLength === rightBytes.byteLength &&
     crypto.subtle.timingSafeEqual(leftBytes, rightBytes)
   );
+}
+
+export function tokenParts(token: string) {
+  // The secret has a fixed length; workspace names themselves can contain underscores.
+  if (!token.startsWith("heed_") || token.at(-44) !== "_") return null;
+  const workspaceId = token.slice(5, -44);
+  const secret = token.slice(-43);
+  return workspaceId && isTokenSecret(secret) ? { workspaceId, secret } : null;
 }
