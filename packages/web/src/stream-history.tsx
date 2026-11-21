@@ -1,3 +1,5 @@
+import { DemoBadge } from "./item-markers";
+import { GuideEmpty } from "./Onboarding";
 import { useApi } from "./api";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -10,6 +12,8 @@ import type { Project } from "@heedwork/core";
 interface HistoryProps {
   projects: readonly Project[];
   timezone: string;
+  demoLoaded?: boolean;
+  openGuide?: () => void;
   live: boolean;
   openIds: ReadonlySet<string>;
   pendingIds: ReadonlySet<string>;
@@ -43,6 +47,7 @@ function HistoryRow({
           <p className="item-title">{item.title}</p>
           <p className="stream-meta">
             {project && <span>{project}</span>}
+            {item.demo === 1 && <DemoBadge />}
             <span>{item.status === "done" ? "Done" : "Cancelled"}</span>
             <time dateTime={item.history_at}>
               {date.toLocaleDateString(undefined, {
@@ -106,6 +111,7 @@ function HistoryResults({
   live,
   openIds,
   pendingIds,
+  openGuide,
   reopen,
 }: Omit<HistoryProps, "close"> & { query: string; project: string }) {
   const { getJson } = useApi();
@@ -206,11 +212,11 @@ function HistoryResults({
         </div>
       )}
       {!loading && !error && rows.length === 0 && !page?.next_before && (
-        <p className="stream-empty">
+        <GuideEmpty className="stream-empty" openGuide={openGuide}>
           {query || project
             ? "No history matches these filters."
             : "No completed or cancelled items yet."}
-        </p>
+        </GuideEmpty>
       )}
       {!loading && !error && page?.next_before && (
         <button
@@ -229,7 +235,10 @@ function HistoryResults({
 export function StreamHistory({ close, ...props }: HistoryProps) {
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
-  const [project, setProject] = useState("");
+  const [projectId, setProject] = useState("");
+  const project = props.projects.some(({ id }) => id === projectId)
+    ? projectId
+    : "";
   return (
     <>
       <div className="section-heading stream-heading">
@@ -273,7 +282,7 @@ export function StreamHistory({ close, ...props }: HistoryProps) {
         </label>
       </form>
       <HistoryResults
-        key={JSON.stringify([query, project])}
+        key={JSON.stringify([query, project, props.demoLoaded])}
         query={query}
         project={project}
         {...props}

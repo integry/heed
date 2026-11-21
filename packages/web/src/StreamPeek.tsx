@@ -1,6 +1,7 @@
 import type { Band } from "@heedwork/core";
 import type { CanvasItem } from "@heedwork/core";
-import { ItemTimeBadge, itemTimeFormats } from "./item-markers";
+import { GuideEmpty } from "./Onboarding";
+import { DemoBadge, ItemTimeBadge, itemTimeFormats } from "./item-markers";
 import type { selectWorkspace } from "./workspace-view";
 
 const upcomingBands = ["today", "tomorrow", "this-week", "later"] as const;
@@ -10,11 +11,13 @@ export function StreamPeek({
   items,
   timezone,
   ready,
+  openGuide,
   selectedId,
   select,
 }: Pick<ReturnType<typeof selectWorkspace>, "bands" | "timezone"> & {
   items: ReadonlyMap<string, CanvasItem>;
   ready: boolean;
+  openGuide?: () => void;
   selectedId: string | null;
   select: (id: string) => void;
 }) {
@@ -48,6 +51,7 @@ export function StreamPeek({
             upcoming={band !== "today"}
           />
           <span className="item-title">{item.title}</span>
+          {item.demo === 1 && <DemoBadge />}
           {item.handoff === 1 && <span className="stream-flag">Handoff</span>}
           {item.progress.total > 0 && (
             <span
@@ -59,7 +63,11 @@ export function StreamPeek({
           )}
         </button>
       ))}
-      {ready && entries.length === 0 && <p>No upcoming items.</p>}
+      {ready && entries.length === 0 && (
+        <GuideEmpty className="peek-empty" openGuide={openGuide}>
+          No upcoming items.
+        </GuideEmpty>
+      )}
     </div>
   );
 }

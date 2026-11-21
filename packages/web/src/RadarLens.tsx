@@ -1,3 +1,4 @@
+import { GuideEmpty } from "./Onboarding";
 import {
   useCallback,
   useId,
@@ -262,6 +263,7 @@ export function RadarLens({
   moveRadar,
   reschedule,
   setPriority,
+  openGuide,
 }: LensProps) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const clearPreview = useCallback(() => setPreview(null), []);
@@ -701,7 +703,9 @@ export function RadarLens({
           </button>
         </div>
       </div>
-      {!entries.length && <p className="empty">No items in this view.</p>}
+      {!entries.length && (
+        <GuideEmpty openGuide={openGuide}>No items in this view.</GuideEmpty>
+      )}
       <div ref={chart} className="radar-chart" data-dragging={Boolean(preview)}>
         <svg
           ref={svg}

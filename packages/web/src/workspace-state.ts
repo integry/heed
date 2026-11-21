@@ -1,5 +1,10 @@
 import type { CanvasItem, SocketMessage, SocketRequest } from "@heedwork/core";
-import type { Dependency, Project, Settings } from "@heedwork/core";
+import type {
+  Dependency,
+  OnboardingStatus,
+  Project,
+  Settings,
+} from "@heedwork/core";
 
 type Mutation = Exclude<SocketRequest, { type: "GET_SNAPSHOT" }>;
 export type MutationInput = {
@@ -17,6 +22,7 @@ export interface WorkspaceData {
 }
 
 export interface WorkspaceState extends WorkspaceData {
+  onboarding?: OnboardingStatus;
   seq: number;
   connection: "connecting" | "live" | "syncing" | "reconnecting";
   pending: ReadonlyMap<string, MutationInput>;
@@ -68,6 +74,24 @@ function retainHeartbeat(item: CanvasItem, previous?: CanvasItem): CanvasItem {
   return item;
 }
 
+function replaceCanvas(
+  state: WorkspaceState,
+  message: Extract<SocketMessage, { type: "SNAPSHOT" | "CANVAS_REPLACE" }>,
+) {
+  return {
+    projects: new Map(message.projects.map((project) => [project.id, project])),
+    items: new Map(
+      message.items.map((item) => [
+        item.id,
+        retainHeartbeat(item, state.items.get(item.id)),
+      ]),
+    ),
+    dependencies: new Map(
+      message.dependencies.map((edge) => [dependencyKey(edge), edge]),
+    ),
+  };
+}
+
 export function receiveMessage(
   state: WorkspaceState,
   message: SocketMessage,
@@ -77,22 +101,12 @@ export function receiveMessage(
   if (message.type === "SNAPSHOT") {
     return {
       ...state,
+      ...replaceCanvas(state, message),
       seq: message.seq,
       connection: "live",
       pending: new Map(),
       settings: message.settings,
-      projects: new Map(
-        message.projects.map((project) => [project.id, project]),
-      ),
-      items: new Map(
-        message.items.map((item) => [
-          item.id,
-          retainHeartbeat(item, state.items.get(item.id)),
-        ]),
-      ),
-      dependencies: new Map(
-        message.dependencies.map((edge) => [dependencyKey(edge), edge]),
-      ),
+      onboarding: message.onboarding,
     };
   }
 
@@ -112,8 +126,16 @@ export function receiveMessage(
     };
   }
 
-  const next = { ...state, seq: message.seq };
+  const next = {
+    ...state,
+    seq: message.seq,
+    onboarding: message.onboarding ?? state.onboarding,
+  };
   switch (message.type) {
+    case "CANVAS_REPLACE":
+      return { ...next, ...replaceCanvas(state, message) };
+    case "ONBOARDING_UPDATE":
+      return next;
     case "ITEM_UPSERT":
       return {
         ...next,

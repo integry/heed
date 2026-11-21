@@ -1,3 +1,4 @@
+import { GuideEmpty } from "./Onboarding";
 import {
   useEffect,
   useLayoutEffect,
@@ -49,6 +50,7 @@ interface Props extends Pick<
   items: WorkspaceData["items"];
   dependencies: WorkspaceData["dependencies"];
   ready: boolean;
+  openGuide?: () => void;
   live: boolean;
   now: number;
   attentionOnly: boolean;
@@ -105,6 +107,7 @@ export function HorizonStream({
   items,
   dependencies,
   ready,
+  openGuide,
   live,
   now,
   timezone,
@@ -516,6 +519,16 @@ export function HorizonStream({
         </p>
         {ready && (
           <>
+            {condensed && !visibleRows.size && (
+              <GuideEmpty
+                className="stream-empty stream-overview"
+                openGuide={openGuide}
+              >
+                {attentionOnly
+                  ? "Nothing needs your input."
+                  : "No items in the stream yet."}
+              </GuideEmpty>
+            )}
             {condensed && (
               <section
                 className="stream-band"
@@ -564,12 +577,17 @@ export function HorizonStream({
                     </time>
                   </span>
                 </div>
-                {!STREAM_BANDS.some((band) => bands[band].length > 0) && (
-                  <p className="stream-empty stream-overview">
+                {(todayOnly ? !bands.today.length : !visibleRows.size) && (
+                  <GuideEmpty
+                    className="stream-empty stream-overview"
+                    openGuide={openGuide}
+                  >
                     {attentionOnly
                       ? "Nothing needs your input."
-                      : "No items in the stream yet."}
-                  </p>
+                      : todayOnly && visibleRows.size
+                        ? "Nothing scheduled for today."
+                        : "No items in the stream yet."}
+                  </GuideEmpty>
                 )}
                 {renderBand("today", "Today", bands.today)}
                 {!todayOnly && (

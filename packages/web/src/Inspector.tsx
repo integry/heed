@@ -1,3 +1,4 @@
+import { DemoBadge } from "./item-markers";
 import { useResource } from "./api";
 import { useEffect, useRef, useState } from "react";
 import { LockableFieldSchema } from "@heedwork/core";
@@ -281,6 +282,7 @@ export function Inspector({
         </button>
       </header>
       <div className="inspector-body">
+        {item.demo === 1 && <DemoBadge />}
         <form
           className="inspector-title"
           onSubmit={(event) => {
