@@ -10,7 +10,17 @@ export function useCanvasZoom<
   height: number,
   viewId: string | null,
   dragging: () => boolean,
-  { doubleTapZoom = true }: { doubleTapZoom?: boolean } = {},
+  {
+    doubleTapZoom = true,
+    x = 0,
+    y = 0,
+    onZoom,
+  }: {
+    doubleTapZoom?: boolean;
+    x?: number;
+    y?: number;
+    onZoom?: (scale: number) => void;
+  } = {},
 ) {
   const svg = useRef<Canvas>(null);
   const layer = useRef<Layer>(null);
@@ -22,12 +32,12 @@ export function useCanvasZoom<
     const canvas = d3Select(element);
     const control = zoom<Canvas, unknown>()
       .extent([
-        [0, 0],
-        [width, height],
+        [x, y],
+        [x + width, y + height],
       ])
       .translateExtent([
-        [-width / 2, -height / 2],
-        [width * 1.5, height * 1.5],
+        [x - width / 2, y - height / 2],
+        [x + width * 1.5, y + height * 1.5],
       ])
       .scaleExtent([0.65, 6])
       .filter((event: MouseEvent | TouchEvent) => {
@@ -43,7 +53,7 @@ export function useCanvasZoom<
           scene.setAttribute("transform", String(transform));
         else
           scene.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})`;
-        element.classList.toggle("canvas-magnified", transform.k >= 1.8);
+        onZoom?.(transform.k);
       });
     behavior.current = control;
     canvas.call(control);
@@ -65,7 +75,7 @@ export function useCanvasZoom<
       canvas.on(".zoom", null);
       behavior.current = null;
     };
-  }, [width, height, dragging, doubleTapZoom]);
+  }, [width, height, dragging, doubleTapZoom, x, y, onZoom]);
 
   function resetZoom() {
     if (behavior.current)

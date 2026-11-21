@@ -1,7 +1,9 @@
 import {
   useCallback,
   useId,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type PointerEvent,
 } from "react";
@@ -14,7 +16,7 @@ import {
 import type { CanvasItem } from "../shared/workspace-socket";
 import type { Project, RadarBand } from "../shared/workspace";
 import type { LensProps } from "./lenses";
-import { RadarBubble, type Bubble } from "./RadarBubble";
+import { RadarBubble, bubbleDetails, type Bubble } from "./RadarBubble";
 import { itemRing } from "./workspace-view";
 import {
   bubbleRadius,
@@ -27,13 +29,17 @@ import {
   HEIGHT,
   layoutGoal,
   layoutRadar,
+  MIN_FIELD_SCALE,
   polar,
   priorityForRadius,
   RADAR_BANDS,
   RADAR_LABELS,
+  RADAR_LABEL_FONT,
   RADAR_RADIUS,
   radarDrop,
+  radarViewport,
   readRadarPosition,
+  ringLabel,
   scheduleForRing,
   seedPosition,
   targetCell,
@@ -42,6 +48,7 @@ import {
   type Cell,
   type Point,
 } from "./radar-geometry";
+import { outsideLabels, radarTimeBadge } from "./radar-labels";
 import { useCanvasDrag } from "./use-canvas-drag";
 import { useCanvasZoom } from "./use-canvas-zoom";
 import "./radar.css";
@@ -88,11 +95,18 @@ function goalDropTarget(point: Point) {
 function RadarField({
   projects,
   highlight,
+  scale,
+  showLabels,
 }: {
   projects: readonly Project[];
   highlight: Cell | null;
+  scale: number;
+  showLabels: boolean;
 }) {
   const sectors = projects.length || 1;
+  const labelId = useId();
+  const font = RADAR_LABEL_FONT / scale;
+  const labelRadius = RADAR_RADIUS + 16 / scale;
   return (
     <g aria-hidden="true" className="radar-field">
       {[...RADAR_BANDS].reverse().map((band) => {
@@ -115,7 +129,20 @@ function RadarField({
           sectors,
         });
         const edge = polar(start, RADAR_RADIUS);
-        const label = polar(start + span / 2, RADAR_RADIUS + 24);
+        const middle = start + span / 2;
+        const halfArc = Math.min(span * 0.45, Math.PI / 3);
+        const reverse = Math.sin(middle) > 0;
+        const from = polar(
+          middle + (reverse ? halfArc : -halfArc),
+          labelRadius,
+        );
+        const to = polar(middle + (reverse ? -halfArc : halfArc), labelRadius);
+        const id = `${labelId}-${sector}`;
+        const label = truncateLabel(
+          project.name,
+          halfArc * 2 * labelRadius,
+          font,
+        );
         return (
           <g key={project.id}>
             {sectors > 1 && (
@@ -127,36 +154,48 @@ function RadarField({
                 className="radar-sector-line"
               />
             )}
-            <text
-              x={label.x}
-              y={label.y}
-              dy="0.35em"
-              textAnchor="middle"
-              className="radar-project-label"
-            >
-              {truncateLabel(project.name, Math.min(155, 225 * span), 14)}
-              <title>{project.name}</title>
-            </text>
+            {showLabels && (
+              <>
+                <path
+                  id={id}
+                  d={`M ${from.x} ${from.y} A ${labelRadius} ${labelRadius} 0 0 ${Number(!reverse)} ${to.x} ${to.y}`}
+                  fill="none"
+                />
+                <text
+                  textAnchor="middle"
+                  fontSize={font}
+                  className="radar-project-label"
+                >
+                  <textPath href={`#${id}`} startOffset="50%">
+                    {label}
+                  </textPath>
+                  <title>{project.name}</title>
+                </text>
+              </>
+            )}
           </g>
         );
       })}
       {highlight && (
         <path d={pathForCell(highlight)} className="radar-drop-cell" />
       )}
-      {RADAR_BANDS.map((band) => {
-        const { inner } = cellBounds({ band, sector: 0, sectors });
-        return (
-          <text
-            key={band}
-            x={CENTER.x}
-            y={CENTER.y - inner - (inner ? 8 : 0)}
-            className="radar-band-label"
-            textAnchor="middle"
-          >
-            {band === "today" ? "Today · You" : RADAR_LABELS[band]}
-          </text>
-        );
-      })}
+      {showLabels &&
+        RADAR_BANDS.map((band) => {
+          const { point, text } = ringLabel(band);
+          return (
+            <text
+              key={band}
+              x={point.x}
+              y={point.y}
+              dy="0.35em"
+              fontSize={font}
+              className="radar-band-label"
+              textAnchor="middle"
+            >
+              {text}
+            </text>
+          );
+        })}
     </g>
   );
 }
@@ -229,6 +268,21 @@ export function RadarLens({
   const drag = useCanvasDrag<Gesture>(clearPreview);
   const { cancel: cancelGesture, start: startDrag } = drag;
   const [tooltip, setTooltip] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const chart = useRef<HTMLDivElement>(null);
+  const [{ width, height }, setSize] = useState({
+    width: WIDTH,
+    height: HEIGHT,
+  });
+  useLayoutEffect(() => {
+    if (!chart.current || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      if (width > 0 && height > 0) setSize({ width, height });
+    });
+    observer.observe(chart.current);
+    return () => observer.disconnect();
+  }, []);
   const [dropMessage, setDropMessage] = useState<string | null>(null);
   const arrowId = useId();
   const projects = useMemo(
@@ -243,6 +297,8 @@ export function RadarLens({
   const requestedGoal = goalId ? rows.get(goalId) : undefined;
   const goal = requestedGoal?.children.length ? requestedGoal : undefined;
   const entries = goal?.children ?? roots;
+  const viewport = radarViewport(width, height, Boolean(goal));
+  const labelScale = viewport.scale * zoom;
   const layoutKey = goal ? `radar-goal:${goal.item.id}` : "radar";
   const bandById = useMemo(
     () =>
@@ -289,23 +345,32 @@ export function RadarLens({
     [entries, projectIds, layoutKey, bandById, projects.length],
   );
   const signature = useMemo(
-    () => JSON.stringify([layoutKey, projectIds, setup.map(({ id }) => id)]),
-    [layoutKey, projectIds, setup],
+    () =>
+      JSON.stringify([
+        layoutKey,
+        projectIds,
+        goal
+          ? setup.map(({ id }) => id)
+          : [
+              viewport.scale,
+              setup.map(({ id, cell, priority, position }) => [
+                id,
+                cell.band,
+                cell.sector,
+                priority,
+                position,
+              ]),
+            ],
+      ]),
+    [layoutKey, projectIds, goal, setup, viewport.scale],
   );
-  const [layout, setLayout] = useState(() => ({
+  const buildLayout = () => ({
     signature,
-    radar: goal ? undefined : layoutRadar(setup),
+    radar: goal ? undefined : layoutRadar(setup, viewport.scale),
     packed: goal ? layoutGoal(setup) : undefined,
-  }));
-  if (layout.signature !== signature) {
-    // A status or schedule change can move its own bubble to a new cell.
-    // Preserve all automatic offsets until the set of nodes or sectors changes.
-    setLayout({
-      signature,
-      radar: goal ? undefined : layoutRadar(setup),
-      packed: goal ? layoutGoal(setup) : undefined,
-    });
-  }
+  });
+  const [layout, setLayout] = useState(buildLayout);
+  if (layout.signature !== signature) setLayout(buildLayout());
 
   const allItems = useMemo(() => [...items.values()], [items]);
   const bubbles = useMemo(
@@ -321,7 +386,7 @@ export function RadarLens({
             : (packed?.point ?? CENTER)
           : cellPoint(
               cell,
-              position ?? plotted?.position ?? seedPosition(item.id),
+              plotted?.position ?? position ?? seedPosition(item.id),
             );
 
         const ring = itemRing(item, now, items, dependencies);
@@ -342,6 +407,22 @@ export function RadarLens({
         } satisfies Bubble;
       }),
     [setup, layout, goal, now, items, dependencies, projects, rows, allItems],
+  );
+  const callouts = useMemo(
+    () =>
+      goal || labelScale < MIN_FIELD_SCALE
+        ? undefined
+        : outsideLabels(
+            bubbles.map(({ item, point, radius }) => ({
+              id: item.id,
+              title: item.title,
+              point,
+              radius,
+              ...radarTimeBadge(item, timeFormatter),
+            })),
+            labelScale,
+          ),
+    [bubbles, goal, labelScale, timeFormatter],
   );
   const drawOrder = useMemo(
     () =>
@@ -373,10 +454,11 @@ export function RadarLens({
   }
 
   const { svg, layer, zoomBy, resetZoom } = useCanvasZoom(
-    WIDTH,
-    HEIGHT,
+    viewport.width,
+    viewport.height,
     goal?.item.id ?? null,
     drag.dragging,
+    { x: viewport.x, y: viewport.y, onZoom: setZoom },
   );
 
   function scenePoint(event: PointerEvent): Point {
@@ -544,6 +626,10 @@ export function RadarLens({
       highlight = cell;
   }
 
+  const selected = selectedId ? bubbleById.get(selectedId) : undefined;
+  const activeTooltip =
+    tooltip ?? (selected && bubbleDetails(selected, now, timeFormatter).detail);
+
   return (
     <div className="radar">
       <div className="radar-toolbar">
@@ -611,11 +697,11 @@ export function RadarLens({
         </div>
       </div>
       {!entries.length && <p className="empty">No items in this view.</p>}
-      <div className="radar-chart" data-dragging={Boolean(preview)}>
+      <div ref={chart} className="radar-chart" data-dragging={Boolean(preview)}>
         <svg
           ref={svg}
           className="radar-svg"
-          viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+          viewBox={`${viewport.x} ${viewport.y} ${viewport.width} ${viewport.height}`}
           aria-label={
             goal
               ? `Items in ${goal.item.title}`
@@ -689,7 +775,12 @@ export function RadarLens({
                   ))}
               </g>
             ) : (
-              <RadarField projects={projects} highlight={highlight} />
+              <RadarField
+                projects={projects}
+                highlight={highlight}
+                scale={labelScale}
+                showLabels={viewport.scale >= MIN_FIELD_SCALE}
+              />
             )}
             {displayed.map((bubble) => (
               <RadarBubble
@@ -698,6 +789,10 @@ export function RadarLens({
                 selected={selectedId === bubble.item.id}
                 live={live}
                 now={now}
+                labelScale={labelScale}
+                outsideLabel={
+                  preview ? undefined : callouts?.get(bubble.item.id)
+                }
                 timeFormatter={timeFormatter}
                 onActivate={onActivate}
                 onGesture={onGesture}
@@ -710,8 +805,8 @@ export function RadarLens({
         <div aria-live="polite">
           {dropMessage && <p className="radar-tooltip">{dropMessage}</p>}
         </div>
-        {!dropMessage && tooltip && !preview && (
-          <p className="radar-tooltip">{tooltip}</p>
+        {!dropMessage && activeTooltip && !preview && (
+          <p className="radar-tooltip">{activeTooltip}</p>
         )}
       </div>
     </div>

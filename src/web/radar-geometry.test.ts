@@ -1,20 +1,31 @@
 import { expect, it } from "vitest";
 import {
+  demoGoal,
+  demoProjects,
+  radarDemoItems,
+} from "../../scripts/radar-demo.mjs";
+import { radarBandsFor } from "../shared/derived-state";
+import {
   bubbleRadius,
   cellPoint,
   cellPosition,
+  CENTER,
   layoutGoal,
   layoutRadar,
   polar,
+  overlapsRingLabel,
   priorityForRadius,
   RADAR_BANDS,
+  RADAR_RADIUS,
   radarDrop,
+  radarViewport,
   readRadarPosition,
   seedPosition,
   targetCell,
   type Cell,
 } from "./radar-geometry";
-import { now } from "./workspace-fixtures";
+import { outsideLabels, radarTimeBadge, titleLines } from "./radar-labels";
+import { goal, now } from "./workspace-fixtures";
 
 it("keeps stored fractions when an existing radar position has only one coordinate", () => {
   expect(readRadarPosition('{"radar":{"radius":0.5}}', "goal")).toEqual({
@@ -110,4 +121,135 @@ it("places automatic bubbles deterministically in their cell and pins stored pos
     ).size,
   ).toBe(nodes.length);
   expect(layoutGoal(nodes)).toEqual(layoutGoal([...nodes].reverse()));
+});
+
+it.each([false, true])(
+  "packs the radar demo at desktop and phone sizes (dense = %s)",
+  (dense) => {
+    const projectNames = {
+      inbox: "Inbox",
+      engineering: "Engineering",
+      product: "Product",
+      customer: "Customer Success",
+    };
+    const demo = [
+      ["reliability", demoGoal] as const,
+      ...radarDemoItems(dense, projectNames),
+    ];
+    const items = demo.map(
+      ([id, [project, title, priority, ring, options]]) => ({
+        ...goal,
+        id: `radar-demo-${id}`,
+        project_id: project,
+        title,
+        priority,
+        scheduled_on: ["2024-04-03", "2024-04-04", "2024-04-17", null][ring],
+        status: options?.status ?? ("queued" as const),
+        time_type: options?.time_type ?? ("flexible" as const),
+        time_at: options?.time ? `2024-04-03T${options.time}:00.000Z` : null,
+      }),
+    );
+    const itemMap = new Map(items.map((item) => [item.id, item]));
+    const bands = radarBandsFor(items, itemMap, now, "UTC");
+    const nodes = items.map(({ id, project_id, priority }) => ({
+      id,
+      priority,
+      cell: {
+        band: bands.get(id)!,
+        sectors: demoProjects.length,
+        sector: demoProjects.indexOf(project_id),
+      },
+    }));
+    const formatter = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "UTC",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+
+    for (const [width, height] of [
+      [800, 655],
+      [360, 545],
+      [390, 545],
+      [410, 715],
+    ]) {
+      const { scale } = radarViewport(width, height, false);
+      expect(2 * RADAR_RADIUS * scale).toBeCloseTo(
+        Math.min(width, height) - 50,
+      );
+      const layout = layoutRadar(nodes, scale);
+      expect(layout.size).toBe(dense ? 300 : 17);
+      expect(layoutRadar([...nodes].reverse(), scale)).toEqual(layout);
+      const bubbles = nodes.map(({ id, cell, priority }) => {
+        const placement = layout.get(id)!;
+        const point = cellPoint(cell, placement.position);
+        const radius = bubbleRadius(priority) * placement.scale;
+        expect(targetCell(point, demoProjects.length)).toEqual(cell);
+        expect(
+          Math.hypot(point.x - CENTER.x, point.y - CENTER.y) + radius,
+        ).toBeLessThanOrEqual(RADAR_RADIUS);
+        expect(overlapsRingLabel(point, radius, scale * 0.65)).toBe(false);
+        const item = itemMap.get(id)!;
+        return {
+          id,
+          point,
+          radius,
+          title: item.title,
+          ...radarTimeBadge(item, formatter),
+        };
+      });
+      const callouts = outsideLabels(bubbles, scale);
+      expect(outsideLabels([...bubbles].reverse(), scale)).toEqual(callouts);
+      if (!dense) expect(callouts.size).toBeGreaterThan(0);
+      for (const [i, bubble] of bubbles.entries()) {
+        for (const other of bubbles.slice(i + 1)) {
+          if (
+            Math.hypot(
+              bubble.point.x - other.point.x,
+              bubble.point.y - other.point.y,
+            ) <
+            bubble.radius + other.radius
+          ) {
+            throw Error(`${bubble.id} overlaps ${other.id} at ${width}px`);
+          }
+        }
+      }
+      for (const { x, y, halfWidth, halfHeight, lines } of callouts.values()) {
+        expect(lines.length).toBeLessThanOrEqual(2);
+        for (const { point, radius } of bubbles) {
+          if (
+            Math.hypot(
+              Math.max(0, Math.abs(point.x - x) - halfWidth),
+              Math.max(0, Math.abs(point.y - y) - halfHeight),
+            ) < radius
+          ) {
+            throw Error(`Callout covers a bubble at ${width}px`);
+          }
+        }
+      }
+    }
+  },
+);
+
+it("makes the largest priority three times the smallest", () => {
+  expect(bubbleRadius(10)).toBe(3 * bubbleRadius(1));
+});
+
+it("packs colliding manual positions around the stored anchor", () => {
+  const cell: Cell = { band: "later", sector: 1, sectors: 4 };
+  const position = { angle: 0.45, radius: 0.5 };
+  const placements = layoutRadar([
+    { id: "a", priority: 10, cell, position },
+    { id: "b", priority: 10, cell, position },
+  ]);
+  expect(placements.get("a")?.position).toEqual(position);
+  expect(placements.get("b")?.position).not.toEqual(position);
+});
+
+it("wraps titles to two lines before truncating", () => {
+  expect(titleLines("Review payment reconciliation", 70, 11)).toEqual([
+    "Review",
+    "payment…",
+  ]);
+  expect(titleLines("Support templates", 50, 11)).toEqual(["Suppo…"]);
 });

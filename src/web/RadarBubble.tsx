@@ -1,7 +1,8 @@
 import { memo, type PointerEvent } from "react";
 import { workspaceInstant, type Ring } from "../shared/derived-state";
 import type { CanvasItem } from "../shared/workspace-socket";
-import { truncateLabel, type Point } from "./radar-geometry";
+import { RADAR_LABEL_FONT, type Point } from "./radar-geometry";
+import { bubbleLabel, radarTimeBadge, type OutsideLabel } from "./radar-labels";
 import { ringLabels } from "./workspace-view";
 
 export interface Bubble {
@@ -25,15 +26,88 @@ export function lastSeen(timestamp: string | null, now: number) {
     : `Last seen ${Math.floor(hours / 24)}d ago`;
 }
 
-function titleLines(title: string, width: number, font: number) {
-  const first = truncateLabel(title, width, font);
-  if (first === title) return [first];
-  const breakAt = first.lastIndexOf(" ");
-  if (breakAt === -1) return [first];
-  return [
-    title.slice(0, breakAt),
-    truncateLabel(title.slice(breakAt + 1), width, font),
-  ];
+export function bubbleDetails(
+  { item, ring, rollup }: Bubble,
+  now: number,
+  timeFormatter: Intl.DateTimeFormat,
+) {
+  const ghost = item.status === "done";
+  const stale = ring === "stale" ? lastSeen(item.last_heartbeat_at, now) : null;
+  const { badge, stamp } = radarTimeBadge(item, timeFormatter);
+  const { done, total } = item.progress;
+  const detail = [
+    item.title,
+    ghost ? "Completed" : ring && ringLabels[ring],
+    stale,
+    stamp,
+    rollup && `Descendants: ${ringLabels[rollup]}`,
+    total > 0 && `${done} of ${total} complete`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return { detail, stamp, badge };
+}
+
+function BubbleCallout({
+  label,
+  point,
+  radius,
+  scale,
+}: {
+  label: OutsideLabel;
+  point: Point;
+  radius: number;
+  scale: number;
+}) {
+  const { x, y, lines, stamp, halfWidth, halfHeight } = label;
+  const dx = x - point.x;
+  const dy = y - point.y;
+  const edge = Math.min(halfWidth / Math.abs(dx), halfHeight / Math.abs(dy));
+  const length = Math.hypot(dx, dy);
+  const start = radius / length;
+  const font = RADAR_LABEL_FONT / scale;
+  return (
+    <g className="radar-callout" aria-hidden="true">
+      <line
+        x1={dx * start}
+        y1={dy * start}
+        x2={dx * (1 - edge)}
+        y2={dy * (1 - edge)}
+      />
+      <g transform={`translate(${dx},${dy})`}>
+        <rect
+          x={-halfWidth}
+          y={-halfHeight}
+          width={2 * halfWidth}
+          height={2 * halfHeight}
+          rx={4 / scale}
+        />
+        <text fontSize={font} textAnchor="middle">
+          {lines.map((line, index) => (
+            <tspan
+              key={index}
+              className="radar-bubble-title"
+              x={0}
+              y={-halfHeight + 3 / scale + (index + 0.5) * font}
+              dy="0.35em"
+            >
+              {line}
+            </tspan>
+          ))}
+          {stamp && (
+            <tspan
+              className="radar-callout-time"
+              x={0}
+              y={halfHeight - 3 / scale - font / 2}
+              dy="0.35em"
+            >
+              {stamp}
+            </tspan>
+          )}
+        </text>
+      </g>
+    </g>
+  );
 }
 
 export const RadarBubble = memo(function RadarBubble({
@@ -41,6 +115,8 @@ export const RadarBubble = memo(function RadarBubble({
   selected,
   live,
   now,
+  labelScale,
+  outsideLabel,
   timeFormatter,
   onActivate,
   onGesture,
@@ -51,6 +127,8 @@ export const RadarBubble = memo(function RadarBubble({
   selected: boolean;
   live: boolean;
   now: number;
+  labelScale: number;
+  outsideLabel?: OutsideLabel;
   timeFormatter: Intl.DateTimeFormat;
   onActivate: (bubble: Bubble) => void;
   onGesture: (
@@ -64,27 +142,15 @@ export const RadarBubble = memo(function RadarBubble({
   const { item, point, radius, ring, rollup, opensGoal, color } = bubble;
   const ghost = item.status === "done";
   const showResize = selected && live && !ghost;
-  const stale = ring === "stale" ? lastSeen(item.last_heartbeat_at, now) : null;
-  const time = workspaceInstant(item.time_at);
-  const badge =
-    item.time_type !== "flexible" && Number.isFinite(time)
-      ? `${item.time_type === "fixed" ? "Fixed" : "Due"} ${timeFormatter.format(time)}`
-      : null;
+  const { detail, stamp, badge } = bubbleDetails(bubble, now, timeFormatter);
   const { done, total } = item.progress;
-  const stamp = badge ?? stale;
-  const stampWidth = stamp ? Math.max(64, stamp.length * 4.3 + 12) : 0;
-  const detail = [
+  const { font, lines, visibleBadge, badgeY, labelY } = bubbleLabel(
     item.title,
-    ghost ? "Completed" : ring && ringLabels[ring],
-    stale,
+    stamp,
     badge,
-    rollup && `Descendants: ${ringLabels[rollup]}`,
-    total > 0 && `${done} of ${total} complete`,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const font = Math.min(15, Math.max(2.8, radius * 0.29));
-  const lines = titleLines(item.title, radius * 1.78, font);
+    radius,
+    labelScale,
+  );
   const progressRadius = radius + (ring ? 5 : 2);
   const circumference = 2 * Math.PI * progressRadius;
   const handle = (radius + 6) / Math.SQRT2;
@@ -150,47 +216,57 @@ export const RadarBubble = memo(function RadarBubble({
             )}
           </>
         )}
-        <text
-          textAnchor="middle"
-          className="radar-bubble-title"
-          data-small={radius < 16}
-          fontSize={font}
-          aria-hidden="true"
-        >
-          {lines.map((line, index) => (
-            <tspan
-              key={index}
-              x={0}
-              y={(index - (lines.length - 1) / 2) * font + (stamp ? -3 : 3)}
-            >
-              {line}
-            </tspan>
-          ))}
-        </text>
-        {stamp && radius >= 21 && (
+        {!outsideLabel?.lines.length && lines.length > 0 && (
+          <text
+            textAnchor="middle"
+            className="radar-bubble-title"
+            fontSize={font}
+            aria-hidden="true"
+          >
+            {lines.map((line, index) => (
+              <tspan
+                key={index}
+                x={0}
+                y={labelY + (index - (lines.length - 1) / 2) * font}
+                dy="0.35em"
+              >
+                {line}
+              </tspan>
+            ))}
+          </text>
+        )}
+        {!outsideLabel?.stamp && visibleBadge && (
           <g
             className="radar-time-badge"
             aria-hidden="true"
-            transform={`translate(0,${radius - 1})`}
+            transform={`translate(0,${badgeY})`}
           >
             <rect
-              x={-stampWidth / 2}
-              y={-6}
-              width={stampWidth}
-              height={13}
-              rx={5}
+              x={-visibleBadge.width / 2}
+              y={-visibleBadge.height / 2}
+              width={visibleBadge.width}
+              height={visibleBadge.height}
+              rx={4 / labelScale}
             />
-            <text textAnchor="middle" y={3.5} fontSize={8.5}>
-              {stamp}
+            <text textAnchor="middle" dy="0.35em" fontSize={font}>
+              {visibleBadge.text}
             </text>
           </g>
         )}
-        {opensGoal && !stamp && radius >= 17 && (
+        {outsideLabel && (
+          <BubbleCallout
+            label={outsideLabel}
+            point={point}
+            radius={radius}
+            scale={labelScale}
+          />
+        )}
+        {opensGoal && !visibleBadge && radius * labelScale >= 25 && (
           <text
             className="radar-child-count"
             textAnchor="middle"
-            y={radius * 0.68}
-            fontSize={Math.max(8, font * 0.73)}
+            y={radius * 0.75}
+            fontSize={font}
             aria-hidden="true"
           >
             {total > 0 ? `${done}/${total}` : "›"}
