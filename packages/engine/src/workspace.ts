@@ -27,7 +27,6 @@ import type {
   HandoffOperationResult,
   ItemIdInput,
   ItemOperationResult,
-  LockableField,
   ReopenItemInput,
   ReportProgressInput,
   SetDependencyInput,
@@ -116,6 +115,7 @@ type CanvasRow = Pick<
   | "parent_id"
   | "ref_url"
   | "agent_name"
+  | "acceptance"
   | "scheduled_on"
   | "time_at"
   | "completed_at"
@@ -225,7 +225,7 @@ type Mutation = {
   changes: ItemChange[];
   throttledHeartbeat?: Item;
   removedDependencies?: Dependency[];
-  ignored: Set<LockableField>;
+  ignored: Set<ItemOperationResult["ignored_fields"][number]>;
   pruneEvents: boolean;
 };
 
@@ -387,6 +387,7 @@ export class Workspace<
       return;
     }
     let createdToken: CreatedToken | undefined;
+    let ignoredFields: ItemOperationResult["ignored_fields"] | undefined;
     try {
       const mutation = request.data;
       const limit = SOCKET_CREATE_LIMITS[mutation.type];
@@ -441,7 +442,10 @@ export class Workspace<
           this.updateItem(actor, mutation.input);
           break;
         case "SET_STATUS":
-          this.reportProgress(actor, mutation.input);
+          ignoredFields = this.reportProgress(
+            actor,
+            mutation.input,
+          ).ignored_fields;
           break;
         case "REORDER_ITEMS":
           this.#mutateItems(actor, (transaction) => {
@@ -512,7 +516,12 @@ export class Workspace<
       return;
     }
     // Plaintext is returned only to the socket that created the token.
-    this.#send(socket, { type: "ACK", requestId, createdToken });
+    this.#send(socket, {
+      type: "ACK",
+      requestId,
+      createdToken,
+      ...(ignoredFields?.length && { ignored_fields: ignoredFields }),
+    });
   }
 
   #send(socket: WebSocket, message: WorkspaceMessage): void {
@@ -1211,7 +1220,7 @@ export class Workspace<
     const items = this.#sql
       .exec<CanvasRow>(
         `SELECT i.id, i.title, i.status, i.parent_id, i.ref_url, i.scheduled_on,
-              i.time_at, i.completed_at, i.agent_name, p.name AS project
+              i.time_at, i.completed_at, i.agent_name, i.acceptance, p.name AS project
        FROM items i JOIN projects p ON p.id = i.project_id
        WHERE (?1 IS NULL OR p.id = ?1 OR p.name = ?1)
          AND (?2 OR i.parent_id IS ?3)
@@ -1259,7 +1268,16 @@ export class Workspace<
       guidance,
       guidance_updated_at,
       items: items.map(
-        ({ id, title, project, status, parent_id, ref_url, agent_name }) => ({
+        ({
+          id,
+          title,
+          project,
+          status,
+          parent_id,
+          ref_url,
+          agent_name,
+          acceptance,
+        }) => ({
           id,
           title,
           project,
@@ -1268,6 +1286,9 @@ export class Workspace<
           ref_url,
           agent_name,
           band: bands.get(id) ?? null,
+          ...(acceptance !== "[]" && {
+            acceptance: JSON.parse(acceptance) as string[],
+          }),
         }),
       ),
     };
@@ -1666,8 +1687,12 @@ export class Workspace<
       const item = this.#requireItem(data);
       const patch = this.#editPatch(mutation, data, item);
       this.#applyStatus(mutation, patch, data.status, item);
+      if (data.evidence !== undefined && patch.status !== "done") {
+        mutation.ignored.add("evidence");
+      }
       this.#saveItem(mutation, item, patch, {
         heartbeat: actor.kind === "agent",
+        evidence: patch.status === "done" ? data.evidence : undefined,
       });
       return item.id;
     });
@@ -2355,7 +2380,10 @@ export class Workspace<
         continue;
       }
       Object.assign(patch, {
-        [field]: field === "layout_pos" ? JSON.stringify(value) : value,
+        [field]:
+          field === "layout_pos" || field === "acceptance"
+            ? JSON.stringify(value)
+            : value,
       });
       if (!isReport(mutation.actor)) nextLocks.add(field);
     }
@@ -2433,7 +2461,12 @@ export class Workspace<
     mutation: Mutation,
     item: Item,
     patch: ItemPatch,
-    options: { heartbeat?: boolean; notify?: boolean; reopened?: boolean } = {},
+    options: {
+      heartbeat?: boolean;
+      notify?: boolean;
+      reopened?: boolean;
+      evidence?: string;
+    } = {},
   ): void {
     const changes = (Object.keys(patch) as (keyof ItemPatch)[]).filter(
       (field) => patch[field] !== item[field],
@@ -2476,6 +2509,7 @@ export class Workspace<
       this.#appendEvent(mutation, item.id, "status", {
         old: item.status,
         new: updated.status,
+        evidence: options.evidence,
       });
     }
     if (item.note !== updated.note) {

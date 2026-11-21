@@ -25,7 +25,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
   const stub = newWorkspace();
   const settings = await stub.getSettings();
   expect(SettingsSchema.parse(settings)).toEqual({
-    schema_version: 7,
+    schema_version: 8,
     onboarding_dismissed: false,
     timezone: "UTC",
     guidance: "",
@@ -71,7 +71,8 @@ it("migrates a fresh object and seeds Inbox", async () => {
 });
 
 it.each([
-  { layout: "current", version: 7, dropColumns: [], hasOAuth: true },
+  { layout: "current", version: 8, dropColumns: [], hasOAuth: true },
+  { layout: "version 7", version: 7, dropColumns: [], hasOAuth: true },
   {
     layout: "version 5 with demo flags",
     version: 5,
@@ -119,9 +120,10 @@ it.each([
     };
     if (hasOAuth) await stub.registerOAuthClient(client);
 
-    if (version < 7) {
-      // Recreate the schema persisted before the merge.
+    if (version < 8) {
+      // Recreate the schema persisted by the older workspace.
       await runInDurableObject(stub, (_, { storage: { sql } }) => {
+        sql.exec("ALTER TABLE items DROP COLUMN acceptance");
         for (const path of dropColumns) {
           const [table, column] = path.split(".");
           sql.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
@@ -143,7 +145,7 @@ it.each([
     await evictDurableObject(stub);
 
     expect(await stub.getSettings()).toEqual({
-      schema_version: 7,
+      schema_version: 8,
       onboarding_dismissed: false,
       timezone: "Europe/Tallinn",
       ...guidance,

@@ -270,6 +270,7 @@ it("applies human edits and status changes, then replies only to the requesting 
       sort_key: 1.5,
       scheduled_on: "2026-11-20",
       layout_pos: { radar: { radius: 0.5 } },
+      acceptance: ["Verify rollout"],
     },
   });
   for (const client of [first, second]) {
@@ -281,7 +282,8 @@ it("applies human edits and status changes, then replies only to the requesting 
         sort_key: 1.5,
         scheduled_on: "2026-11-20",
         layout_pos: '{"radar":{"radius":0.5}}',
-        locked_fields: '["scheduled_on","sort_key","layout_pos"]',
+        acceptance: '["Verify rollout"]',
+        locked_fields: '["scheduled_on","sort_key","layout_pos","acceptance"]',
       },
     });
     expect(await client.next()).toMatchObject({
@@ -298,7 +300,7 @@ it("applies human edits and status changes, then replies only to the requesting 
   first.send({
     type: "SET_STATUS",
     requestId: "done",
-    input: { item_id: item, status: "done" },
+    input: { item_id: item, status: "done", evidence: "Rollout verified" },
   });
   for (const client of [first, second]) {
     expect(await client.next()).toMatchObject({
@@ -319,6 +321,7 @@ it("applies human edits and status changes, then replies only to the requesting 
         name: "human@example.test",
       },
       kind: "status",
+      detail: '{"old":"queued","new":"done","evidence":"Rollout verified"}',
     }),
   );
 
@@ -348,7 +351,7 @@ it("applies human edits and status changes, then replies only to the requesting 
   first.send({
     type: "SET_STATUS",
     requestId: "cancel",
-    input: { item_id: item, status: "cancelled" },
+    input: { item_id: item, status: "cancelled", evidence: "Cancelled" },
   });
   for (const client of [first, second]) {
     expect(await client.next()).toMatchObject({
@@ -363,6 +366,7 @@ it("applies human edits and status changes, then replies only to the requesting 
   expect(await first.next()).toMatchObject({
     type: "ACK",
     requestId: "cancel",
+    ignored_fields: ["evidence"],
   });
 });
 

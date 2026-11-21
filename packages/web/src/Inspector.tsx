@@ -22,7 +22,7 @@ import {
 } from "./workspace-controls";
 import type { SaveMutation } from "./workspace-controls";
 
-const lockLabels: Record<LockableField, string> = {
+const lockLabels: Record<Exclude<LockableField, "acceptance">, string> = {
   priority: "Priority",
   scheduled_on: "Schedule",
   sort_key: "Stream order",
@@ -198,9 +198,9 @@ export function Inspector({
   const terminal = item.status === "done" || item.status === "cancelled";
   const item_id = item.id;
   const project = projects.find(({ id }) => id === item.project_id);
-  const locks = LockableFieldSchema.array().parse(
-    JSON.parse(item.locked_fields),
-  );
+  const locks = LockableFieldSchema.array()
+    .parse(JSON.parse(item.locked_fields))
+    .filter((field) => field !== "acceptance");
   const blockers = dependencies.filter((edge) => edge.item_id === item_id);
   const choices = [...items.values()]
     .filter(

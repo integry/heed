@@ -30,6 +30,7 @@ function item(id: string, patch: Partial<Item> = {}): Item {
     external_key: null,
     title: id,
     tags: "[]",
+    acceptance: "[]",
     depth: 1,
     priority: 5,
     scheduled_on: null,

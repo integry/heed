@@ -9,6 +9,7 @@ import {
   SetStatusBodySchema,
   UpdateItemSchema,
 } from "./item-operations.js";
+import type { ItemOperationResult } from "./item-operations.js";
 import {
   GuidanceBodySchema,
   ResetWorkspaceBodySchema,
@@ -139,7 +140,12 @@ export type WorkspaceMessage = { onboarding?: OnboardingStatus } & (
   | { type: "PROJECT_REMOVE"; project_id: string }
   | { type: "DEPENDENCY_ADD" | "DEPENDENCY_REMOVE"; dependency: Dependency }
   | { type: "SETTINGS_UPDATE"; settings: Settings }
-  | { type: "ACK"; requestId: string; createdToken?: CreatedToken }
+  | {
+      type: "ACK";
+      requestId: string;
+      createdToken?: CreatedToken;
+      ignored_fields?: ItemOperationResult["ignored_fields"];
+    }
   | {
       type: "ERROR";
       requestId: string | null;
