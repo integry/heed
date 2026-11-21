@@ -3789,8 +3789,9 @@ it.each(["suggestion", "typed reply"])(
       agent_name: "Release agent",
     } as const;
     await openWorkspace(undefined, { ...snapshot, items: [item] });
-    fireEvent.click(screen.getByRole("tab", { name: "Radar" }));
-    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
     fireEvent.click(radar.getByRole("button", { name: item.title }));
     const question = within(
       radar.getByRole("region", { name: "Handoff question" }),
