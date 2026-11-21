@@ -10,15 +10,15 @@ A self-hosted Heed deployment serves one shared workspace. Everyone you allow to
 
 ## Deploy to Cloudflare
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fintegry%2Fheed%2Ftree%2F1-epic-heed-mvp-nip)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https%3A%2F%2Fgithub.com%2Fintegry%2Fheed%2Ftree%2F51-epic-heed-open-dcm)
 
 1. Sign in to Cloudflare and authorise GitHub when prompted. Choose a Worker name and a repository for your copy.
-2. Use `npm run build` as the build command and `npx wrangler deploy --keep-vars` as the deploy command. The build prepares the web assets and checks the Worker bundle. Wrangler deploys both and provisions the SQLite Durable Object. You can update these commands under your Worker's **Settings → Build**.
+2. Use the repository root as the build root directory, `npm run build` as the build command, and `npx wrangler deploy --keep-vars` as the deploy command. The build compiles the core package, prepares the static assets in `packages/web/dist`, and checks the engine bundle. The root Wrangler configuration deploys the engine and web assets and provisions the SQLite Durable Object. You can update these commands under your Worker's **Settings → Build**.
 3. Copy the new Worker's HTTPS origin, such as `https://heed.your-subdomain.workers.dev`, for the Google OAuth setup. You can add runtime variables and secrets after the initial deployment.
 
 ### Deploy from the command line
 
-You can also deploy from a copy of the [Heed source](https://github.com/integry/heed/tree/1-epic-heed-mvp-nip). To choose a different Worker name, edit `name` in [wrangler.jsonc](../wrangler.jsonc) before the first deploy.
+You can also deploy from a copy of the [Heed source](https://github.com/integry/heed/tree/51-epic-heed-open-dcm). To choose a different Worker name, edit `name` in the root [wrangler.jsonc](../wrangler.jsonc) before the first deploy.
 
 ```sh
 npm ci
