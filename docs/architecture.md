@@ -1,8 +1,8 @@
 # HEED (`heed.work`) — Product & Technical Specification
 
-**Version:** 1.5 (MVP Blueprint, revised after architecture review)
+**Version:** 1.6 (MVP Blueprint, revised after architecture review)
 
-**Model:** Open source (MIT, self-hostable) + Hosted SaaS (`heed.work`)
+**Model:** Open source (MIT, self-hostable). The hosted service (`heed.work`) is a separate private layer; see section 8.
 
 **Stack:** Cloudflare Workers · SQLite Durable Objects · WebSockets · React + TypeScript + D3 · MCP
 
@@ -409,15 +409,47 @@ Agents only report if the tool text tells them when to. The server `instructions
 
 ---
 
-## 8. Open Source vs. Hosted (`heed.work`)
+## 8. Open Core and Cloud
 
-| Capability | Open-source repo (MIT, self-hostable) | Hosted (`heed.work`) |
-| --- | --- | --- |
-| **Deployment** | "Deploy to Cloudflare" (`wrangler deploy`) | Instant workspace |
-| **Auth** | Google sign-in with your own OAuth client + `ALLOWED_EMAILS`; API tokens for agents | Google sign-in; API tokens for agents |
-| **Voice AI** | Bring your own Workers AI / OpenAI / Anthropic key | Included |
-| **Mobile** | Self-hosted PWA with Web Push (your own VAPID keys) | Hosted PWA with Web Push |
-| **Workspaces** | Single `default` workspace | Multiple workspaces, shared team views |
+This repository is the complete product for a self-hoster: one person or team, one workspace, their own Google OAuth client, their own model keys. The hosted service at `heed.work` is built in a separate private repository, `heed-cloud`, which consumes this repository as published npm packages and plugs in through the seams below. It never forks or patches this code, and nothing here may assume it exists.
+
+| Lives here (MIT) | Lives in `heed-cloud` (private) |
+| --- | --- |
+| Workspace engine, MCP endpoint, WebSocket, human API | Public sign-up and accounts |
+| Web app with all lenses, voice bar, push | Many workspaces, members, invites and roles |
+| Google sign-in for an allowed-emails list, single `default` workspace | Plans, usage metering and billing |
+| API tokens and MCP sign-in | Managed model keys |
+| Self-hosting docs and deploy button | Landing site, operator tooling, `heed.work` deployment |
+
+### Packages
+
+```text
+packages/
+  core/     @heedwork/core    Shared types, validation schemas, derived-state functions. No Cloudflare dependencies.
+  engine/   @heedwork/engine  The Worker: createApp(seams), the Workspace Durable Object class, the open seam implementations.
+  web/      @heedwork/web     The React app: mountApp(root, options) and a prebuilt dist/ for hosts that use it unchanged.
+```
+
+npm workspaces. All packages share one version and are published together from a `v<semver>` tag (see `docs/releasing.md`). The self-hostable Worker in this repository is a thin entry that calls `createApp` with the open implementations.
+
+### Extension seams
+
+A host replaces these and nothing else. Every method is async so a host may consult its own storage, but the open implementations must keep to section 9: no lookup on an ordinary request beyond the single Durable Object call.
+
+* **`AuthProvider`** — who is this, and which workspace are they in.
+  * `session(request)` resolves a browser request to `{ workspaceId, user: { id, email, name }, role }` or nothing.
+  * `handleAuthRoute(request)` owns everything under `/auth/*` (sign-in, callback, sign-out).
+  * `workspaceForToken(token)` returns the workspace ID an agent token belongs to, or nothing, **without** instantiating a Durable Object, so tokens for workspaces that do not exist are rejected in the Worker.
+  * Open build: `googleAllowlistAuth` — Google sign-in limited to `ALLOWED_EMAILS`, the single workspace `default`, role `owner`.
+* **`Limits`** — may this workspace do this. `check(workspaceId, action)` answers `{ ok: true }` or `{ ok: false, reason }` for `item.create`, `project.create`, `token.create`, `command`, `transcribe`, `push` and `connect` (opening a session or accepting an agent call at all, so a host can suspend a workspace). Refusals are explicit to both the UI and agents. Open build: `basicLimits` — the rate limits and fixed caps configured by vars.
+* **`UsageSink`** — `record(workspaceId, event)` receives usage events: command-bar calls with model and token counts, transcription seconds, pushes sent, agent writes. Called with `ctx.waitUntil`, never awaited on the request path. Open build: `noUsage`.
+* **`KeyProvider`** — `commandProvider(workspaceId)` returns the LLM and transcription configuration for the command bar, or nothing when it is unavailable, plus `managed` (the UI then hides bring-your-own-key hints). Open build: `envKeys` — Workers AI or Anthropic from vars and secrets.
+
+`createApp(seams, options)` returns `{ fetch }`. `@heedwork/engine` also exports the `Workspace` Durable Object class, which the host must bind and re-export from its own Worker entry.
+
+The human actor carries the `user` from the session, and events record it, so a shared workspace shows who made each change. Lock semantics do not depend on which human it was.
+
+`mountApp(root, options)` from `@heedwork/web` renders the app. Options let a host supply its own sign-in screen and sign-out action, add settings screens and header slots (workspace switcher, account menu), hide built-in screens, and reuse the same API helpers the built-in screens use.
 
 ---
 
@@ -453,4 +485,5 @@ For the hosted service the same workspace comes to roughly 20,000–30,000 reque
 1. **Phase 1 — Core engine.** Worker + workspace DO, schema and migrations, the shared operations, derived-state queries, lock rule, nesting cap, events log, heartbeat write throttling, guidance storage and delivery, API tokens with scopes, limits, `/mcp`, `/api/report`, WebSocket snapshot/broadcast. Tool descriptions and guidance behaviour tried against Claude Code and one other agent.
 2. **Phase 2 — Frontend.** Google sign-in and session cookie; Horizon Stream (Needs me, carried-over, drag to reorder and reschedule, history); lens framework with the radar lens (drag between rings and sectors, resize, ghost moons, backlog ring, progress arcs, roll-up rings, stable layout), then the board, treemap and dependencies lenses; inspector with timeline and field unlock; guidance editor; visibility toggles; responsive bottom sheet; PWA manifest.
 3. **Phase 3 — Voice, push and open-source launch.** `/api/command` voice/chat bar, Web Push for agent-flagged handoffs, MCP and hook setup docs for Claude Code / Cursor / Codex, public GitHub release.
-4. **Phase 4 — Hosted beta.** Workspace registry (D1), multi-workspace membership, Stripe billing, MCP OAuth.
+4. **Phase 4 — Open core.** Package split and published `@heedwork/*` packages, extension seams (`createApp`, `mountApp`), first-run onboarding, MCP sign-in (OAuth), data export and workspace reset.
+5. **Hosted service.** Built in `heed-cloud` on the published packages: accounts, workspaces and members, plans, billing, landing site.
