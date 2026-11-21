@@ -375,6 +375,48 @@ it("rejects report-only restrictions and ignores locked fields while applying th
   expect(unlocked.ignored_fields).toEqual([]);
 });
 
+it("applies acceptance locks on creates, edits and external-key retries", async () => {
+  const stub = newWorkspace();
+  const input = {
+    title: "Release",
+    external_key: "release",
+    acceptance: ["  Verify CI  "],
+  };
+  const { item_id, items } = await stub.addItem(reporter, input);
+  expect(items[0]).toMatchObject({
+    acceptance: '["Verify CI"]',
+    locked_fields: "[]",
+  });
+  expect((await stub.getCanvas()).items).toMatchObject([
+    { id: item_id, acceptance: ["Verify CI"] },
+  ]);
+  await stub.updateItem(steer, { item_id, acceptance: ["Verify the release"] });
+  expect(
+    await stub.updateItem(reporter, { item_id, acceptance: [] }),
+  ).toMatchObject({ items: [], ignored_fields: ["acceptance"] });
+  expect(await stub.addItem(reporter, input)).toMatchObject({
+    item_id,
+    items: [],
+    ignored_fields: ["acceptance"],
+  });
+  await stub.updateItem(human, { item_id, unlock: "acceptance" });
+  expect(
+    await stub.updateItem(reporter, { item_id, acceptance: [] }),
+  ).toMatchObject({
+    items: [{ acceptance: "[]", locked_fields: "[]" }],
+    ignored_fields: [],
+  });
+  expect((await stub.getCanvas()).items[0]).not.toHaveProperty("acceptance");
+
+  const {
+    items: [created],
+  } = await stub.addItem(human, {
+    title: "Review",
+    acceptance: ["Confirm rollout"],
+  });
+  expect(created.locked_fields).toBe('["acceptance"]');
+});
+
 it("moves subtrees atomically and detects depth overflow, cycles and unauthorized project moves", async () => {
   const stub = newWorkspace();
   const { id: dev } = await stub.createProject({ name: "Dev" });
@@ -473,11 +515,14 @@ it("reports progress, schedules active work in the workspace timezone and leaves
   });
   const {
     items: [active],
+    ignored_fields,
   } = await stub.reportProgress(reporter, {
     external_key: "release",
     status: "active",
     note: "Building",
+    evidence: "Build started",
   });
+  expect(ignored_fields).toEqual(["evidence"]);
   expect(active).toMatchObject({
     status: "active",
     agent_name: "Reviewer",
@@ -489,6 +534,7 @@ it("reports progress, schedules active work in the workspace timezone and leaves
       item_id,
       status: "done",
       agent_name: "CI",
+      evidence: "Tests: 42 passed\n",
     })
   ).items[0];
   expect(done).toMatchObject({
@@ -503,6 +549,7 @@ it("reports progress, schedules active work in the workspace timezone and leaves
         item_id,
         note: "Released",
         ref_url: "https://example.test/pr",
+        evidence: "No status supplied",
       })
     ).items[0],
   ).toMatchObject({
@@ -521,9 +568,21 @@ it("reports progress, schedules active work in the workspace timezone and leaves
     expect.objectContaining({ id: item_id, agent_name: null }),
   ]);
   expect(
-    (await stub.reportProgress(reporter, { item_id, status: "done" })).items,
-  ).toEqual([]);
+    await stub.reportProgress(reporter, {
+      item_id,
+      status: "done",
+      evidence: "Retry evidence",
+    }),
+  ).toMatchObject({ items: [], ignored_fields: ["evidence"] });
   const itemEvents = await events(stub, item_id);
+  expect(
+    itemEvents
+      .filter(({ kind }) => kind === "status")
+      .map(({ detail }) => JSON.parse(detail!)),
+  ).toEqual([
+    { old: "queued", new: "active" },
+    { old: "active", new: "done", evidence: "Tests: 42 passed\n" },
+  ]);
   expect(itemEvents.map(({ kind }) => kind)).toEqual([
     "created",
     "status",

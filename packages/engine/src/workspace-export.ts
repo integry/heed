@@ -21,7 +21,7 @@ const sections = [
   { name: "projects", columns: "id, name, color, sort, hidden" },
   {
     name: "items",
-    columns: `id, project_id, parent_id, external_key, title, tags, depth,
+    columns: `id, project_id, parent_id, external_key, title, tags, acceptance, depth,
       priority, scheduled_on, sort_key, layout_pos, locked_fields, time_type,
       time_at, status, handoff, handoff_note, reopen_count, reopen_reason,
       agent_name, created_by, ref_url, note, hidden, last_heartbeat_at,

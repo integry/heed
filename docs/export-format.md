@@ -15,11 +15,13 @@ Workspace owners can download `heed-workspace.json` from Settings → Data or wi
 
 Each item has an `id`, `project_id`, optional parent reference `parent_id`, and these fields:
 
-- Identity and content include `external_key`, `title`, `tags`, `agent_name`, `created_by`, `ref_url`, and `note`.
+- Identity and content include `external_key`, `title`, `tags`, `acceptance`, `agent_name`, `created_by`, `ref_url`, and `note`.
 - Placement and scheduling include `depth`, `priority`, `scheduled_on`, `sort_key`, `layout_pos`, `locked_fields`, `time_type`, `time_at`, and `hidden`.
 - Workflow includes `status`, `handoff`, `handoff_note`, `reopen_count`, `reopen_reason`, `last_heartbeat_at`, `completed_at`, `completed_band`, `created_at`, and `updated_at`.
 
-Arrays can be empty and their order has no semantic meaning. Flags such as `hidden` and `handoff` are integers (`0` or `1`). The `tags`, `layout_pos`, and `locked_fields` item fields are strings containing JSON. Event `detail` is a string or `null` and can contain JSON depending on the event kind. Timestamps can use ISO 8601 or SQLite's UTC `YYYY-MM-DD HH:MM:SS` representation.
+Arrays can be empty and their order has no semantic meaning. Flags such as `hidden` and `handoff` are integers (`0` or `1`). The `tags`, `acceptance`, `layout_pos`, and `locked_fields` item fields are strings containing JSON. Decode `acceptance` to get an array of up to eight criteria of up to 200 characters each. Items without criteria use `"[]"`. Earlier version 1 exports may omit the field.
+
+Event `detail` is a string or `null` and can contain JSON depending on the event kind. The decoded detail of a `status` event contains `old` and `new` statuses. When a report changes the status to `done` and supplies evidence, that detail also contains an `evidence` string of up to 4,000 characters. Timestamps can use ISO 8601 or SQLite's UTC `YYYY-MM-DD HH:MM:SS` representation.
 
 The export excludes API token records and hashes, OAuth grants, push subscriptions, quotas, and other internal state. Workspace content and event actors can contain sensitive information. Import is out of scope.
 

@@ -92,6 +92,7 @@ export const ItemSchema = z.object({
   external_key: nullableText,
   title: z.string(),
   tags: z.string(),
+  acceptance: z.string(),
   depth: z.int().min(1).max(3),
   priority: z.int().min(1).max(10),
   scheduled_on: z.iso.date().nullable(),

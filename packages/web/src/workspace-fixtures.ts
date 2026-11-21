@@ -23,6 +23,7 @@ export const goal: CanvasItem = {
   external_key: null,
   title: "Payment reliability",
   tags: "[]",
+  acceptance: "[]",
   depth: 1,
   priority: 5,
   scheduled_on: "2024-04-03",
