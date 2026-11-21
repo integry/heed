@@ -1,6 +1,6 @@
 # HEED (`heed.work`) — Product & Technical Specification
 
-**Version:** 1.7 (MVP Blueprint, revised after architecture review)
+**Version:** 1.8 (MVP Blueprint, revised after architecture review)
 
 **Model:** Open source (MIT, self-hostable). The hosted service (`heed.work`) is a separate private layer; see section 8.
 
@@ -74,6 +74,13 @@ Terminology: an **item** is anything shown in Heed (goal, task, sub-task, meetin
 * **Roll-up.** A parent bubble shows the ring of its most urgent descendant (handoff, then stale, then reopened, then blocked, then live), so problems are visible when zoomed out.
 * **Visibility toggles.** Each project chip in the header turns a project on or off. Individual top-level items can also be hidden from the inspector. Hidden things disappear from both lenses and are listed under a "Hidden" filter. Visibility is stored in the workspace, so it follows the user across devices.
 * **Semantic zoom.** Clicking a parent bubble zooms in to reveal its sub-items and `blocked_by` arrows.
+* **Time zoom (radar lens).** Clicking a ring's label, or zooming into a ring, splits that band; clicking a bubble still opens its children. Only one band is split at a time, and "Fit" returns to the whole radar.
+  * **This week** splits into one sub-ring per remaining day. Dropping a bubble on a day schedules it for that day.
+  * **Later** splits into weeks for the next four weeks, then months.
+  * **Today** does not split into hours, because only fixed-time and deadline items have a time and agents are not scheduled. It splits by attention instead, from the centre outwards: Needs me, Live now, Next (in the user's manual order), Done today. Fixed-time and deadline items due today are also marked on the rim at their hour, clock-style, so the day's hard points are visible.
+  * **Backlog** has no time and splits by project.
+  * The split is derived in the browser from the same fields as the bands (section 5); nothing new is stored.
+* **Read first.** Heed is mostly looked at, so every surface shows information before controls. The inspector opens as a read-only card: title, status, who is on it, latest note, link, acceptance criteria with their shadow verdicts, child progress and the timeline. Editing happens by direct manipulation (drag to schedule, reorder and move; resize for priority), by clicking a title or criterion to edit it in place, or through the command bar. Fields that still need a form (time type and time, tags, dependencies, project, unlocking) sit behind one "Edit details" disclosure that is closed by default. The four primary actions stay visible: mark done or reopen, flag or clear handoff, hide, delete. No dropdown is used where a small set of tabs or chips fits; the lens switcher is a row of tabs.
 * **Cross-highlighting.** Selecting a bubble highlights its row in the Horizon Stream, and vice versa.
 * **Progress arcs.** A parent bubble shows `done children / all non-cancelled children`. The count includes children that have left the ghost layer, so progress never goes backwards.
 * **Carried over.** Unfinished items scheduled for an earlier day stay in Today and show the day they came from ("from Thu").
@@ -375,7 +382,7 @@ The judge runs in **shadow mode** only:
 
 * A verdict never changes `status`, `handoff`, Needs me, the roll-up ring or any other derived state, and never sends a push.
 * Verdicts are never returned to agents: not in tool responses, `get_canvas` or `/api/report`. An agent must not be able to tune its report against the judge.
-* The human sees the verdict in the inspector, labelled as a shadow verdict, with each criterion shown as likely met (probability at or above 0.7), likely not met (at or below 0.3) or unclear. Two buttons record whether the human agrees; that writes a `judge_feedback` event.
+* The human sees the verdict in the inspector, next to the criteria it judged and labelled as a shadow verdict, with each criterion shown as likely met (probability at or above 0.7), likely not met (at or below 0.3) or unclear. Two buttons record whether the human agrees; that writes a `judge_feedback` event. A judged item also carries a small marker in the stream, shown only to signed-in humans.
 * Settings shows the agreement between verdicts and feedback over the retained events, so thresholds can be chosen from the workspace's own data before any verdict is allowed to act.
 
 A failed, refused or rate-limited judge call is dropped silently and recorded nowhere; judging is never retried and never blocks a report. The model ID is pinned by configuration, since a moved alias would invalidate any threshold derived from past verdicts.
@@ -523,4 +530,5 @@ For the hosted service the same workspace comes to roughly 20,000–30,000 reque
 3. **Phase 3 — Voice, push and open-source launch.** `/api/command` voice/chat bar, Web Push for agent-flagged handoffs, MCP and hook setup docs for Claude Code / Cursor / Codex, public GitHub release.
 4. **Phase 4 — Open core.** Package split and published `@heedwork/*` packages, extension seams (`createApp`, `mountApp`), first-run onboarding, MCP sign-in (OAuth), data export and workspace reset.
 5. **Phase 5 — Acceptance criteria and shadow judge.** Criteria on items, evidence on `done` reports, the optional `JudgeProvider` seam, shadow verdicts and human feedback in the inspector, agreement summary in settings.
-6. **Hosted service.** Built in `heed-cloud` on the published packages: accounts, workspaces and members, plans, billing, landing site.
+6. **Phase 6 — Read-first UI and time zoom.** Read-only inspector card with in-place edits and one "Edit details" disclosure, lens tabs, verdicts shown with their criteria, and the radar time zoom.
+7. **Hosted service.** Built in `heed-cloud` on the published packages: accounts, workspaces and members, plans, billing, landing site.
