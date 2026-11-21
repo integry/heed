@@ -25,8 +25,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
   const stub = newWorkspace();
   const settings = await stub.getSettings();
   expect(SettingsSchema.parse(settings)).toEqual({
-    schema_version: 8,
-    onboarding_dismissed: false,
+    schema_version: 9,
     timezone: "UTC",
     guidance: "",
     guidance_updated_at: null,
@@ -71,7 +70,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
 });
 
 it.each([
-  { layout: "current", version: 8, dropColumns: [], hasOAuth: true },
+  { layout: "current", version: 9, dropColumns: [], hasOAuth: true },
   { layout: "version 7", version: 7, dropColumns: [], hasOAuth: true },
   {
     layout: "version 5 with demo flags",
@@ -145,8 +144,7 @@ it.each([
     await evictDurableObject(stub);
 
     expect(await stub.getSettings()).toEqual({
-      schema_version: 8,
-      onboarding_dismissed: false,
+      schema_version: 9,
       timezone: "Europe/Tallinn",
       ...guidance,
     });
@@ -366,4 +364,52 @@ it("defaults to 50 canvas items and caps larger requests at 200 with open items 
     true,
   );
   expect(items[199].status).toBe("done");
+});
+
+it("retires legacy demo rows after eviction and retains real descendants and tokens", async () => {
+  const stub = newWorkspace();
+  const actor = { kind: "human" } as const;
+  const demo = await stub.createProject({ name: "Sample project" });
+  const root = await stub.addItem(actor, {
+    title: "Real goal",
+    project: demo.id,
+  });
+  const sample = await stub.addItem(actor, {
+    title: "Sample item",
+    parent_id: root.item_id,
+  });
+  const child = await stub.addItem(actor, {
+    title: "Real child",
+    parent_id: sample.item_id,
+  });
+  const token = await stub.createToken("Real token", "report", demo.id);
+  await runInDurableObject(stub, (_, { storage: { sql } }) => {
+    sql.exec("UPDATE settings SET value = '8' WHERE key = 'schema_version'");
+    sql.exec("UPDATE projects SET demo = 1 WHERE id = ?", demo.id);
+    sql.exec("UPDATE items SET demo = 1 WHERE id = ?", sample.item_id);
+  });
+  await evictDurableObject(stub);
+  expect(await stub.listProjects()).toMatchObject([
+    { id: INBOX_PROJECT_ID, demo: 0 },
+  ]);
+  expect(await stub.getItem({ item_id: root.item_id })).toMatchObject({
+    project_id: INBOX_PROJECT_ID,
+    depth: 1,
+    demo: 0,
+  });
+  expect(await stub.getItem({ item_id: child.item_id })).toMatchObject({
+    project_id: INBOX_PROJECT_ID,
+    parent_id: root.item_id,
+    depth: 2,
+    demo: 0,
+  });
+  const rows = await runInDurableObject(stub, (_, { storage: { sql } }) =>
+    sql
+      .exec("SELECT id FROM items WHERE demo <> 0 OR id = ?", sample.item_id)
+      .toArray(),
+  );
+  expect(rows).toEqual([]);
+  expect(await stub.listTokens()).toMatchObject([
+    { id: token.id, default_project_id: null },
+  ]);
 });

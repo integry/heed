@@ -16,11 +16,9 @@ import type {
 } from "@heedwork/core";
 import { Panel, ProjectOptions, useAction } from "./workspace-controls";
 import type { SaveMutation } from "./workspace-controls";
-import { DemoDataButton, type OnboardingScreen } from "./Onboarding";
 import { PushSettings } from "./PushSettings";
 import { ModelKeyHint } from "./CommandBar";
 import { useApi, useResource } from "./api";
-import { DemoBadge } from "./item-markers";
 import type {
   BuiltInScreenId,
   MountAppOptions,
@@ -65,7 +63,6 @@ function ProjectRow({
           aria-hidden="true"
         />
         <h4>{project.name}</h4>
-        {project.demo === 1 && <DemoBadge />}
         {inbox && <small className="muted">Default project</small>}
         {project.hidden === 1 && <small className="muted">Hidden</small>}
       </div>
@@ -881,9 +878,6 @@ export function Settings({
   save,
   resetVersion,
   close,
-  focus,
-  openGuide,
-  demoLoaded,
 }: SettingsActions & {
   judgeAgreementRevision: number;
   projects: readonly Project[];
@@ -895,31 +889,11 @@ export function Settings({
   resetVersion: number;
   onSignOut?: () => Promise<void>;
   close: () => void;
-  focus?: OnboardingScreen;
-  openGuide?: () => void;
-  demoLoaded: boolean;
 }) {
   const hidden = options?.hideScreens ?? [];
-  const show = (id: BuiltInScreenId) =>
-    (!focus || focus === id) && !hidden.includes(id);
+  const show = (id: BuiltInScreenId) => !hidden.includes(id);
   return (
     <Panel title="Settings" close={close} className="settings-panel">
-      {!focus && openGuide && (
-        <section className="settings-section" aria-labelledby="setup-heading">
-          <h3 id="setup-heading">Workspace setup</h3>
-          <div className="inline-actions">
-            <button type="button" className="subtle" onClick={openGuide}>
-              Open setup guide
-            </button>
-            <DemoDataButton
-              loaded={demoLoaded}
-              live={live}
-              save={save}
-              onLoad={close}
-            />
-          </div>
-        </section>
-      )}
       {show("notifications") && <PushSettings key={resetVersion} />}
       {show("shadow-judge") && (
         <ShadowJudgeAgreement revision={judgeAgreementRevision} />
@@ -956,14 +930,13 @@ export function Settings({
       {screenProps.role === "owner" && show("data") && (
         <WorkspaceData live={live} save={save} />
       )}
-      {!focus &&
-        options?.extraSettingsScreens?.map((screen) => (
-          <ExtraSettings
-            key={screen.id}
-            screen={screen}
-            screenProps={screenProps}
-          />
-        ))}
+      {options?.extraSettingsScreens?.map((screen) => (
+        <ExtraSettings
+          key={screen.id}
+          screen={screen}
+          screenProps={screenProps}
+        />
+      ))}
     </Panel>
   );
 }

@@ -63,27 +63,6 @@ async function readPushSubscription(
     : null;
 }
 
-export function usePushEnabled(active: boolean) {
-  const { requestJson } = useApi();
-  const [enabled, setEnabled] = useState(false);
-  useEffect(() => {
-    if (!active || !pushSupported()) return;
-    const controller = new AbortController();
-    void navigator.serviceWorker.ready
-      .then((worker) =>
-        readPushSubscription(worker, requestJson, controller.signal),
-      )
-      .then((subscription) => {
-        if (!controller.signal.aborted) setEnabled(Boolean(subscription));
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setEnabled(false);
-      });
-    return () => controller.abort();
-  }, [active, requestJson]);
-  return enabled;
-}
-
 export function PushSettings() {
   const { getJson, requestJson } = useApi();
   const supported = pushSupported();

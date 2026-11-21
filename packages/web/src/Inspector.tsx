@@ -1,9 +1,8 @@
-import { DemoBadge } from "./item-markers";
+import { latestVerdict, safeLink, verdictMatches } from "./SelectedItem";
 import { useResource, type Resource } from "./api";
 import { useEffect, useRef, useState } from "react";
 import {
   classifyJudgeProbability,
-  JudgedDetailSchema,
   JudgeFeedbackDetailSchema,
   LockableFieldSchema,
   UpdateItemSchema,
@@ -256,13 +255,8 @@ function AcceptanceCriteria({
   }>();
   const { run, busy, error } = useAction();
   const stored = JSON.parse(item.acceptance) as string[];
-  const verdict = events.find(({ kind }) => kind === "judged");
-  const detail = verdict
-    ? JudgedDetailSchema.safeParse(JSON.parse(verdict.detail ?? "null")).data
-    : undefined;
-  const matches =
-    detail?.criteria.length === stored.length &&
-    stored.every((criterion, index) => detail.criteria[index] === criterion);
+  const latest = latestVerdict(events);
+  const matches = latest && verdictMatches(latest.detail, stored);
   const unavailable = disabled || busy;
   const conflict = Boolean(
     draft && !busy && draft.original !== item.acceptance,
@@ -393,7 +387,9 @@ function AcceptanceCriteria({
                 </button>
               )}
               {matches && (
-                <VerdictScore probability={detail.probabilities[index]} />
+                <VerdictScore
+                  probability={latest.detail.probabilities[index]}
+                />
               )}
               {draft?.index !== index && (
                 <button
@@ -436,12 +432,12 @@ function AcceptanceCriteria({
         <p className="muted">{validation.error.issues[0].message}</p>
       )}
       {error && <p role="alert">{error}</p>}
-      {verdict && detail && (
+      {latest && (
         <ShadowVerdict
-          key={verdict.id}
-          event={verdict}
-          detail={detail}
-          matches={matches}
+          key={latest.event.id}
+          event={latest.event}
+          detail={latest.detail}
+          matches={Boolean(matches)}
           events={events}
           live={!disabled}
           save={save}
@@ -459,13 +455,6 @@ type DetailDraft = {
   timeAt: string;
   link: string;
 };
-
-function safeLink(value: string) {
-  const url = URL.parse(value);
-  return url && (url.protocol === "https:" || url.protocol === "http:")
-    ? url.href
-    : undefined;
-}
 
 export function Inspector({
   drawer,
@@ -673,7 +662,6 @@ export function Inspector({
         </button>
       </header>
       <div className="inspector-body">
-        {item.demo === 1 && <DemoBadge />}
         {title === undefined ? (
           <h3 className="inspector-title" aria-label={item.title}>
             <button

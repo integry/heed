@@ -4,33 +4,16 @@ import type { Settings } from "@heedwork/core";
 import { dateLabel, Panel, useAction } from "./workspace-controls";
 import type { SaveMutation } from "./workspace-controls";
 
-const examples = [
-  {
-    label: "Prioritize customer impact",
-    text: "Put customer-facing incidents in Today and give them priority 9. Keep routine cleanup in the backlog.",
-  },
-  {
-    label: "Make progress visible",
-    text: "Split goals into tasks that can be finished in one session. Report a short note when you complete a task or discover a blocker.",
-  },
-  {
-    label: "Ask for input",
-    text: "Flag a handoff when you need a decision, review, or access from me. Notify me only if the blocker prevents work due today.",
-  },
-];
-
 export function Guidance({
   settings,
   live,
   save,
   close,
-  showExamples = false,
 }: {
   settings: Settings;
   live: boolean;
   save: SaveMutation;
   close: () => void;
-  showExamples?: boolean;
 }) {
   const [edit, setEdit] = useState<string>();
   const [saved, setSaved] = useState(false);
@@ -44,33 +27,6 @@ export function Guidance({
         Agents and the command bar use this guidance to place and prioritize
         work, break it into tasks, and decide when to notify you.
       </p>
-      {showExamples && (
-        <details className="guidance-examples" open>
-          <summary>Guidance examples</summary>
-          <ul>
-            {examples.map(({ label, text }) => (
-              <li key={label}>
-                <strong>{label}</strong>
-                <p>{text}</p>
-                <button
-                  type="button"
-                  className="subtle"
-                  aria-label={`Use example: ${label}`}
-                  disabled={busy || draft.includes(text)}
-                  onClick={() => {
-                    setEdit(
-                      [draft.trimEnd(), text].filter(Boolean).join("\n\n"),
-                    );
-                    setSaved(false);
-                  }}
-                >
-                  Use example
-                </button>
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
       <form
         onSubmit={(event) => {
           event.preventDefault();

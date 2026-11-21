@@ -569,3 +569,52 @@ export function firstDayOfBand(
       return null;
   }
 }
+
+const countWords = [
+  "zero",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+];
+
+function sentenceCount(count: number) {
+  const word = countWords[count];
+  return word ? word[0].toUpperCase() + word.slice(1) : String(count);
+}
+
+export function daySentence({
+  attention,
+  agents,
+  remaining,
+  scheduled,
+}: {
+  attention: number;
+  agents: number;
+  remaining: number;
+  scheduled: boolean;
+}): { attention: string; outlook: string } {
+  const needs =
+    attention === 0
+      ? "Nothing needs you."
+      : `${sentenceCount(attention)} ${attention === 1 ? "thing needs" : "things need"} you.`;
+  if (!attention && !agents && !remaining && !scheduled)
+    return { attention: needs, outlook: "Nothing is scheduled." };
+
+  const working =
+    agents === 0
+      ? "No agents are working."
+      : `${sentenceCount(agents)} ${agents === 1 ? "agent is" : "agents are"} working.`;
+  const emptyToday =
+    scheduled || agents > 0 ? "Nothing left today." : "Nothing is scheduled.";
+  const today =
+    remaining === 0
+      ? emptyToday
+      : `${sentenceCount(remaining)} ${remaining === 1 ? "item" : "items"} left today.`;
+  return { attention: needs, outlook: `${working} ${today}` };
+}

@@ -3,6 +3,7 @@ import {
   agentsLive,
   band,
   carriedOverFrom,
+  daySentence,
   effectiveSchedule,
   firstDayOfBand,
   isBlocked,
@@ -654,4 +655,29 @@ it("groups radar bands and keeps ghosts in their recorded completion ring", () =
       ["older-format", "later"],
     ]),
   );
+});
+
+it.each([
+  [
+    { attention: 0, agents: 0, remaining: 0, scheduled: false },
+    "Nothing needs you.",
+    "Nothing is scheduled.",
+  ],
+  [
+    { attention: 1, agents: 1, remaining: 1, scheduled: true },
+    "One thing needs you.",
+    "One agent is working. One item left today.",
+  ],
+  [
+    { attention: 2, agents: 3, remaining: 4, scheduled: true },
+    "Two things need you.",
+    "Three agents are working. Four items left today.",
+  ],
+  [
+    { attention: 0, agents: 0, remaining: 0, scheduled: true },
+    "Nothing needs you.",
+    "No agents are working. Nothing left today.",
+  ],
+])("describes the day for %j", (counts, attention, outlook) => {
+  expect(daySentence(counts)).toEqual({ attention, outlook });
 });

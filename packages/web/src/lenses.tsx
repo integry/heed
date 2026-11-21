@@ -2,8 +2,6 @@ import type { ComponentType } from "react";
 import type { StreamRow } from "@heedwork/core";
 import type { CanvasItem } from "@heedwork/core";
 import type { Dependency, Project } from "@heedwork/core";
-import { GuideEmpty } from "./Onboarding";
-import { DemoBadge } from "./item-markers";
 import { itemStatus } from "./workspace-view";
 import { DependenciesLens } from "./DependenciesLens";
 import { BoardLens } from "./BoardLens";
@@ -13,7 +11,6 @@ import { TreemapLens } from "./TreemapLens";
 import type { RadarPlacement } from "./radar-geometry";
 
 export interface LensProps {
-  openGuide?: () => void;
   tree: readonly StreamRow<CanvasItem>[];
   projects: readonly Project[];
   items: ReadonlyMap<string, CanvasItem>;
@@ -65,7 +62,6 @@ function ListRows({
               onClick={() => select(item.id)}
             >
               <span className="item-title">{item.title}</span>
-              {item.demo === 1 && <DemoBadge />}
               <span className="item-status" data-status={status}>
                 {status}
               </span>
@@ -86,26 +82,14 @@ function ListLens({
   selectedId,
   now,
   select,
-  openGuide,
 }: LensProps) {
-  if (!tree.length)
-    return (
-      <GuideEmpty openGuide={openGuide}>No items in this view.</GuideEmpty>
-    );
-  return projects.map(({ id, name, demo }) => {
+  if (!tree.length) return <p className="empty">No items in this view.</p>;
+  return projects.map(({ id, name }) => {
     const rows = tree.filter(({ item }) => item.project_id === id);
     if (!rows.length) return null;
     return (
       <section className="project-group" key={id}>
-        <h3>
-          {name}
-          {demo === 1 && (
-            <>
-              {" "}
-              <DemoBadge />
-            </>
-          )}
-        </h3>
+        <h3>{name}</h3>
         <ListRows
           tree={rows}
           items={items}
@@ -127,27 +111,9 @@ export const lensRegistry: readonly [Lens, ...Lens[]] = [
   { id: "dependencies", label: "Dependencies", component: DependenciesLens },
 ];
 
-const storageKey = "heed.lens";
-
 export function resolveLens(
   registry: readonly [Lens, ...Lens[]],
   id: string | null,
 ) {
   return registry.find((lens) => lens.id === id) ?? registry[0];
-}
-
-export function readLensId() {
-  try {
-    return localStorage.getItem(storageKey);
-  } catch {
-    return null;
-  }
-}
-
-export function rememberLens(id: string) {
-  try {
-    localStorage.setItem(storageKey, id);
-  } catch {
-    // The current tab can still switch lenses with storage disabled.
-  }
 }

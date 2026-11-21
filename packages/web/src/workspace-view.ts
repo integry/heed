@@ -1,10 +1,12 @@
 import {
   agentsLive,
+  daySentence,
   isBlocked,
   isGhost,
   isLive,
   isStale,
   needsMe,
+  type Band,
   type Ring,
   STREAM_BANDS,
   streamOrder,
@@ -38,11 +40,10 @@ export function itemRing(
   return null;
 }
 
-export function selectWorkspace(
-  data: WorkspaceData,
-  now: number,
-  attentionOnly: boolean,
-) {
+export type AttentionGroup = "needs" | "working" | "today" | "done" | "week";
+export type AttentionGroups = Record<AttentionGroup, StreamRow<CanvasItem>[]>;
+
+export function selectWorkspace(data: WorkspaceData, now: number) {
   const timezone = data.settings?.timezone ?? "UTC";
   const projects = [...data.projects.values()].sort(
     (a, b) => a.sort - b.sort || a.name.localeCompare(b.name),
@@ -62,31 +63,8 @@ export function selectWorkspace(
       item.status !== "cancelled" &&
       (item.status !== "done" || isGhost(item, now)),
   );
-  const attentionIds = new Set(
-    canvas.filter((item) => needsMe(item, now)).map((item) => item.id),
-  );
-  const allBands = streamRows(visible, now, timezone);
-  function collectAttention(rows: StreamRow<CanvasItem>[]) {
-    for (const { item, children } of rows) {
-      if (needsMe(item, now)) attentionIds.add(item.id);
-      collectAttention(children);
-    }
-  }
-  for (const band of STREAM_BANDS) collectAttention(allBands[band]);
-
-  const attentionContext = new Set(attentionIds);
-  for (const id of attentionIds) {
-    let parent = data.items.get(id)?.parent_id;
-    while (parent && !attentionContext.has(parent)) {
-      attentionContext.add(parent);
-      parent = data.items.get(parent)?.parent_id;
-    }
-  }
-  const filtered = new Map(
-    canvas
-      .filter((item) => !attentionOnly || attentionContext.has(item.id))
-      .map((item) => [item.id, item]),
-  );
+  const filtered = new Map(canvas.map((item) => [item.id, item]));
+  const bands = streamRows(visible, now, timezone);
 
   const treeById = new Map<string, StreamRow<CanvasItem>>();
   for (const item of streamOrder([...filtered.values()])) {
@@ -101,26 +79,69 @@ export function selectWorkspace(
     else tree.push(row);
   }
 
-  function filterRows(rows: StreamRow<CanvasItem>[]): StreamRow<CanvasItem>[] {
-    return rows
-      .filter(({ item }) => attentionContext.has(item.id))
-      .map(({ item, children }) => ({ item, children: filterRows(children) }));
+  const groups: AttentionGroups = {
+    needs: [],
+    working: [],
+    today: [],
+    done: [],
+    week: [],
+  };
+  function groupFor(
+    band: Band,
+    needs: boolean,
+    working: boolean,
+  ): AttentionGroup | undefined {
+    if (needs) return "needs";
+    if (working) return "working";
+    if (band === "today") return "today";
+    if (band === "done-today") return "done";
+    if (band === "tomorrow" || band === "this-week") return "week";
   }
 
-  const bands = { ...allBands };
-  if (attentionOnly) {
-    for (const band of STREAM_BANDS) bands[band] = filterRows(allBands[band]);
+  let remaining = 0;
+  let attention = 0;
+  function addRows(
+    rows: StreamRow<CanvasItem>[],
+    band: Band,
+    parent?: { group: AttentionGroup; row: StreamRow<CanvasItem> },
+  ) {
+    for (const { item, children } of rows) {
+      const needs = band !== "done-today" && needsMe(item, now);
+      const working = !needs && isLive(item, now);
+      if (needs) attention++;
+      if (band === "today" && !working) remaining++;
+      const group = groupFor(band, needs, working);
+      if (group) {
+        const row: StreamRow<CanvasItem> = { item, children: [] };
+        (group === parent?.group ? parent.row.children : groups[group]).push(
+          row,
+        );
+        addRows(children, band, { group, row });
+      } else {
+        addRows(children, band);
+      }
+    }
   }
+  for (const band of STREAM_BANDS) addRows(bands[band], band);
+  const liveCount = agentsLive([...data.items.values()], now).length;
+  const sentence = daySentence({
+    attention,
+    agents: liveCount,
+    remaining,
+    scheduled: Boolean(
+      bands.tomorrow.length || bands["this-week"].length || bands.later.length,
+    ),
+  });
 
   return {
     projects,
     filtered,
     tree,
-    bands,
-    allBands,
+    groups,
+    sentence,
     timezone,
-    liveCount: agentsLive([...data.items.values()], now).length,
-    attentionCount: attentionIds.size,
+    liveCount,
+    visibleIds: new Set(visible.map(({ id }) => id)),
   };
 }
 

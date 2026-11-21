@@ -1,4 +1,3 @@
-import { GuideEmpty } from "./Onboarding";
 import {
   useCallback,
   useId,
@@ -20,7 +19,7 @@ import {
 import type { CanvasItem } from "@heedwork/core";
 import type { Project, RadarBand } from "@heedwork/core";
 import type { LensProps } from "./lenses";
-import { RadarBubble, bubbleDetails, type Bubble } from "./RadarBubble";
+import { RadarBubble, type Bubble } from "./RadarBubble";
 import { itemRing } from "./workspace-view";
 import {
   bubbleRadius,
@@ -60,14 +59,6 @@ import { useCanvasDrag } from "./use-canvas-drag";
 import { useCanvasZoom } from "./use-canvas-zoom";
 import "./radar.css";
 
-const colors = [
-  "#4c8274",
-  "#6f75b6",
-  "#a56546",
-  "#8b6b9f",
-  "#6d8547",
-  "#9b6676",
-];
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 const translate = ({ x, y }: Point) => `translate(${x},${y})`;
 
@@ -202,7 +193,7 @@ function RadarField({
                 className="radar-sector-line"
               />
             )}
-            {showLabels && (
+            {showLabels && sectors > 1 && (
               <>
                 <path
                   id={id}
@@ -293,7 +284,6 @@ export function RadarLens({
   moveRadar,
   reschedule,
   setPriority,
-  openGuide,
 }: LensProps) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const clearPreview = useCallback(() => setPreview(null), []);
@@ -531,8 +521,6 @@ export function RadarLens({
         scale,
         ring,
         rollup,
-        color:
-          projects[cell.sector].color ?? colors[cell.sector % colors.length],
         opensGoal: Boolean(rows.get(item.id)?.children.length),
       };
       if (group?.orderedRadius !== undefined) {
@@ -831,9 +819,6 @@ export function RadarLens({
       highlight = cell;
   }
 
-  const selected = selectedId ? bubbleById.get(selectedId) : undefined;
-  const activeTooltip =
-    tooltip ?? (selected && bubbleDetails(selected, now, timeFormatter).detail);
   const font = RADAR_LABEL_FONT / labelScale;
 
   function toggleBand(band: RadarBand) {
@@ -940,9 +925,6 @@ export function RadarLens({
           </button>
         </div>
       </div>
-      {!entries.length && (
-        <GuideEmpty openGuide={openGuide}>No items in this view.</GuideEmpty>
-      )}
       <div ref={chart} className="radar-chart" data-dragging={Boolean(preview)}>
         <svg
           ref={svg}
@@ -951,7 +933,7 @@ export function RadarLens({
           aria-label={
             goal
               ? `Items in ${goal.item.title}`
-              : "Items by time ring and project"
+              : "Attention field. Items by time ring and project."
           }
           {...drag.handlers}
           onPointerMove={(event) => {
@@ -1134,8 +1116,8 @@ export function RadarLens({
             ? `${RADAR_LABELS[split]} split${subrings.length ? `: ${subrings.map(({ label }) => label).join(", ")}` : ""}.`
             : "Whole radar."}
         </div>
-        {!dropMessage && activeTooltip && !preview && (
-          <p className="radar-tooltip">{activeTooltip}</p>
+        {!dropMessage && tooltip && !preview && (
+          <p className="radar-tooltip">{tooltip}</p>
         )}
       </div>
     </div>

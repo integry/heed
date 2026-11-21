@@ -1,52 +1,31 @@
-import {
-  useEffect,
-  useMemo,
-  useState,
-  useSyncExternalStore,
-  type CSSProperties,
-} from "react";
-import type { CommandCapabilities } from "@heedwork/core";
-import {
-  CommandBar,
-  Microphone,
-  ModelKeyHint,
-  useCommandBar,
-} from "./CommandBar";
-import { DemoBadge, ShadowVerdictMarker } from "./item-markers";
-import { Panel } from "./workspace-controls";
-import type { StreamRow } from "@heedwork/core";
-import type { CanvasItem } from "@heedwork/core";
-import type { Dependency, Item } from "@heedwork/core";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import type { CommandCapabilities, Dependency, Item } from "@heedwork/core";
+import { CommandBar, useCommandBar } from "./CommandBar";
+import { AttentionStream } from "./AttentionStream";
+import { SelectedItem } from "./SelectedItem";
 import { isDescendant } from "./dependency-graph";
-import {
-  GuideEmpty,
-  OnboardingGuide,
-  onboardingCompletion,
-  type OnboardingScreen,
-} from "./Onboarding";
-import { usePushEnabled } from "./PushSettings";
 import { Guidance } from "./Guidance";
 import { Inspector } from "./Inspector";
 import { QuickAdd } from "./QuickAdd";
 import { Settings } from "./Settings";
-import {
-  lensRegistry,
-  readLensId,
-  rememberLens,
-  resolveLens,
-  type Lens,
-} from "./lenses";
-import { useMobileSheet } from "./mobile-sheet";
-import { StreamPeek } from "./StreamPeek";
-import { HorizonStream, type LensSelection } from "./horizon-stream";
+import { lensRegistry, resolveLens, type Lens } from "./lenses";
 import { isRadarRowVisible } from "./RadarLens";
 import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
-import { useAction } from "./workspace-controls";
+import { Panel, useAction } from "./workspace-controls";
 import { ApiContext, createApi, useApi, useResource } from "./api";
 import type { AppUser, MountAppOptions } from "./web-options";
 import { workspaceView, type MutationInput } from "./workspace-state";
 import { selectWorkspace } from "./workspace-view";
+
+type PanelKind =
+  | "guidance"
+  | "settings"
+  | "goal"
+  | "child"
+  | "history"
+  | "hidden"
+  | "inspector";
 
 type Session =
   | { status: "loading" }
@@ -62,24 +41,7 @@ type Session =
     };
 
 function Wordmark() {
-  return (
-    <span className="wordmark">
-      <span className="brand-mark" aria-hidden="true" />
-      Heed
-    </span>
-  );
-}
-
-const desktopQuery = "(min-width: 768px)";
-
-function subscribeDesktop(listener: () => void) {
-  const media = window.matchMedia?.(desktopQuery);
-  media?.addEventListener("change", listener);
-  return () => media?.removeEventListener("change", listener);
-}
-
-function isDesktop() {
-  return window.matchMedia?.(desktopQuery).matches ?? true;
+  return <span className="wordmark">heed</span>;
 }
 
 function useMinuteClock() {
@@ -101,49 +63,6 @@ function useMinuteClock() {
     };
   }, []);
   return now;
-}
-
-function StreamItems({
-  rows,
-  selectedId,
-  select,
-  eventRevision,
-}: {
-  rows: StreamRow<CanvasItem>[];
-  selectedId: string | null;
-  select: (id: string) => void;
-  eventRevision: (id: string) => string;
-}) {
-  return (
-    <ul className="item-list">
-      {rows.map(({ item, children }) => (
-        <li key={item.id}>
-          <button
-            type="button"
-            className="item-row stream-row"
-            aria-pressed={selectedId === item.id}
-            onClick={() => select(item.id)}
-          >
-            <span className="stream-marker" aria-hidden="true" />
-            <span className="item-title">{item.title}</span>
-            {item.demo === 1 && <DemoBadge />}
-            <ShadowVerdictMarker
-              item={item}
-              revision={eventRevision(item.id)}
-            />
-          </button>
-          {children.length > 0 && (
-            <StreamItems
-              rows={children}
-              selectedId={selectedId}
-              select={select}
-              eventRevision={eventRevision}
-            />
-          )}
-        </li>
-      ))}
-    </ul>
-  );
 }
 
 const connectionLabels = {
@@ -194,14 +113,13 @@ function Workspace({
   const HeaderEnd = options?.headerEnd;
   const showModelKeyHint = managed === false && !capabilities.command;
   const signOut = options?.onSignOut;
-  const [lensId, setLensId] = useState(readLensId);
+  const [lensId, setLensId] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] = useState<{
     id: string;
-    inspectorOpen: boolean;
     fromNotification?: boolean;
   } | null>(() => {
     const id = new URLSearchParams(window.location.search).get("item");
-    return id ? { id, inspectorOpen: true, fromNotification: true } : null;
+    return id ? { id, fromNotification: true } : null;
   });
   const selectedId = selectedItem?.id ?? null;
   const [connection] = useState(() => createWorkspaceConnection(selectedId));
@@ -215,59 +133,37 @@ function Workspace({
     version: number;
   }>();
   const [goalId, focusGoal] = useState<string | null>(null);
+  const [radarSelection, setRadarSelection] = useState<string | null>(null);
   // Dependency saves can outlive the graph that submitted them.
   const [dependencyEditGoal, setDependencyEditGoal] = useState<string | null>(
     null,
   );
   const dependencyEdit = useAction();
   const [showGhosts, setShowGhosts] = useState(true);
-  const [lensSelection, setLensSelection] = useState<LensSelection | null>(
+  const [activePanel, setActivePanel] = useState<{ kind: PanelKind } | null>(
     null,
   );
-  const [history, setHistory] = useState(false);
-  const [attentionOnly, setAttentionOnly] = useState(false);
-  const [hiddenOnly, setHiddenOnly] = useState(false);
-  const [panel, setPanel] = useState<{
-    kind: "guidance" | "settings" | "goal" | "child" | "command" | "onboarding";
-    fromGuide?: boolean;
-    screen?: OnboardingScreen;
-  } | null>(null);
+  const panel = activePanel?.kind;
+  function openPanel(kind: PanelKind) {
+    setActivePanel({ kind });
+  }
   const clock = useMinuteClock();
-  const desktop = useSyncExternalStore(subscribeDesktop, isDesktop);
   const command = useCommandBar(
     connection.save,
     capabilities.transcription,
-    capabilities.command && (desktop || panel?.kind === "command"),
+    capabilities.command,
   );
-  const sheet = useMobileSheet(desktop, (next) => {
-    if (next !== "full") {
-      setHistory(false);
-      setHiddenOnly(false);
-    }
-  });
-  const peek = !desktop && sheet.stop === "peek";
   const view = useMemo(() => workspaceView(state), [state]);
   const derived = useMemo(() => {
     // A broadcast can carry a heartbeat newer than the last clock tick.
     const now = Math.max(clock, Date.now());
-    return { ...selectWorkspace(view, now, attentionOnly), now };
-  }, [view, clock, attentionOnly]);
+    return { ...selectWorkspace(view, now), now };
+  }, [view, clock]);
   const { projects, tree, filtered, liveCount, timezone, now } = derived;
   const focusedGoal = goalId && filtered.has(goalId) ? goalId : null;
   const lens = resolveLens(registry, lensId);
   const LensComponent = lens.component;
-  const availableLenses = registry.filter(
-    ({ id }) => id !== "dependencies" || focusedGoal || lens.id === id,
-  );
-  const canvasLens = lens.id === "radar" || lens.id === "treemap";
   const live = state.connection === "live";
-  const autoGuide =
-    state.onboarding?.hasItems === false &&
-    !state.settings?.onboarding_dismissed;
-  const guideVisible = panel?.kind === "onboarding" || (autoGuide && !panel);
-  const notificationsEnabled = usePushEnabled(
-    guideVisible && options?.hideScreens?.includes("notifications") !== true,
-  );
   const dependencyError = dependencyEditGoal ? dependencyEdit.error : "";
   const showDependencyErrorInline =
     lens.id === "dependencies" && focusedGoal === dependencyEditGoal;
@@ -305,58 +201,20 @@ function Workspace({
       : undefined;
   const inspected = selectedItem?.fromNotification
     ? (selected ?? fallback)
-    : selected &&
-        (hiddenOnly || view.projects.get(selected.project_id)?.hidden === 0)
+    : selected && (panel === "inspector" || derived.visibleIds.has(selected.id))
       ? selected
       : undefined;
-  // Desktop opens the inspector for a selection made on the mobile canvas.
-  // Carry that open state back to mobile if the viewport narrows again.
-  if (desktop && inspected && selectedItem && !selectedItem.inspectorOpen) {
-    setSelectedItem({ ...selectedItem, inspectorOpen: true });
-  }
+  useEffect(() => {
+    if (panel === "inspector" && !inspected) setActivePanel(null);
+  }, [panel, inspected]);
   const dependencies = useMemo(
     () => [...view.dependencies.values()],
     [view.dependencies],
   );
   const inspectedGoal = inspected ? dependencyGoal(inspected.id) : null;
-  const hiddenRows = hiddenOnly
-    ? [...view.items.values()]
-        .filter((item) => item.parent_id === null && item.hidden === 1)
-        .sort((a, b) => a.title.localeCompare(b.title))
-        .map((item) => ({ item, children: [] }))
-    : [];
-  // A save can finish after the same kind of panel has been reopened.
+  // A save can finish after its panel has been replaced by another.
   const closePanel = () =>
-    setPanel((current) =>
-      current === panel
-        ? panel?.fromGuide
-          ? { kind: "onboarding" }
-          : null
-        : current,
-    );
-  const openGuide = state.onboarding
-    ? () => setPanel({ kind: "onboarding" })
-    : undefined;
-  const guide = state.onboarding && state.settings && (
-    <OnboardingGuide
-      completion={onboardingCompletion(
-        state.onboarding,
-        state.settings.guidance,
-        notificationsEnabled,
-      )}
-      loaded={state.onboarding.hasDemoData}
-      live={live}
-      save={connection.save}
-      hidden={options?.hideScreens}
-      openGoal={() => setPanel({ kind: "goal", fromGuide: true })}
-      openSettings={(screen) =>
-        setPanel({ kind: "settings", screen, fromGuide: true })
-      }
-      openGuidance={() => setPanel({ kind: "guidance", fromGuide: true })}
-      onDismiss={!state.settings.onboarding_dismissed ? closePanel : undefined}
-      onDemoLoad={closePanel}
-    />
-  );
+    setActivePanel((current) => (current === activePanel ? null : current));
   const openHistoryIds = useMemo(
     () =>
       new Set(
@@ -378,25 +236,38 @@ function Workspace({
     [state.pending],
   );
 
-  const hiddenToggle = (
-    <button
-      type="button"
-      className="project-chip"
-      aria-pressed={hiddenOnly}
-      onClick={() => {
-        setAttentionOnly(false);
-        setHiddenOnly((value) => !value);
-        if (!desktop) sheet.changeStop("full");
-      }}
-    >
-      Hidden
-    </button>
-  );
-
   useEffect(
     () => connection.start(onSessionExpired),
     [connection, onSessionExpired],
   );
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        panel ||
+        event.defaultPrevented ||
+        event.repeat ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        event.isComposing ||
+        (event.target instanceof Element &&
+          event.target.closest(
+            "input, textarea, select, [contenteditable]:not([contenteditable='false'])",
+          ))
+      )
+        return;
+      if (!/^[1-4]$/.test(event.key)) return;
+      const next = registry[Number(event.key) - 1];
+      if (next) {
+        event.preventDefault();
+        setLensId(next.id);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [panel, registry]);
 
   function updateItem(
     item_id: string,
@@ -406,14 +277,6 @@ function Workspace({
     >,
   ) {
     connection.mutate({ type: "UPDATE_ITEM", input: { item_id, ...patch } });
-  }
-
-  function switchLens(id: string) {
-    setLensId(id);
-    rememberLens(id);
-    if (id === "dependencies" && !desktop && sheet.stop === "full") {
-      sheet.changeStop("peek");
-    }
   }
 
   function changeDependency(edge: Dependency, action: "add" | "remove") {
@@ -438,12 +301,9 @@ function Workspace({
     return root && filtered.has(root.id) ? root.id : null;
   }
 
-  function inspectItem(id: string) {
-    setSelectedItem({ id, inspectorOpen: true });
-  }
-
   function selectStreamItem(id: string) {
-    inspectItem(id);
+    setSelectedItem({ id });
+    setRadarSelection(null);
     if (lens.id === "dependencies") {
       if (!focusedGoal) focusGoal(dependencyGoal(id));
       return;
@@ -477,528 +337,294 @@ function Workspace({
     });
   }
 
-  const projectToggles = (
-    <div className="project-toggles" role="group" aria-label="Visible projects">
-      {projects.map((project) => (
-        <button
-          type="button"
-          key={project.id}
-          className="project-chip"
-          aria-pressed={!project.hidden}
-          disabled={!live}
-          onClick={() => {
-            const latest = workspaceView(connection.getSnapshot()).projects.get(
-              project.id,
-            );
-            if (latest)
-              connection.mutate({
-                type: "UPDATE_PROJECT",
-                project_id: project.id,
-                input: { hidden: latest.hidden ? 0 : 1 },
-              });
-          }}
-        >
-          <span
-            className="project-dot"
-            style={{ backgroundColor: project.color ?? undefined }}
-            aria-hidden="true"
-          />
-          {project.name}
-          {project.demo === 1 && <DemoBadge />}
-        </button>
-      ))}
-    </div>
-  );
-  const settingsActions = (
-    <>
-      <button
-        type="button"
-        className="subtle"
-        disabled={!state.settings}
-        onClick={() => setPanel({ kind: "guidance" })}
-      >
-        Guidance
-      </button>
-      <button
-        type="button"
-        className="subtle"
-        onClick={() => setPanel({ kind: "settings" })}
-      >
-        Settings
-      </button>
-    </>
-  );
-  const ghostsToggle = (lens.id === "radar" ||
-    lens.id === "board" ||
-    lens.id === "treemap") &&
-    state.settings && (
-      <label>
-        <input
-          type="checkbox"
-          checked={showGhosts}
-          onChange={(event) => setShowGhosts(event.target.checked)}
-        />
-        Show completed ghosts
-      </label>
-    );
-
   function eventRevision(id: string) {
     return `${state.snapshotRevision}:${state.eventRevisions.get(id) ?? 0}`;
   }
 
-  const inspector = inspected && selectedItem?.inspectorOpen && (
-    <Inspector
-      key={inspected.id}
-      activityRevision={eventRevision(inspected.id)}
-      drawer={!desktop}
-      item={inspected}
-      projects={projects}
-      items={state.items}
-      dependencies={dependencies}
-      timezone={timezone}
-      live={live}
-      save={connection.save}
-      close={() => {
-        // A delete can finish after this inspection has been dismissed.
-        setSelectedItem((current) =>
-          current !== selectedItem
-            ? current
-            : !desktop && canvasLens
-              ? { id: inspected.id, inspectorOpen: false }
-              : null,
-        );
-      }}
-      addChild={() => setPanel({ kind: "child" })}
-      openDependencies={
-        dependenciesLens &&
-        inspectedGoal &&
-        (lens.id !== dependenciesLens.id || focusedGoal !== inspectedGoal)
-          ? () => {
-              if (!desktop) {
-                setSelectedItem({ id: inspected.id, inspectorOpen: false });
-              }
-              focusGoal(inspectedGoal);
-              switchLens(dependenciesLens.id);
-            }
-          : undefined
-      }
-      selectChild={lens.id === "board" ? selectStreamItem : undefined}
-    />
-  );
+  const hiddenItems =
+    panel === "hidden"
+      ? [...view.items.values()]
+          .filter((item) => item.hidden === 1 && item.parent_id === null)
+          .sort((a, b) => a.title.localeCompare(b.title))
+      : [];
+  const date = new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: timezone,
+  }).format(now);
+  const openGraph =
+    dependenciesLens &&
+    inspectedGoal &&
+    (lens.id !== "dependencies" || focusedGoal !== inspectedGoal)
+      ? () => {
+          closePanel();
+          focusGoal(inspectedGoal);
+          setLensId(dependenciesLens.id);
+        }
+      : undefined;
 
   return (
-    <div className="workspace" data-layout={desktop ? "desktop" : "mobile"}>
-      <header className="workspace-header">
-        {HeaderStart && <HeaderStart {...slotProps} />}
-        <Wordmark />
-        {desktop ? (
-          projectToggles
-        ) : (
-          <details className="header-menu project-menu" name="workspace-menu">
-            <summary className="subtle">Projects</summary>
-            {projectToggles}
-          </details>
-        )}
-        <div className="header-tools">
-          {state.settings && (
-            <span className="live-indicator">
-              <span data-live={live && liveCount > 0} aria-hidden="true" />
-              {liveCount} {desktop && (liveCount === 1 ? "agent " : "agents ")}
-              live
-            </span>
-          )}
-          {desktop ? (
-            settingsActions
-          ) : (
-            <details
-              className="header-menu workspace-menu"
-              name="workspace-menu"
-            >
-              <summary className="subtle" aria-label="Workspace menu">
-                ⋯
-              </summary>
-              <div className="workspace-menu-actions">
-                {ghostsToggle}
-                {settingsActions}
-              </div>
-            </details>
-          )}
-          {HeaderEnd && <HeaderEnd {...slotProps} />}
-        </div>
-        <div
-          className="lens-tabs"
-          role="tablist"
-          aria-label="Lens"
-          onKeyDown={(event) => {
-            const tabs = Array.from(
-              event.currentTarget.querySelectorAll<HTMLButtonElement>(
-                '[role="tab"]',
-              ),
-            );
-            const index = tabs.indexOf(event.target as HTMLButtonElement);
-            let next: number;
-            switch (event.key) {
-              case "ArrowLeft":
-                next = (index - 1 + tabs.length) % tabs.length;
-                break;
-              case "ArrowRight":
-                next = (index + 1) % tabs.length;
-                break;
-              case "Home":
-                next = 0;
-                break;
-              case "End":
-                next = tabs.length - 1;
-                break;
-              default:
-                return;
-            }
-            event.preventDefault();
-            tabs[next].focus();
-            switchLens(availableLenses[next].id);
-          }}
-        >
-          {availableLenses.map(({ id, label }) => (
+    <div className="attention-app">
+      <header className="attention-header">
+        <details className="wordmark-menu">
+          <summary aria-label="Heed workspace menu">
+            <Wordmark />
+          </summary>
+          <div
+            className="wordmark-actions"
+            onClick={(event) => {
+              if (
+                event.target instanceof Element &&
+                event.target.closest("button, a")
+              )
+                event.currentTarget.closest("details")?.removeAttribute("open");
+            }}
+          >
+            {HeaderStart && <HeaderStart {...slotProps} />}
             <button
-              key={id}
-              id={`lens-tab-${id}`}
+              className="text-control"
               type="button"
-              role="tab"
-              aria-selected={lens.id === id}
-              aria-controls={lens.id === id ? "active-lens" : undefined}
-              tabIndex={lens.id === id ? 0 : -1}
-              onClick={() => switchLens(id)}
+              onClick={() => openPanel("goal")}
+              disabled={!live}
             >
-              {label}
+              Add item
             </button>
-          ))}
+            <button
+              className="text-control"
+              type="button"
+              onClick={() => openPanel("history")}
+            >
+              History
+            </button>
+            <button
+              className="text-control"
+              type="button"
+              onClick={() => openPanel("hidden")}
+            >
+              Hidden items
+            </button>
+            <button
+              className="text-control"
+              type="button"
+              onClick={() => setShowGhosts(!showGhosts)}
+            >
+              {showGhosts ? "Hide completed ghosts" : "Show completed ghosts"}
+            </button>
+            <button
+              className="text-control"
+              type="button"
+              onClick={() => openPanel("guidance")}
+              disabled={!state.settings}
+            >
+              Guidance
+            </button>
+            <button
+              className="text-control"
+              type="button"
+              onClick={() => openPanel("settings")}
+            >
+              Settings
+            </button>
+            {HeaderEnd && <HeaderEnd {...slotProps} />}
+          </div>
+        </details>
+        <div className="attention-meta">
+          <span>
+            <span
+              className="agent-dot"
+              data-live={live && liveCount > 0}
+              aria-hidden="true"
+            >
+              ●
+            </span>{" "}
+            {liveCount} {liveCount === 1 ? "agent" : "agents"} working
+          </span>
+          <time>{date}</time>
         </div>
       </header>
 
-      {state.connection !== "live" && (
-        <p className="connection-status" role="status">
-          {connectionLabels[state.connection]}
-        </p>
-      )}
-      {state.error && (
-        <ErrorBanner message={state.error} dismiss={connection.clearError} />
-      )}
-      {dependencyError && !showDependencyErrorInline && (
-        <ErrorBanner
-          message={dependencyError}
-          dismiss={() => setDependencyEditGoal(null)}
-        />
-      )}
-
-      <main
-        className="split-layout"
-        ref={sheet.layout}
-        data-sheet-stop={desktop ? undefined : sheet.stop}
-        data-sheet-dragging={!desktop && sheet.height !== undefined}
-        style={
-          !desktop && sheet.height !== undefined
-            ? ({ "--sheet-drag-height": `${sheet.height}px` } as CSSProperties)
-            : undefined
-        }
-      >
+      <main className="attention-stage">
         <section
-          className="lens-pane"
+          className="attention-field"
           data-lens={lens.id}
-          aria-labelledby="lens-heading"
-          inert={!desktop && sheet.stop === "full"}
+          aria-keyshortcuts="1 2 3 4"
+          aria-label={lens.id === "radar" ? "Attention field" : lens.label}
         >
-          <div className="section-heading">
-            <h1 id="lens-heading">{lens.label}</h1>
-            {desktop && ghostsToggle && (
-              <details className="lens-menu">
-                <summary className="subtle">Lens options</summary>
-                {ghostsToggle}
-              </details>
-            )}
-            {desktop && (
-              <button
-                type="button"
-                className="primary"
-                disabled={!live}
-                onClick={() => setPanel({ kind: "goal" })}
-              >
-                + Goal
-              </button>
-            )}
-          </div>
-          <div
-            className="lens-tabpanel"
-            id="active-lens"
-            role="tabpanel"
-            aria-labelledby={`lens-tab-${lens.id}`}
-          >
-            {autoGuide && panel?.kind !== "onboarding" ? (
-              <section
-                className="onboarding-welcome"
-                aria-labelledby="onboarding-heading"
-              >
-                <h2 id="onboarding-heading">Set up your workspace</h2>
-                {guide}
-              </section>
-            ) : (
-              state.settings && (
-                <LensComponent
-                  openGuide={openGuide}
-                  tree={tree}
-                  projects={projects}
-                  items={view.items}
-                  filtered={filtered}
-                  changeDependency={changeDependency}
-                  savingDependency={dependencyEdit.busy}
-                  dependencies={dependencies}
-                  selectedId={selection}
-                  now={now}
-                  timezone={timezone}
-                  live={live}
-                  showGhosts={showGhosts}
-                  goalId={focusedGoal}
-                  focusGoal={focusGoal}
-                  openDependencies={
-                    dependenciesLens && focusedGoal
-                      ? () => switchLens(dependenciesLens.id)
-                      : undefined
-                  }
-                  select={(id) => {
-                    if (lens.id === "list" && id) selectStreamItem(id);
-                    else
-                      setSelectedItem(
-                        id
-                          ? { id, inspectorOpen: desktop || !canvasLens }
-                          : null,
-                      );
-                    setLensSelection(
-                      id
-                        ? { id, scrollStreamOnly: lens.id === "treemap" }
-                        : null,
-                    );
-                    if (id) setHistory(false);
-                  }}
-                  move={connection.mutate}
-                  reschedule={(id, date) =>
-                    updateItem(id, { scheduled_on: date })
-                  }
-                  moveProject={(id, project) => updateItem(id, { project })}
-                  setPriority={(id, priority) => updateItem(id, { priority })}
-                  setPosition={(id, position) =>
-                    placeItem(id, lens.id, position)
-                  }
-                  moveRadar={(id, { position, ...patch }, key = "radar") =>
-                    placeItem(id, key, position, patch)
-                  }
-                />
-              )
-            )}
+          <h1 className="day-sentence">
+            <span data-needs={derived.groups.needs.length > 0}>
+              {derived.sentence.attention}
+            </span>{" "}
+            <span>{derived.sentence.outlook}</span>
+          </h1>
+          <div className="attention-lens">
+            <LensComponent
+              tree={tree}
+              projects={projects}
+              items={view.items}
+              filtered={filtered}
+              changeDependency={changeDependency}
+              savingDependency={dependencyEdit.busy}
+              dependencies={dependencies}
+              selectedId={selection}
+              now={now}
+              timezone={timezone}
+              live={live}
+              showGhosts={showGhosts}
+              goalId={focusedGoal}
+              focusGoal={focusGoal}
+              openDependencies={
+                dependenciesLens && focusedGoal
+                  ? () => setLensId(dependenciesLens.id)
+                  : undefined
+              }
+              select={(id) => {
+                if (lens.id === "list" && id) selectStreamItem(id);
+                else {
+                  setSelectedItem(id ? { id } : null);
+                  setRadarSelection(id);
+                }
+              }}
+              move={connection.mutate}
+              reschedule={(id, date) => updateItem(id, { scheduled_on: date })}
+              moveProject={(id, project) => updateItem(id, { project })}
+              setPriority={(id, priority) => updateItem(id, { priority })}
+              setPosition={(id, position) => placeItem(id, lens.id, position)}
+              moveRadar={(id, { position, ...patch }, key = "radar") =>
+                placeItem(id, key, position, patch)
+              }
+            />
           </div>
           {dependencyError && showDependencyErrorInline && (
             <p className="action-error" role="alert">
               {dependencyError}
             </p>
           )}
-          {inspector}
-          {desktop && capabilities.command && (
-            <CommandBar command={command} live={live} />
-          )}
-          {showModelKeyHint && (
-            <div className="command-bar">
-              <ModelKeyHint />
-            </div>
-          )}
-        </section>
-        <section
-          className="stream-pane"
-          id="mobile-stream"
-          ref={sheet.pane}
-          aria-label={peek ? "Horizon Stream" : undefined}
-          aria-labelledby={peek ? undefined : "stream-heading"}
-        >
-          {!desktop && sheet.handle}
-          {peek && (
-            <StreamPeek
-              {...derived}
-              openGuide={openGuide}
-              items={view.items}
-              ready={state.settings !== null}
-              selectedId={selectedId}
-              select={(id) => {
-                setLensSelection(null);
-                selectStreamItem(id);
+          {inspected && (
+            <SelectedItem
+              key={inspected.id}
+              item={inspected}
+              revision={eventRevision(inspected.id)}
+              inspect={() => openPanel("inspector")}
+              close={() => {
+                setSelectedItem(null);
+                setRadarSelection(null);
               }}
             />
           )}
-          <div className="stream-panel" hidden={peek}>
-            {history && (desktop || sheet.stop === "full") ? (
-              <StreamHistory
-                key={state.resetVersion}
-                demoLoaded={state.onboarding?.hasDemoData}
-                openGuide={openGuide}
-                projects={projects}
-                timezone={timezone}
-                live={live}
-                openIds={openHistoryIds}
-                pendingIds={pendingReopens}
-                close={() => setHistory(false)}
-                reopen={(item_id, reason) =>
-                  connection.mutate({
-                    type: "REOPEN_ITEM",
-                    input: { item_id, reason },
-                  })
-                }
-              />
-            ) : hiddenOnly && (desktop || sheet.stop === "full") ? (
-              <>
-                <div className="section-heading stream-heading">
-                  <h2 id="stream-heading">Horizon Stream</h2>
-                  <div className="inline-actions">
-                    <button
-                      type="button"
-                      className="attention-button"
-                      aria-pressed={false}
-                      onClick={() => {
-                        setHiddenOnly(false);
-                        setAttentionOnly(true);
-                      }}
-                    >
-                      Needs me <span>{derived.attentionCount}</span>
-                    </button>
-                    {hiddenToggle}
-                  </div>
-                </div>
-                <div className="stream-content">
-                  {hiddenRows.length ? (
-                    <StreamItems
-                      eventRevision={eventRevision}
-                      rows={hiddenRows}
-                      selectedId={selectedId}
-                      select={(id) => {
-                        setLensSelection(null);
-                        inspectItem(id);
-                      }}
-                    />
-                  ) : (
-                    <GuideEmpty openGuide={openGuide}>
-                      No hidden items.
-                    </GuideEmpty>
-                  )}
-                </div>
-              </>
-            ) : (
-              <HorizonStream
-                {...derived}
-                eventRevision={eventRevision}
-                openGuide={openGuide}
-                items={view.items}
-                dependencies={view.dependencies}
-                ready={state.settings !== null}
-                live={live}
-                attentionOnly={attentionOnly}
-                condensed={lens.id === "board" && desktop}
-                todayOnly={!desktop && sheet.stop === "half"}
-                toggleAttention={() => setAttentionOnly((value) => !value)}
-                actions={hiddenToggle}
-                selectedId={selectedId}
-                lensSelection={lensSelection}
-                select={(id) => {
-                  setLensSelection(null);
-                  selectStreamItem(id);
-                }}
-                move={connection.mutate}
-                showHistory={() => {
-                  setHistory(true);
-                  if (!desktop) sheet.changeStop("full");
-                }}
-              />
-            )}
-          </div>
         </section>
+        <AttentionStream
+          groups={derived.groups}
+          timezone={timezone}
+          items={view.items}
+          now={now}
+          selectedId={selectedId}
+          radarSelection={radarSelection}
+          select={selectStreamItem}
+        />
       </main>
-      {!desktop && (
-        <nav className="mobile-dock" aria-label="Workspace shortcuts">
-          <button
-            type="button"
-            className="subtle"
-            disabled={!live}
-            onClick={() => setPanel({ kind: "goal" })}
-          >
-            + Goal
-          </button>
-          {capabilities.command && (
-            <button
-              type="button"
-              className="primary command-button"
-              aria-label="Open command bar"
-              aria-haspopup="dialog"
-              disabled={!live}
-              onClick={() => setPanel({ kind: "command" })}
-            >
-              <Microphone />
-            </button>
-          )}
-          <button
-            type="button"
-            className="subtle"
-            aria-controls="mobile-stream"
-            onClick={sheet.toggleList}
-          >
-            {sheet.stop === "full" ? "Lens" : "List"}
-          </button>
-          {canvasLens && inspected && selection && sheet.stop !== "full" && (
-            <button
-              type="button"
-              className="subtle inspect-selection"
-              aria-label={`Inspect ${inspected.title}`}
-              aria-haspopup="dialog"
-              onClick={() => inspectItem(inspected.id)}
-            >
-              Inspect
-            </button>
-          )}
-        </nav>
-      )}
-      {!desktop && panel?.kind === "command" && capabilities.command && (
-        <Panel
-          title="Workspace command"
+
+      <footer className="attention-footer">
+        {state.connection !== "live" && (
+          <p className="connection-status" role="status">
+            {connectionLabels[state.connection]}
+          </p>
+        )}
+        {state.error && (
+          <ErrorBanner message={state.error} dismiss={connection.clearError} />
+        )}
+        {dependencyError && !showDependencyErrorInline && (
+          <ErrorBanner
+            message={dependencyError}
+            dismiss={() => setDependencyEditGoal(null)}
+          />
+        )}
+        <CommandBar
+          command={command}
+          live={live}
+          enabled={capabilities.command}
+        />
+      </footer>
+
+      {panel === "inspector" && inspected && (
+        <Inspector
+          key={inspected.id}
+          activityRevision={eventRevision(inspected.id)}
+          drawer
+          item={inspected}
+          projects={projects}
+          items={state.items}
+          dependencies={dependencies}
+          timezone={timezone}
+          live={live}
+          save={connection.save}
           close={closePanel}
-          className="command-panel"
-        >
-          <CommandBar command={command} live={live} />
-          <button
-            type="button"
-            className="subtle command-guidance"
-            onClick={() => setPanel({ kind: "guidance" })}
-          >
-            Edit guidance
-          </button>
+          addChild={() => openPanel("child")}
+          openDependencies={openGraph}
+          selectChild={
+            lens.id === "board"
+              ? (id) => {
+                  selectStreamItem(id);
+                  closePanel();
+                }
+              : undefined
+          }
+        />
+      )}
+      {panel === "hidden" && (
+        <Panel title="Hidden items" close={closePanel}>
+          {hiddenItems.length === 0 ? (
+            <p className="empty">No hidden items.</p>
+          ) : (
+            <ul className="item-list">
+              {hiddenItems.map((item) => (
+                <li key={item.id}>
+                  <button
+                    className="text-control"
+                    type="button"
+                    onClick={() => {
+                      setSelectedItem({ id: item.id });
+                      openPanel("inspector");
+                    }}
+                  >
+                    {item.title}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </Panel>
       )}
-      {panel?.kind === "onboarding" && guide && (
-        <Panel
-          title="Set up your workspace"
-          className="onboarding-panel"
-          close={closePanel}
-        >
-          {guide}
+      {panel === "history" && (
+        <Panel title="Workspace history" close={closePanel}>
+          <StreamHistory
+            key={state.resetVersion}
+            projects={projects}
+            timezone={timezone}
+            live={live}
+            openIds={openHistoryIds}
+            pendingIds={pendingReopens}
+            close={closePanel}
+            reopen={(item_id, reason) =>
+              connection.mutate({
+                type: "REOPEN_ITEM",
+                input: { item_id, reason },
+              })
+            }
+          />
         </Panel>
       )}
-      {panel?.kind === "guidance" && state.settings && (
+      {panel === "guidance" && state.settings && (
         <Guidance
-          showExamples={panel.fromGuide}
           settings={state.settings}
           live={live}
           save={connection.save}
           close={closePanel}
         />
       )}
-      {panel?.kind === "settings" && (
+      {panel === "settings" && (
         <Settings
           judgeAgreementRevision={state.judgeAgreementRevision}
-          focus={panel.screen}
-          openGuide={openGuide}
-          demoLoaded={state.onboarding?.hasDemoData ?? false}
           projects={projects}
           items={state.items}
           timezone={timezone}
@@ -1018,10 +644,10 @@ function Workspace({
           close={closePanel}
         />
       )}
-      {(panel?.kind === "goal" || panel?.kind === "child") && (
+      {(panel === "goal" || panel === "child") && (
         <QuickAdd
-          parent={panel.kind === "child" ? inspected : undefined}
-          parentMissing={panel.kind === "child" && !inspected}
+          parent={panel === "child" ? inspected : undefined}
+          parentMissing={panel === "child" && !inspected}
           projects={projects}
           timezone={timezone}
           live={live}

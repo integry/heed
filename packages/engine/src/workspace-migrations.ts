@@ -166,6 +166,43 @@ const migrations = [
       "ALTER TABLE items ADD COLUMN acceptance TEXT NOT NULL DEFAULT '[]'",
     );
   },
+  // Version 9 retires the sample workspace, keeping real items attached.
+  (sql: SqlStorage) => {
+    if (
+      !sql
+        .exec(
+          "SELECT EXISTS(SELECT 1 FROM items WHERE demo = 1) OR EXISTS(SELECT 1 FROM projects WHERE demo = 1) AS present",
+        )
+        .one().present
+    )
+      return;
+    sql.exec(
+      `
+        WITH RECURSIVE tree(id, surviving_parent, surviving_depth, next_parent, next_depth) AS (
+          SELECT id, NULL, 1, CASE WHEN demo = 0 THEN id END, 1 + (demo = 0)
+          FROM items WHERE parent_id IS NULL
+          UNION ALL
+          SELECT child.id, tree.next_parent, tree.next_depth,
+                 CASE WHEN child.demo = 0 THEN child.id ELSE tree.next_parent END,
+                 tree.next_depth + (child.demo = 0)
+          FROM tree JOIN items AS child ON child.parent_id = tree.id
+        )
+        UPDATE items SET parent_id = tree.surviving_parent, depth = tree.surviving_depth,
+          project_id = CASE WHEN project_id IN (SELECT id FROM projects WHERE demo = 1)
+                            THEN ? ELSE project_id END
+        FROM tree WHERE items.id = tree.id AND items.demo = 0
+          AND (items.parent_id IS NOT tree.surviving_parent
+            OR items.depth <> tree.surviving_depth
+            OR items.project_id IN (SELECT id FROM projects WHERE demo = 1))
+      `,
+      INBOX_PROJECT_ID,
+    );
+    sql.exec("DELETE FROM items WHERE demo = 1");
+    sql.exec(
+      "UPDATE tokens SET default_project_id = NULL WHERE default_project_id IN (SELECT id FROM projects WHERE demo = 1)",
+    );
+    sql.exec("DELETE FROM projects WHERE demo = 1");
+  },
 ];
 
 export function migrateWorkspace(storage: DurableObjectStorage): void {

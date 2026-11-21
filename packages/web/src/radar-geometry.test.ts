@@ -1,9 +1,5 @@
 import { expect, it } from "vitest";
-import {
-  demoGoal,
-  demoProjects,
-  radarDemoItems,
-} from "../../../scripts/radar-demo.mjs";
+import { demoGoal, demoProjects, radarDemoItems } from "./radar-test-data.mjs";
 import { radarBandsFor } from "@heedwork/core";
 import {
   bubbleRadius,
