@@ -3775,30 +3775,10 @@ it("groups the day and shows a read-only summary that follows selection in both 
     status: "done" as const,
     completed_at: "2024-04-03T11:15:00Z",
   };
-  const events = [
-    {
-      id: 2,
-      item_id: review.id,
-      kind: "judged",
-      actor: "Judge",
-      at: goal.updated_at,
-      detail: JSON.stringify({
-        status_event_id: 1,
-        model: "test/judge",
-        criteria: ["Retry test passes"],
-        probabilities: [0.8],
-        evidence_supplied: true,
-      }),
-    },
-  ];
-  await openWorkspace(
-    undefined,
-    {
-      ...snapshot,
-      items: [goal, review, tomorrow, running, done],
-    },
-    () => Response.json(events),
-  );
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: [goal, review, tomorrow, running, done],
+  });
   const stream = within(
     screen.getByRole("complementary", { name: "Day stream" }),
   );
@@ -3816,7 +3796,7 @@ it("groups the day and shows a read-only summary that follows selection in both 
   expect(summary.getByRole("heading", { name: review.title })).toBeTruthy();
   expect(summary.getByText("Build agent")).toBeTruthy();
   expect(summary.getByText(review.note)).toBeTruthy();
-  expect(await summary.findByText(/Likely met/)).toBeTruthy();
+  expect(summary.getByText("Retry test passes")).toBeTruthy();
   expect(summary.getByRole("link").getAttribute("href")).toBe(review.ref_url);
   expect(screen.queryByRole("dialog")).toBeNull();
   const field = within(screen.getByRole("region", { name: "Attention field" }));
@@ -3827,6 +3807,119 @@ it("groups the day and shows a read-only summary that follows selection in both 
   expect(
     stream.getByRole("button", { name: tomorrow.title, pressed: true }),
   ).toBeTruthy();
+});
+
+it("shows only the selected completion's verdict as item updates and verdicts arrive", async () => {
+  const criteria = ["Retry test passes"];
+  const item = {
+    ...goal,
+    acceptance: JSON.stringify(criteria),
+    status: "done" as const,
+    completed_at: "2024-04-03T11:15:00.000Z",
+  };
+  const base = { item_id: item.id, actor: "Build agent" };
+  const firstCompletion: Event = {
+    ...base,
+    id: 1,
+    at: item.completed_at,
+    kind: "status",
+    detail: JSON.stringify({ new: "done" }),
+  };
+  const firstVerdict: Event = {
+    ...base,
+    id: 2,
+    at: "2024-04-03T11:16:00.000Z",
+    kind: "judged",
+    detail: JSON.stringify({
+      status_event_id: firstCompletion.id,
+      model: "test/judge",
+      criteria,
+      probabilities: [0.8],
+      evidence_supplied: true,
+    }),
+  };
+  let activity: Response | Promise<Response> = Response.json([
+    firstVerdict,
+    firstCompletion,
+  ]);
+  const readActivity = vi.fn(() => activity);
+  await openWorkspace(undefined, { ...snapshot, items: [item] }, readActivity);
+  const stream = within(
+    screen.getByRole("complementary", { name: "Day stream" }),
+  );
+  const select = () =>
+    fireEvent.click(stream.getByRole("button", { name: item.title }));
+  select();
+  const summary = () => within(screen.getByRole("region", selectedRegion));
+  expect(await summary().findByText(/Likely met/)).toBeTruthy();
+
+  const socket = TestSocket.current;
+  const reopened = {
+    ...item,
+    status: "queued" as const,
+    completed_at: null,
+    reopen_count: 1,
+  };
+  socket.receive({ type: "ITEM_UPSERT", seq: 2, item: reopened });
+  expect(summary().queryByText(/Likely met/)).toBeNull();
+
+  const secondCompletion = {
+    ...firstCompletion,
+    id: 5,
+    at: "2024-04-03T11:30:00.000Z",
+  };
+  const completedAgain = {
+    ...reopened,
+    status: "done" as const,
+    completed_at: secondCompletion.at,
+  };
+  const history = [secondCompletion, firstVerdict, firstCompletion];
+  let releaseRefresh!: () => void;
+  activity = new Promise((resolve) => {
+    releaseRefresh = () => resolve(Response.json(history));
+  });
+  socket.receive({ type: "ITEM_UPSERT", seq: 3, item: completedAgain });
+  expect(readActivity).toHaveBeenCalledTimes(2);
+  expect(summary().queryByText(/Likely met/)).toBeNull();
+
+  await act(async () => releaseRefresh());
+  expect(summary().queryByText(/Likely met/)).toBeNull();
+
+  await act(async () => {
+    fireEvent.click(summary().getByRole("button", { name: "Clear selection" }));
+  });
+  activity = Response.json(history);
+  await act(async () => select());
+  expect(readActivity).toHaveBeenCalledTimes(3);
+  expect(summary().getByText(criteria[0])).toBeTruthy();
+  expect(summary().queryByText(/Likely met/)).toBeNull();
+
+  const secondVerdict = {
+    ...firstVerdict,
+    id: 6,
+    at: "2024-04-03T11:31:00.000Z",
+    detail: JSON.stringify({
+      ...JSON.parse(firstVerdict.detail!),
+      status_event_id: secondCompletion.id,
+      probabilities: [0.2],
+    }),
+  };
+  const lateFirstVerdict = {
+    ...firstVerdict,
+    id: 7,
+    at: "2024-04-03T11:32:00.000Z",
+  };
+  activity = Response.json([lateFirstVerdict, secondVerdict, ...history]);
+  socket.receive({ type: "EVENT_APPEND", seq: 4, event: lateFirstVerdict });
+  expect(await summary().findByText(/Likely not met/)).toBeTruthy();
+
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 5,
+    item: { ...completedAgain, acceptance: '["Check the rollout"]' },
+  });
+  expect(summary().getByText("Check the rollout")).toBeTruthy();
+  expect(summary().queryByText(/Likely not met/)).toBeNull();
 });
 
 it("reveals a collapsed descendant in the day list when its bubble is selected", async () => {

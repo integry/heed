@@ -13,12 +13,15 @@ export function safeLink(value: string) {
     : undefined;
 }
 
-export function latestVerdict(events: Event[]) {
-  const event = events.find(({ kind }) => kind === "judged");
-  const detail = event
-    ? JudgedDetailSchema.safeParse(JSON.parse(event.detail ?? "null")).data
-    : undefined;
-  return event && detail ? { event, detail } : undefined;
+export function latestVerdict(events: Event[], completionId?: number) {
+  for (const event of events) {
+    if (event.kind !== "judged") continue;
+    const detail = JudgedDetailSchema.safeParse(
+      JSON.parse(event.detail ?? "null"),
+    ).data;
+    if (completionId === undefined || detail?.status_event_id === completionId)
+      return detail ? { event, detail } : undefined;
+  }
 }
 
 export function verdictMatches(
@@ -43,11 +46,22 @@ export function SelectedItem({
   close: () => void;
 }) {
   const criteria = JSON.parse(item.acceptance) as string[];
-  const { data } = useResource<Event[]>(
-    criteria.length ? `/api/items/${encodeURIComponent(item.id)}/events` : null,
-    revision,
+  const { data, loading } = useResource<Event[]>(
+    criteria.length && item.status === "done"
+      ? `/api/items/${encodeURIComponent(item.id)}/events`
+      : null,
+    JSON.stringify([revision, item.completed_at, item.reopen_count]),
   );
-  const latest = Array.isArray(data) ? latestVerdict(data)?.detail : undefined;
+  // The item and its activity arrive independently. Use the status event only
+  // once the activity has caught up with the selected item's completion.
+  const events = !loading && Array.isArray(data) ? data : [];
+  const completion = events.find(({ kind }) => kind === "status");
+  const latest =
+    completion &&
+    completion.at === item.completed_at &&
+    JSON.parse(completion.detail ?? "null")?.new === "done"
+      ? latestVerdict(events, completion.id)?.detail
+      : undefined;
   const verdict =
     latest && verdictMatches(latest, criteria) ? latest : undefined;
   const link = item.ref_url && safeLink(item.ref_url);
