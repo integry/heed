@@ -231,11 +231,44 @@ it("mounts host settings and header slots and drops workspace state on switch", 
   expect(signOut).toHaveBeenCalledOnce();
 });
 
+it.each([true, false])(
+  "recovers the built-in sign-in methods after a token request returns 401 (development: %s)",
+  async (devLoginEnabled) => {
+    fetchSession.mockImplementation(async (path: string) => {
+      if (path === "/api/tokens") return new Response(null, { status: 401 });
+      return Response.json({ devLoginEnabled }, { status: 401 });
+    });
+    fetchSession.mockResolvedValueOnce(
+      Response.json({ email: "user@example.test", workspaceId: "default" }),
+    );
+    mountHost();
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    const socket = TestSocket.current;
+    expect(
+      (
+        await screen.findByRole("link", { name: "Sign in with Google" })
+      ).getAttribute("href"),
+    ).toBe("/auth/login");
+    expect(
+      screen
+        .queryByRole("link", { name: "Development sign-in" })
+        ?.getAttribute("href"),
+    ).toBe(devLoginEnabled ? "/auth/dev-login" : undefined);
+    expect(fetchSession.mock.calls.map(([path]) => path)).toEqual([
+      "/api/me",
+      "/api/tokens",
+      "/api/me",
+    ]);
+    expect(socket.readyState).toBe(3);
+  },
+);
+
 it("shows the host sign-in on a 401 from a host screen API call", async () => {
-  fetchSession.mockImplementation(async (path: string) =>
-    path === "/api/me"
-      ? Response.json({ email: "user@example.test", workspaceId: "default" })
-      : new Response(null, { status: 401 }),
+  fetchSession.mockImplementation(
+    async () => new Response(null, { status: 401 }),
+  );
+  fetchSession.mockResolvedValueOnce(
+    Response.json({ email: "user@example.test", workspaceId: "default" }),
   );
   mountHost({
     signIn: () => <h1>Host sign-in</h1>,
@@ -261,7 +294,46 @@ it("shows the host sign-in on a 401 from a host screen API call", async () => {
   expect(
     await screen.findByRole("heading", { name: "Host sign-in" }),
   ).toBeTruthy();
+  expect(fetchSession.mock.calls.map(([path]) => path)).toEqual([
+    "/api/me",
+    "/api/members",
+    "/api/me",
+  ]);
   expect(TestSocket.current.readyState).toBe(3);
+});
+
+it("ignores an expiry lookup that finishes after a workspace switch", async () => {
+  let finishConfig!: () => void;
+  const config = new Promise((resolve) => {
+    finishConfig = () => resolve({ devLoginEnabled: true });
+  });
+  const expired = new Response(null, { status: 401 });
+  const readConfig = vi.spyOn(expired, "json").mockReturnValue(config);
+  fetchSession
+    .mockResolvedValueOnce(
+      Response.json({ email: "user@example.test", workspaceId: "launch" }),
+    )
+    .mockResolvedValueOnce(new Response(null, { status: 401 }))
+    .mockResolvedValueOnce(expired)
+    .mockResolvedValueOnce(
+      Response.json({ email: "user@example.test", workspaceId: "research" }),
+    );
+
+  const app = mountHost({ headerStart: ({ workspaceId }) => workspaceId });
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  await waitFor(() => expect(readConfig).toHaveBeenCalledOnce());
+  const lookupSignal = fetchSession.mock.calls[2][1].signal as AbortSignal;
+
+  act(() => app.onWorkspaceChange());
+  await screen.findByText("research");
+  expect(lookupSignal.aborted).toBe(true);
+  const socket = TestSocket.current;
+  await act(async () => finishConfig());
+  expect(screen.getByText("research")).toBeTruthy();
+  expect(
+    screen.queryByRole("link", { name: "Development sign-in" }),
+  ).toBeNull();
+  expect(socket.readyState).toBe(TestSocket.OPEN);
 });
 
 it.each([true, false])(

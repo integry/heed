@@ -909,11 +909,11 @@ export function App({
         : current,
     );
   });
-  const [api] = useState(() => createApi(expireSession, scopeSignal));
   const [reauthenticate] = useState(() => () => {
     setSession({ status: "loading" });
     setAttempt((value) => value + 1);
   });
+  const [api] = useState(() => createApi(reauthenticate, scopeSignal));
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
