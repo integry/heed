@@ -409,18 +409,25 @@ export function RadarLens({
   const visibleBands = layout.radar?.visibleBands ?? [];
   const splitView = useMemo(() => {
     const viewItems = setup.map(({ item }) => item);
+    const splitItems = setup
+      .filter(({ cell }) => cell.band === split)
+      .map(({ item }) => item);
     const groups = split
-      ? radarSubgroups(
-          split,
-          setup
-            .filter(({ cell }) => cell.band === split)
-            .map(({ item }) => item),
-          items,
-          projects,
-          now,
-          timezone,
-        )
+      ? radarSubgroups(split, splitItems, items, projects, now, timezone)
       : [];
+    const assigned = new Set(groups.flatMap(({ itemIds }) => itemIds));
+    const unassigned = splitItems
+      .filter(({ id }) => !assigned.has(id))
+      .map(({ id }) => id);
+    if (unassigned.length) {
+      // Give ghosts outside the current date groups their own packing space.
+      // Each subring preserves the overview packing clearance within its bounds.
+      groups.push({
+        id: "unassigned",
+        label: split === "today" ? "Earlier completions" : "Other items",
+        itemIds: unassigned,
+      });
+    }
     const edges = radarBoundaries(split, groups.length);
     const subrings: Subring[] = [];
     const membership = new Map<

@@ -1400,6 +1400,102 @@ it("keeps manually ordered Next bubbles separated at their saved angles", async 
   }
 });
 
+it.each([
+  {
+    band: "today",
+    now: "2024-04-03T12:00:00Z",
+    completedAt: "2024-04-02T23:00:00Z",
+    ghostDay: "2024-04-02",
+    queuedDay: "2024-04-03",
+    ghostRadius: 0.78,
+    queuedRadius: 0.3,
+    priority: 4,
+  },
+  {
+    band: "this-week",
+    now: "2024-04-03T12:00:00Z",
+    completedAt: "2024-04-02T23:00:00Z",
+    ghostDay: "2024-04-03",
+    queuedDay: "2024-04-04",
+    ghostRadius: 0.2,
+    queuedRadius: 0.8,
+    priority: 1,
+  },
+  {
+    band: "later",
+    now: "2024-04-08T12:00:00Z",
+    completedAt: "2024-04-07T23:00:00Z",
+    ghostDay: "2024-04-09",
+    queuedDay: "2024-04-16",
+    ghostRadius: 0.2,
+    queuedRadius: 0.8,
+    priority: 1,
+  },
+] as const)(
+  "keeps previous-day ghosts separated from scheduled items in the $band split",
+  async ({
+    band,
+    now,
+    completedAt,
+    ghostDay,
+    queuedDay,
+    ghostRadius,
+    queuedRadius,
+    priority,
+  }) => {
+    vi.mocked(Date.now).mockReturnValue(Date.parse(now));
+    mockRadarSize(1350, 1350);
+    const queued = {
+      ...goal,
+      priority,
+      scheduled_on: queuedDay,
+      progress: { done: 0, total: 0 },
+      layout_pos: JSON.stringify({
+        radar: { angle: 0.5, radius: queuedRadius },
+      }),
+    };
+    const ghost = {
+      ...queued,
+      id: "finished",
+      title: "Shipped work",
+      status: "done",
+      completed_at: completedAt,
+      completed_band: band,
+      scheduled_on: ghostDay,
+      layout_pos: JSON.stringify({
+        radar: { angle: 0.5, radius: ghostRadius },
+      }),
+    } as const;
+    await openWorkspace(undefined, { ...snapshot, items: [ghost, queued] });
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    function expectSeparated() {
+      const ghostButton = radar.getByRole("button", { name: ghost.title });
+      expect(ghostButton.getAttribute("data-ghost")).toBe("true");
+      const a = radarBubbleGeometry(ghostButton);
+      const b = radarBubbleGeometry(
+        radar.getByRole("button", { name: queued.title }),
+      );
+      expect(a.x).toBeCloseTo(CENTER.x);
+      expect(b.x).toBeCloseTo(CENTER.x);
+      expect(a.radius).toBeGreaterThan(0);
+      expect(b.radius).toBeGreaterThan(0);
+      expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(
+        a.radius + b.radius,
+      );
+    }
+
+    expectSeparated();
+    fireEvent.click(radar.getByRole("button", { name: RADAR_LABELS[band] }));
+    expectSeparated();
+
+    vi.mocked(Date.now).mockReturnValue(
+      Date.parse(completedAt) + 24 * 60 * 60 * 1000,
+    );
+    fireEvent(document, new Event("visibilitychange"));
+    expect(radar.queryByRole("button", { name: ghost.title })).toBeNull();
+  },
+);
+
 it("keeps bubbles separated when a split shifts another band inward", async () => {
   mockRadarSize(1350, 1350);
   const titles = ["Audit retries", "Check alerts"];
