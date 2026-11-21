@@ -54,6 +54,7 @@ function calendar(now: number, timezone: string) {
     today,
     tomorrow: dateAfter(1),
     nextWeek: dateAfter(daysUntilMonday),
+    laterStart: dateAfter(Math.max(2, daysUntilMonday)),
     dateAfter,
     localDate,
     now,
@@ -185,6 +186,162 @@ export function radarBandsFor(
       ];
     }),
   );
+}
+
+type RadarGroupItem = ScheduledItem &
+  Pick<
+    Item,
+    "priority" | "sort_key" | "handoff" | "last_heartbeat_at" | "project_id"
+  >;
+
+export interface RadarSubgroup {
+  id: string;
+  label: string;
+  itemIds: string[];
+  day?: string;
+}
+
+/** Split the items already assigned to a radar band, in inner-to-outer order. */
+export function radarSubgroups(
+  band: RadarBand,
+  items: readonly RadarGroupItem[],
+  ancestors: ReadonlyMap<string, Schedule>,
+  projects: readonly { id: string; name: string }[],
+  now: number,
+  timezone: string,
+): RadarSubgroup[] {
+  if (band === "backlog") {
+    return projects.map(({ id, name }) => ({
+      id,
+      label: name,
+      itemIds: items
+        .filter((item) => item.project_id === id)
+        .map((item) => item.id),
+    }));
+  }
+
+  const dates = calendar(now, timezone);
+  if (band === "today") {
+    const groups: RadarSubgroup[] = [
+      { id: "needs-me", label: "Needs me", itemIds: [] },
+      { id: "live-now", label: "Live now", itemIds: [] },
+      { id: "next", label: "Next", itemIds: [] },
+      { id: "done-today", label: "Done today", itemIds: [] },
+    ];
+    const next: RadarGroupItem[] = [];
+    for (const item of items) {
+      if (item.status === "done") {
+        const completed = workspaceInstant(item.completed_at);
+        if (
+          Number.isFinite(completed) &&
+          dates.localDate(completed) === dates.today
+        )
+          groups[3].itemIds.push(item.id);
+      } else if (needsMe(item, now)) groups[0].itemIds.push(item.id);
+      else if (isLive(item, now)) groups[1].itemIds.push(item.id);
+      else next.push(item);
+    }
+    groups[2].itemIds = next
+      .sort(
+        (a, b) =>
+          (a.sort_key ?? Infinity) - (b.sort_key ?? Infinity) ||
+          b.priority - a.priority ||
+          a.id.localeCompare(b.id),
+      )
+      .map(({ id }) => id);
+    return groups;
+  }
+
+  const dateById = new Map(
+    items.map((item) => {
+      const time = workspaceInstant(item.time_at);
+      return [
+        item.id,
+        effectiveSchedule(item, ancestors) ??
+          (Number.isFinite(time) ? dates.localDate(time) : null),
+      ] as const;
+    }),
+  );
+  const groups: RadarSubgroup[] = [];
+  const { laterStart } = dates;
+  if (band === "this-week") {
+    const weekday = new Intl.DateTimeFormat("en", {
+      weekday: "short",
+      timeZone: "UTC",
+    });
+    for (let offset = 1; dates.dateAfter(offset) < laterStart; offset++) {
+      const day = dates.dateAfter(offset);
+      groups.push({
+        id: day,
+        day,
+        label: weekday.format(Date.parse(day)),
+        itemIds: [],
+      });
+    }
+    for (const [id, day] of dateById) {
+      groups.find((group) => group.day === day)?.itemIds.push(id);
+    }
+    return groups;
+  }
+
+  const shortDate = new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+  const nextMonday = Date.parse(dates.nextWeek);
+  const monthStart = new Date(nextMonday + 28 * DAY).toISOString().slice(0, 10);
+  for (let week = 0; week < 4; week++) {
+    const start =
+      week === 0
+        ? laterStart
+        : new Date(nextMonday + week * 7 * DAY).toISOString().slice(0, 10);
+    const end = new Date(nextMonday + (week + 1) * 7 * DAY)
+      .toISOString()
+      .slice(0, 10);
+    groups.push({
+      id: start,
+      label: `Week of ${shortDate.format(Date.parse(start))}`,
+      itemIds: [...dateById]
+        .filter(([, day]) => day && start <= day && day < end)
+        .map(([id]) => id),
+    });
+  }
+  const months = new Map<string, string[]>();
+  for (const [id, day] of dateById) {
+    if (!day || day < monthStart) continue;
+    const month = day.slice(0, 7);
+    if (!months.has(month)) months.set(month, []);
+    months.get(month)!.push(id);
+  }
+  const monthLabel = new Intl.DateTimeFormat("en", {
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  for (const month of [...months.keys()].sort()) {
+    groups.push({
+      id: month,
+      label: monthLabel.format(Date.parse(`${month}-01`)),
+      itemIds: months.get(month)!,
+    });
+  }
+  return groups;
+}
+
+export function radarTimesToday<T extends Pick<Item, "time_at" | "time_type">>(
+  items: readonly T[],
+  now: number,
+  timezone: string,
+) {
+  const dates = calendar(now, timezone);
+  return items.flatMap((item) => {
+    if (item.time_type !== "fixed" && item.time_type !== "deadline") return [];
+    const time = workspaceInstant(item.time_at);
+    return Number.isFinite(time) && dates.localDate(time) === dates.today
+      ? [{ item, time }]
+      : [];
+  });
 }
 
 export function carriedOverFrom(
@@ -406,9 +563,7 @@ export function firstDayOfBand(
       return first < dates.nextWeek ? first : null;
     }
     case "later":
-      return dates.nextWeek === dates.tomorrow
-        ? dates.dateAfter(2)
-        : dates.nextWeek;
+      return dates.laterStart;
     case "backlog":
     case "done-today":
       return null;

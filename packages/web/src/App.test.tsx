@@ -20,8 +20,10 @@ import { onboardingCompletion } from "./Onboarding";
 import { mountApp, type MountedApp, type MountAppOptions } from "./index";
 import { lensRegistry, type Lens } from "./lenses";
 import {
+  CENTER,
   cellPoint,
   RADAR_BANDS,
+  RADAR_LABELS,
   RADAR_RADIUS,
   radarViewport,
   type Cell,
@@ -1099,6 +1101,16 @@ it.each([
   },
 );
 
+function radarBubbleGeometry(bubble: Element) {
+  const [x, y] = bubble
+    .parentElement!.getAttribute("transform")!
+    .slice("translate(".length, -1)
+    .split(",")
+    .map(Number);
+  const radius = Number(bubble.querySelector(".radar-disc")!.getAttribute("r"));
+  return { x, y, radius };
+}
+
 it("renders packed bubbles and hides a ring label when its reservation fills their cell", async () => {
   mockViewport(false);
   const resize = mockRadarSize(360, 280);
@@ -1128,17 +1140,9 @@ it("renders packed bubbles and hides a ring label when its reservation fills the
     );
   expect(labels()).toEqual(["Today · You", "Later", "Backlog"]);
   const [a, b] = titles.map((name) => {
-    const bubble = radar.getByRole("button", { name });
-    const [x, y] = bubble
-      .parentElement!.getAttribute("transform")!
-      .slice("translate(".length, -1)
-      .split(",")
-      .map(Number);
-    const radius = Number(
-      bubble.querySelector(".radar-disc")!.getAttribute("r"),
-    );
-    expect(radius).toBeGreaterThan(0);
-    return { x, y, radius };
+    const geometry = radarBubbleGeometry(radar.getByRole("button", { name }));
+    expect(geometry.radius).toBeGreaterThan(0);
+    return geometry;
   });
   expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(
     a.radius + b.radius,
@@ -1146,6 +1150,384 @@ it("renders packed bubbles and hides a ring label when its reservation fills the
 
   resize(800, 655);
   expect(labels()).toEqual(["Today · You", "This week", "Later", "Backlog"]);
+});
+
+it.each(RADAR_BANDS)(
+  "opens and closes the %s split with mouse and keyboard",
+  async (band) => {
+    const { container } = await openWorkspace();
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    const label = radar.getByRole("button", { name: RADAR_LABELS[band] });
+    const expanded = () => label.getAttribute("aria-expanded");
+    expect(expanded()).toBe("false");
+    fireEvent.click(label);
+    expect(expanded()).toBe("true");
+    expect(
+      radar
+        .getByText(new RegExp(`^${RADAR_LABELS[band]} split`))
+        .getAttribute("aria-live"),
+    ).toBe("polite");
+    expect(container.querySelector(".radar-subring-label")).toBeTruthy();
+    fireEvent.click(label);
+    expect(expanded()).toBe("false");
+
+    label.focus();
+    fireEvent.keyDown(label, { key: "Enter" });
+    expect(expanded()).toBe("true");
+    fireEvent.keyDown(label, { key: " " });
+    expect(expanded()).toBe("false");
+    fireEvent.keyDown(label, { key: "Enter" });
+    const nextBand = band === "today" ? "later" : "today";
+    const next = radar.getByRole("button", { name: RADAR_LABELS[nextBand] });
+    fireEvent.click(next);
+    expect(expanded()).toBe("false");
+    expect(next.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(radar.getByRole("button", { name: "Reset zoom" }));
+    expect(next.getAttribute("aria-expanded")).toBe("false");
+    expect(radar.getByText("Whole radar.")).toBeTruthy();
+  },
+);
+
+it("keeps bubble angles through a split and marks only today's local hard times", async () => {
+  const tasks = [
+    { ...goal, time_type: "fixed", time_at: "2024-04-03T07:00:00Z" },
+    {
+      ...tomorrow,
+      time_type: "deadline",
+      time_at: "2024-04-04T06:30:00Z",
+      scheduled_on: null,
+      parent_id: null,
+    },
+    {
+      ...goal,
+      id: "overdue",
+      time_type: "deadline",
+      time_at: "2024-04-03T06:59:00Z",
+    },
+    {
+      ...goal,
+      id: "future",
+      time_type: "fixed",
+      time_at: "2024-04-04T07:00:00Z",
+    },
+  ] as const;
+  const { container } = await openWorkspace(undefined, {
+    ...snapshot,
+    items: [...tasks],
+    settings: { ...snapshot.settings, timezone: "America/Los_Angeles" },
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const coordinates = () =>
+    [...container.querySelectorAll(".radar-node")].map((node) =>
+      node
+        .getAttribute("transform")!
+        .slice("translate(".length, -1)
+        .split(",")
+        .map(Number),
+    );
+  const before = coordinates();
+  fireEvent.click(radar.getByRole("button", { name: "Today" }));
+  expect(
+    [...container.querySelectorAll(".radar-rim-marker text")]
+      .map((node) => node.textContent)
+      .sort(),
+  ).toEqual(["00:00", "23:30"]);
+  const midnight = radar
+    .getByRole("img", { name: `00:00, ${goal.title}` })
+    .querySelector("line")!;
+  expect(Number(midnight.getAttribute("x1"))).toBeCloseTo(CENTER.x);
+  expect(Number(midnight.getAttribute("y1"))).toBeLessThan(CENTER.y);
+  const after = coordinates();
+  for (const [[x, y], [nextX, nextY]] of before.map((point, index) => [
+    point,
+    after[index],
+  ])) {
+    expect(Math.atan2(nextY - CENTER.y, nextX - CENTER.x)).toBeCloseTo(
+      Math.atan2(y - CENTER.y, x - CENTER.x),
+    );
+  }
+  fireEvent.keyDown(radar.getByRole("button", { name: "Today" }), {
+    key: "Escape",
+  });
+  expect(coordinates()).toEqual(before);
+});
+
+it("keeps two saved center positions separated in the Needs me split", async () => {
+  mockRadarSize(800, 655);
+  const titles = ["Review retry policy", "Approve failover plan"];
+  const { container } = await openWorkspace(undefined, {
+    ...snapshot,
+    items: titles.map((title, index) => ({
+      ...goal,
+      id: `handoff-${index}`,
+      title,
+      progress: { done: 0, total: 0 },
+      handoff: 1,
+      layout_pos: '{"radar":{"angle":0.25,"radius":0}}',
+    })),
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+
+  fireEvent.click(radar.getByRole("button", { name: "Today" }));
+  const innerRingEdge = Number(
+    container.querySelector(".radar-subring")!.getAttribute("r"),
+  );
+  const [a, b] = titles.map((name) => {
+    const bubble = radarBubbleGeometry(radar.getByRole("button", { name }));
+    expect(bubble.radius).toBeGreaterThan(0);
+    expect(Math.hypot(bubble.x - CENTER.x, bubble.y - CENTER.y)).toBeLessThan(
+      innerRingEdge,
+    );
+    return bubble;
+  });
+  expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(
+    a.radius + b.radius,
+  );
+});
+
+it("uses manual order and priority in Next when saved radii run in reverse", async () => {
+  mockRadarSize(800, 655);
+  const tasks = [
+    {
+      id: "review-checklist",
+      title: "Review rollout checklist",
+      sort_key: 1,
+      priority: 4,
+      radius: 0.8,
+    },
+    {
+      id: "verify-failover",
+      title: "Plan failover drill",
+      sort_key: 2,
+      priority: 8,
+      radius: 0.5,
+    },
+    {
+      id: "update-runbook",
+      title: "Update runbook",
+      sort_key: 2,
+      priority: 5,
+      radius: 0.2,
+    },
+  ];
+  const { container } = await openWorkspace(undefined, {
+    ...snapshot,
+    items: tasks.map(({ radius, ...task }) => ({
+      ...goal,
+      ...task,
+      progress: { done: 0, total: 0 },
+      layout_pos: JSON.stringify({ radar: { angle: 0.35, radius } }),
+    })),
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const distances = () =>
+    tasks.map(({ title }) => {
+      const { x, y } = radarBubbleGeometry(
+        radar.getByRole("button", { name: title }),
+      );
+      return Math.hypot(x - CENTER.x, y - CENTER.y);
+    });
+  const [beforeFirst, beforeSecond, beforeThird] = distances();
+  expect(beforeFirst).toBeGreaterThan(beforeSecond);
+  expect(beforeSecond).toBeGreaterThan(beforeThird);
+
+  fireEvent.click(radar.getByRole("button", { name: "Today" }));
+  const [, inner, outer] = [
+    ...container.querySelectorAll(".radar-subring"),
+  ].map((ring) => Number(ring.getAttribute("r")));
+  const [first, second, third] = distances();
+  expect(first).toBeGreaterThan(inner);
+  expect(first).toBeLessThan(second);
+  expect(second).toBeLessThan(third);
+  expect(third).toBeLessThan(outer);
+});
+
+it("keeps manually ordered Next bubbles separated at their saved angles", async () => {
+  mockRadarSize(1350, 1350);
+  const positions = [
+    { angle: 0.5, radius: 0.31 },
+    { angle: 0.5, radius: 0.75 },
+    { angle: 0, radius: 0.75 },
+  ];
+  const titles = [
+    "Review rollout checklist",
+    "Plan failover drill",
+    "Update runbook",
+  ];
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: titles.map((title, index) => ({
+      ...goal,
+      id: `next-${index}`,
+      title,
+      sort_key: index + 1,
+      priority: 4,
+      progress: { done: 0, total: 0 },
+      layout_pos: JSON.stringify({ radar: positions[index] }),
+    })),
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const geometry = () =>
+    titles.map((name) =>
+      radarBubbleGeometry(radar.getByRole("button", { name })),
+    );
+  const [beforeFirst, beforeSecond] = geometry();
+  expect(beforeFirst.radius).toBe(20);
+  expect(beforeSecond.radius).toBe(20);
+  expect(beforeFirst.x).toBeCloseTo(beforeSecond.x);
+  expect(beforeSecond.y - beforeFirst.y).toBeCloseTo(45.32);
+
+  fireEvent.click(radar.getByRole("button", { name: "Today" }));
+  const after = geometry();
+  const distances = after.map(({ x, y }) =>
+    Math.hypot(x - CENTER.x, y - CENTER.y),
+  );
+  expect(distances[0]).toBeLessThan(distances[1]);
+  expect(distances[1]).toBeLessThan(distances[2]);
+  expect(after[0].x).toBeCloseTo(CENTER.x);
+  expect(after[1].x).toBeCloseTo(CENTER.x);
+  expect(after[2].x).toBeCloseTo(CENTER.x);
+  expect(after[0].y).toBeGreaterThan(CENTER.y);
+  expect(after[1].y).toBeGreaterThan(CENTER.y);
+  expect(after[2].y).toBeLessThan(CENTER.y);
+  for (const [index, bubble] of after.entries()) {
+    expect(bubble.radius).toBeGreaterThan(0);
+    for (const other of after.slice(index + 1)) {
+      expect(
+        Math.hypot(bubble.x - other.x, bubble.y - other.y),
+      ).toBeGreaterThanOrEqual(bubble.radius + other.radius);
+    }
+  }
+});
+
+it.each([
+  {
+    band: "today",
+    now: "2024-04-03T12:00:00Z",
+    completedAt: "2024-04-02T23:00:00Z",
+    ghostDay: "2024-04-02",
+    queuedDay: "2024-04-03",
+    ghostRadius: 0.78,
+    queuedRadius: 0.3,
+    priority: 4,
+  },
+  {
+    band: "this-week",
+    now: "2024-04-03T12:00:00Z",
+    completedAt: "2024-04-02T23:00:00Z",
+    ghostDay: "2024-04-03",
+    queuedDay: "2024-04-04",
+    ghostRadius: 0.2,
+    queuedRadius: 0.8,
+    priority: 1,
+  },
+  {
+    band: "later",
+    now: "2024-04-08T12:00:00Z",
+    completedAt: "2024-04-07T23:00:00Z",
+    ghostDay: "2024-04-09",
+    queuedDay: "2024-04-16",
+    ghostRadius: 0.2,
+    queuedRadius: 0.8,
+    priority: 1,
+  },
+] as const)(
+  "keeps previous-day ghosts separated from scheduled items in the $band split",
+  async ({
+    band,
+    now,
+    completedAt,
+    ghostDay,
+    queuedDay,
+    ghostRadius,
+    queuedRadius,
+    priority,
+  }) => {
+    vi.mocked(Date.now).mockReturnValue(Date.parse(now));
+    mockRadarSize(1350, 1350);
+    const queued = {
+      ...goal,
+      priority,
+      scheduled_on: queuedDay,
+      progress: { done: 0, total: 0 },
+      layout_pos: JSON.stringify({
+        radar: { angle: 0.5, radius: queuedRadius },
+      }),
+    };
+    const ghost = {
+      ...queued,
+      id: "finished",
+      title: "Shipped work",
+      status: "done",
+      completed_at: completedAt,
+      completed_band: band,
+      scheduled_on: ghostDay,
+      layout_pos: JSON.stringify({
+        radar: { angle: 0.5, radius: ghostRadius },
+      }),
+    } as const;
+    await openWorkspace(undefined, { ...snapshot, items: [ghost, queued] });
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    function expectSeparated() {
+      const ghostButton = radar.getByRole("button", { name: ghost.title });
+      expect(ghostButton.getAttribute("data-ghost")).toBe("true");
+      const a = radarBubbleGeometry(ghostButton);
+      const b = radarBubbleGeometry(
+        radar.getByRole("button", { name: queued.title }),
+      );
+      expect(a.x).toBeCloseTo(CENTER.x);
+      expect(b.x).toBeCloseTo(CENTER.x);
+      expect(a.radius).toBeGreaterThan(0);
+      expect(b.radius).toBeGreaterThan(0);
+      expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(
+        a.radius + b.radius,
+      );
+    }
+
+    expectSeparated();
+    fireEvent.click(radar.getByRole("button", { name: RADAR_LABELS[band] }));
+    expectSeparated();
+
+    vi.mocked(Date.now).mockReturnValue(
+      Date.parse(completedAt) + 24 * 60 * 60 * 1000,
+    );
+    fireEvent(document, new Event("visibilitychange"));
+    expect(radar.queryByRole("button", { name: ghost.title })).toBeNull();
+  },
+);
+
+it("keeps bubbles separated when a split shifts another band inward", async () => {
+  mockRadarSize(1350, 1350);
+  const titles = ["Audit retries", "Check alerts"];
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: titles.map((title, index) => ({
+      ...goal,
+      id: `week-${index}`,
+      title,
+      scheduled_on: tomorrow.scheduled_on,
+      priority: 4,
+      progress: { done: 0, total: 0 },
+      layout_pos: JSON.stringify({
+        radar: { angle: 0.5 + index * 0.0515, radius: 0.5 },
+      }),
+    })),
+  });
+  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const geometry = () =>
+    titles.map((name) =>
+      radarBubbleGeometry(radar.getByRole("button", { name })),
+    );
+  const [before] = geometry();
+  expect(before.radius).toBe(20);
+  expect(Math.hypot(before.x - CENTER.x, before.y - CENTER.y)).toBeCloseTo(140);
+
+  fireEvent.click(radar.getByRole("button", { name: "Backlog" }));
+  const [a, b] = geometry();
+  expect(Math.hypot(a.x - CENTER.x, a.y - CENTER.y)).toBeCloseTo(85);
+  expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(
+    a.radius + b.radius,
+  );
 });
 
 it("keeps radar positions on status updates and filters attention and completed ghosts", async () => {
@@ -1208,6 +1590,7 @@ function startRadarRingDrop(
   bubble: HTMLElement,
   overview: boolean,
   band: Cell["band"] = "backlog",
+  at?: { x: number; y: number },
 ) {
   const scene = bubble.closest(".radar-node")!.parentElement!;
   Object.defineProperty(scene, "getScreenCTM", {
@@ -1219,15 +1602,56 @@ function startRadarRingDrop(
     .slice("translate(".length, -1)
     .split(",")
     .map(Number);
-  const target = overview
-    ? cellPoint({ band, sector: 0, sectors: 1 }, { angle: 0.5, radius: 0.5 })
-    : { x: 175 + RADAR_BANDS.indexOf(band) * 150, y: 716 };
+  const target =
+    at ??
+    (overview
+      ? cellPoint({ band, sector: 0, sectors: 1 }, { angle: 0.5, radius: 0.5 })
+      : { x: 175 + RADAR_BANDS.indexOf(band) * 150, y: 716 });
   const pointer = { pointerId: 1, isPrimary: true, button: 0 };
   const destination = { ...pointer, clientX: target.x, clientY: target.y };
   fireEvent.pointerDown(bubble, { ...pointer, clientX, clientY });
   fireEvent.pointerMove(bubble, destination);
   return () => fireEvent.pointerUp(bubble, destination);
 }
+
+it.each([
+  ["2024-03-10T07:30:00Z", "2024-03-10", "Sun", null],
+  ["2024-03-10T08:30:00Z", "2024-03-11", "Mon", null],
+  ["2024-03-12T08:30:00Z", "2024-03-16", "Sat", "2024-03-14"],
+])(
+  "reschedules a radar day drop from %s to workspace date %s",
+  async (instant, day, weekday, scheduled_on) => {
+    vi.mocked(Date.now).mockReturnValue(Date.parse(instant));
+    const task = { ...goal, scheduled_on };
+    const { container } = await openWorkspace(undefined, {
+      ...snapshot,
+      items: [task],
+      settings: { ...snapshot.settings, timezone: "America/Los_Angeles" },
+    });
+    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    fireEvent.click(radar.getByRole("button", { name: "This week" }));
+    const subring = container.querySelector(`[data-day="${day}"]`)!;
+    expect(subring.textContent).toBe(weekday);
+    const radius = CENTER.y - Number(subring.getAttribute("y"));
+    const release = startRadarRingDrop(
+      radar.getByRole("button", { name: task.title }),
+      true,
+      "this-week",
+      { x: CENTER.x, y: CENTER.y + radius },
+    );
+    release();
+    expect(TestSocket.current.latestRequest()).toMatchObject({
+      type: "UPDATE_ITEM",
+      input: {
+        item_id: task.id,
+        scheduled_on: day,
+        layout_pos: {
+          radar: { angle: expect.closeTo(0.5), radius: expect.closeTo(0.5) },
+        },
+      },
+    });
+  },
+);
 
 it.each(["goal", "overview", "new ancestor schedule", "no ancestor schedule"])(
   "checks inheritance before applying a Radar Backlog drop (%s)",
