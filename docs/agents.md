@@ -19,6 +19,10 @@ Heed uses Streamable HTTP at `/mcp`. The server sends current workspace guidance
 
 After connecting, ask the client to call `get_canvas` for an item you already work on. Use the returned ID to report progress, or create an item with `add_item` if you need one. A stable `external_key`, such as a pull request URL, lets repeated adds update the same item.
 
+## Wait for a handoff answer
+
+Use `flag_handoff` to ask a specific question. When there are obvious answers, pass up to four suggested replies in `options`. While waiting, call `report_progress` on the same item no more than once a minute. A heartbeat with just the item ID is enough. When the human replies, the response includes `handoff_answer` and the original `handoff_note`. The reply also appears in `update_item`, `POST /api/report`, and on the item in `get_canvas` until the item is flagged again, marked done, or cancelled.
+
 ## Claude Code
 
 Add this to `.mcp.json` at the project root. Start Claude Code with the variables above and run `/mcp` to confirm the connection. [Claude Code MCP configuration](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcp-json)
@@ -151,6 +155,6 @@ Agents receive guidance when they connect and in `get_canvas`. The command bar a
 | Scope    | What it can do                                                                                                                                                                                                                                                                                                                  |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `report` | Read the canvas and guidance, add items and sub-items, record progress or status, edit unlocked fields, manage dependencies, reopen completed work, and flag handoffs. Handoffs can request push when Web Push is enabled and guidance calls for it. Updates to human-locked fields are ignored and listed in `ignored_fields`. |
-| `steer`  | Do everything a report token can do, plus replace guidance, move an existing item between projects, change visibility, change sort order and layout position, and unlock fields. Steering writes to lockable fields set human locks.                                                                                            |
+| `steer`  | Do everything a report token can do, plus answer handoffs, replace guidance, move an existing item between projects, change visibility, change sort order and layout position, and unlock fields. Steering writes to lockable fields set human locks.                                                                           |
 
 Create and revoke tokens in **Settings → API tokens**. Give each reporting agent or hook its own report token and reserve steer tokens for clients you operate yourself.

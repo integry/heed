@@ -25,7 +25,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
   const stub = newWorkspace();
   const settings = await stub.getSettings();
   expect(SettingsSchema.parse(settings)).toEqual({
-    schema_version: 9,
+    schema_version: 10,
     timezone: "UTC",
     guidance: "",
     guidance_updated_at: null,
@@ -70,7 +70,21 @@ it("migrates a fresh object and seeds Inbox", async () => {
 });
 
 it.each([
-  { layout: "current", version: 9, dropColumns: [], hasOAuth: true },
+  { layout: "current", version: 10, dropColumns: [], hasOAuth: true },
+  {
+    layout: "target branch version 9",
+    version: 9,
+    dropColumns: [],
+    hasOAuth: true,
+  },
+  {
+    layout: "PR branch version 9",
+    version: 9,
+    dropColumns: [],
+    hasOAuth: true,
+    hasHandoffColumns: false,
+  },
+  { layout: "version 8", version: 8, dropColumns: [], hasOAuth: true },
   { layout: "version 7", version: 7, dropColumns: [], hasOAuth: true },
   {
     layout: "version 5 with demo flags",
@@ -98,17 +112,30 @@ it.each([
   },
 ])(
   "preserves stored data when opening the $layout schema after eviction",
-  async ({ version, dropColumns, hasOAuth }) => {
+  async ({
+    version,
+    dropColumns,
+    hasOAuth,
+    hasHandoffColumns = version >= 9,
+  }) => {
     const stub = newWorkspace();
     await stub.setTimezone("Europe/Tallinn");
     const user = { id: "user", email: "user@example.com", name: "User" };
     const actor = { kind: "human", user } as const;
     const guidance = await stub.setGuidance(actor, "Start with billing");
     const project = await stub.createProject({ name: "Billing" });
-    const { item_id, items } = await stub.addItem(actor, {
+    const { item_id } = await stub.addItem(actor, {
       title: "Send invoice",
       project: project.id,
     });
+    await stub.flagHandoff(actor, {
+      item_id,
+      note: "Send this invoice today?",
+      options: hasHandoffColumns ? ["Send today"] : undefined,
+    });
+    if (hasHandoffColumns)
+      await stub.answerHandoff(actor, { item_id, text: "Send today" });
+    const item = await stub.getItem({ item_id });
     const client = {
       id: "client",
       name: "MCP client",
@@ -119,10 +146,16 @@ it.each([
     };
     if (hasOAuth) await stub.registerOAuthClient(client);
 
-    if (version < 8) {
+    if (version < 10) {
       // Recreate the schema persisted by the older workspace.
       await runInDurableObject(stub, (_, { storage: { sql } }) => {
-        sql.exec("ALTER TABLE items DROP COLUMN acceptance");
+        if (!hasHandoffColumns)
+          sql.exec(`
+            ALTER TABLE items DROP COLUMN handoff_options;
+            ALTER TABLE items DROP COLUMN handoff_answer;
+            ALTER TABLE items DROP COLUMN handoff_answered_at;
+          `);
+        if (version < 8) sql.exec("ALTER TABLE items DROP COLUMN acceptance");
         for (const path of dropColumns) {
           const [table, column] = path.split(".");
           sql.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
@@ -144,7 +177,7 @@ it.each([
     await evictDurableObject(stub);
 
     expect(await stub.getSettings()).toEqual({
-      schema_version: 9,
+      schema_version: 10,
       timezone: "Europe/Tallinn",
       ...guidance,
     });
@@ -152,11 +185,15 @@ it.each([
       project,
       expect.objectContaining({ id: INBOX_PROJECT_ID }),
     ]);
-    expect(await stub.getItem({ item_id })).toEqual(items[0]);
+    expect(await stub.getItem({ item_id })).toEqual(item);
     expect(await stub.getItemEvents({ item_id })).toMatchObject([
+      ...(hasHandoffColumns ? [{ kind: "answered" }] : []),
+      { kind: "handoff" },
       {
         kind: "created",
-        actor: dropColumns.includes("events.actor_user") ? user.name : user,
+        actor: dropColumns.some((column) => column === "events.actor_user")
+          ? user.name
+          : user,
       },
     ]);
     expect(await stub.findOAuthClient(client.id)).toEqual(
@@ -384,7 +421,7 @@ it("retires legacy demo rows after eviction and retains real descendants and tok
   });
   const token = await stub.createToken("Real token", "report", demo.id);
   await runInDurableObject(stub, (_, { storage: { sql } }) => {
-    sql.exec("UPDATE settings SET value = '8' WHERE key = 'schema_version'");
+    sql.exec("UPDATE settings SET value = '9' WHERE key = 'schema_version'");
     sql.exec("UPDATE projects SET demo = 1 WHERE id = ?", demo.id);
     sql.exec("UPDATE items SET demo = 1 WHERE id = ?", sample.item_id);
   });

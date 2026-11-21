@@ -110,6 +110,19 @@ it("initializes with current guidance and lists exactly the eight behavioural to
       },
     },
   });
+  expect(tools.find(({ name }) => name === "flag_handoff")).toMatchObject({
+    description:
+      "Use when the user must decide or provide something before the work can continue or be trusted: a decision, a review, a credential, a manual step. Say exactly what you need in the note, phrased so it can be answered in one line. When there are obvious answers, pass up to four as options. The user's reply comes back as handoff_answer on your next report_progress for the item; while you wait, report on it no more than once a minute. Set notify to true only if the user's guidance says this kind of thing is worth interrupting them for; a notification reaches their phone immediately. When in doubt, flag without notifying.",
+    inputSchema: {
+      properties: {
+        options: {
+          type: "array",
+          maxItems: 4,
+          items: { type: "string", minLength: 1, maxLength: 60 },
+        },
+      },
+    },
+  });
   expect(tools.find(({ name }) => name === "report_progress")).toMatchObject({
     description:
       'Tell the user what you are working on. Call this (1) when you start work, with status "active"; (2) after each meaningful step, or at least every 10 minutes during long work, with a one-line note; (3) when you finish, with status "done", the PR or issue link as ref_url, and as evidence the actual output that shows the item\'s acceptance criteria are met (test summary, CI result), copied rather than paraphrased; (4) when you cannot continue, with status "blocked" and the reason. If no item exists for the work yet, call add_item first. Always pass a stable agent_name.',
@@ -389,5 +402,111 @@ it("reports a flagged handoff without delivery when the token has exhausted its 
     });
   } finally {
     await workspace.unsubscribePush({ endpoint });
+  }
+});
+
+it("exposes answering to steer and returns the reply through every agent read path", async () => {
+  const { token: reportToken } = await workspace.createToken("Builder");
+  const { token: steerToken } = await workspace.createToken(
+    "Operator",
+    "steer",
+  );
+  const { tools } = await rpc<{ tools: { name: string }[] }>(
+    steerToken,
+    "tools/list",
+  );
+  expect(tools).toContainEqual(
+    expect.objectContaining({ name: "answer_handoff" }),
+  );
+
+  const title = "Handoff answer delivery";
+  const { item_id } = await workspace.addItem(human, {
+    title,
+    status: "blocked",
+  });
+  const flag = {
+    item_id,
+    note: "Which rollout?",
+    options: ["Staging", "Production"],
+  };
+  const answer = { item_id, text: "Staging" };
+  const reply = { handoff_answer: answer.text, handoff_note: flag.note };
+  const canvas = async (include_done = false) =>
+    (await call(reportToken, "get_canvas", { query: title, include_done }))
+      .structuredContent;
+  expect(
+    (await call(reportToken, "flag_handoff", flag)).isError,
+  ).toBeUndefined();
+  expect(await canvas()).toMatchObject({
+    items: [expect.not.objectContaining({ handoff_note: flag.note })],
+  });
+  expect(await call(reportToken, "answer_handoff", answer)).toMatchObject({
+    isError: true,
+    structuredContent: {
+      error: expect.stringContaining("Report scope cannot answer"),
+    },
+  });
+  expect(
+    await call(steerToken, "answer_handoff", { item_id, text: "" }),
+  ).toMatchObject({
+    isError: true,
+  });
+  expect((await workspace.getItem({ item_id })).handoff).toBe(1);
+  expect(
+    (await call(steerToken, "answer_handoff", answer)).isError,
+  ).toBeUndefined();
+
+  for (const operation of ["report_progress", "update_item"]) {
+    expect(
+      (await call(reportToken, operation, { item_id })).structuredContent,
+    ).toMatchObject(reply);
+  }
+  const response = await fetchOpen(
+    new Request("https://heed.test/api/report", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${reportToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ item_id }),
+    }),
+    bindings,
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject(reply);
+  expect(await canvas()).toMatchObject({
+    items: [{ id: item_id, status: "active", ...reply }],
+  });
+
+  const replacement = { item_id, note: "Which rollout now?" };
+  await call(reportToken, "flag_handoff", replacement);
+  expect(await workspace.getItem({ item_id })).toMatchObject({
+    handoff: 1,
+    handoff_options: "[]",
+    handoff_answer: null,
+    handoff_answered_at: null,
+  });
+  expect(
+    (await call(reportToken, "report_progress", { item_id })).structuredContent,
+  ).not.toHaveProperty("handoff_answer");
+  await call(steerToken, "answer_handoff", answer);
+  for (const status of ["done", "cancelled"] as const) {
+    if (status === "cancelled") {
+      await call(reportToken, "reopen_item", { item_id, reason: "Try again" });
+      await call(reportToken, "flag_handoff", replacement);
+      await call(steerToken, "answer_handoff", answer);
+    }
+    expect(
+      (await call(reportToken, "report_progress", { item_id, status }))
+        .structuredContent,
+    ).not.toHaveProperty("handoff_answer");
+    expect(await workspace.getItem({ item_id })).toMatchObject({
+      status,
+      handoff_answer: null,
+      handoff_answered_at: null,
+    });
+    expect(await canvas(true)).toMatchObject({
+      items: [expect.not.objectContaining({ handoff_answer: answer.text })],
+    });
   }
 });

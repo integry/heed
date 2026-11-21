@@ -38,6 +38,7 @@ export function workspaceOperationError(error: unknown) {
     message === "This command is no longer available to undo." ||
     message.startsWith("Inbox cannot ") ||
     message === "Project still has items" ||
+    message === "Item has no open handoff to answer" ||
     message.startsWith("Use reopenItem ") ||
     message.startsWith("Only done or cancelled items ") ||
     message.startsWith("Cannot add a dependency for cancelled item ") ||

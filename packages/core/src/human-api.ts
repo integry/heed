@@ -1,10 +1,15 @@
 import { z } from "zod";
-import { FlagHandoffSchema, ReopenItemSchema } from "./item-operations.js";
+import {
+  AnswerHandoffSchema,
+  FlagHandoffSchema,
+  ReopenItemSchema,
+} from "./item-operations.js";
 import { GuidanceTextSchema, TimezoneSchema } from "./workspace.js";
 import type { Item } from "./workspace.js";
 
 export const HandoffBodySchema = z.union([
-  FlagHandoffSchema.pick({ note: true }),
+  FlagHandoffSchema.pick({ note: true, options: true }),
+  AnswerHandoffSchema.omit({ item_id: true }),
   z.strictObject({ clear: z.literal(true) }),
 ]);
 

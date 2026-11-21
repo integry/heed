@@ -381,6 +381,7 @@ Served at `/mcp` (Streamable HTTP). The same operations back `/api/command` and 
 | `update_item` | `item_id`, `title?`, `tags?`, `ref_url?`, `parent_id?`, `priority?`, `scheduled_on?`, `time_type?`, `time_at?`, `acceptance?`; steer-only: `project?`, `hidden?`, `sort_key?`, position, unlock | Edits an item. Writes to human-locked fields from a `report` token are ignored and reported back. |
 | `set_dependency` | `item_id`, `blocked_by_id`, `action: "add"｜"remove"` | Adds or removes a dependency edge. |
 | `flag_handoff` | `item_id`, `note`, `options?`, `notify?` | Marks the item as needing a human decision or input and records exactly what is needed. With `notify: true` it also sends a push notification. Clearing the flag is steer-only. |
+| `answer_handoff` | `item_id`, `text` | Human or steer only. Records a reply to an open handoff and clears the flag. |
 | `reopen_item` | `item_id` or `external_key`, `reason` | Brings a done item back (boomerang), at any age. |
 | `set_guidance` | `text` | Steer-only. Replaces the guidance text (used by the command bar: "from now on…"). |
 
@@ -414,8 +415,8 @@ Why shadow only: published evaluations find Jev well calibrated and close to fro
 A handoff is a question, and the answer has to reach the agent that asked.
 
 * `flag_handoff` accepts `options?`: up to four suggested replies of at most 60 characters each, shown as one-tap chips.
-* The human answers from the field, the text line or voice (a human or `steer` operation, `answer_handoff(item_id, text)`, at most 2,000 characters). It stores `handoff_answer` and `handoff_answered_at` on the item, clears `handoff`, sets the item back to `active` if it was `blocked`, and appends an `answered` event.
-* The answer is returned to agents as `handoff_answer` (with the original note) in the response to any `report_progress` or `update_item` on that item, and on that item in `get_canvas`, until the item is next flagged or completed. Heed does not push it: MCP stays request and response (section 9), so an agent that is waiting calls `report_progress` on the item, no more than once a minute.
+* The human answers from the field, the text line or voice (a human or `steer` operation, `answer_handoff(item_id, text)`, at most 2,000 characters). It stores `handoff_answer` and `handoff_answered_at` on the item, clears `handoff`, sets the item back to `active` if it was `blocked`, and appends an `answered` event. A signed-in client can also send `{ "text": "..." }` to `POST /api/items/:id/handoff`.
+* The answer is returned to agents as `handoff_answer` (with the original note) in the response to any `report_progress` or `update_item` on that item, in `POST /api/report`, and on that item in `get_canvas`, until the item is next flagged, marked done, or cancelled. Heed does not push it: MCP stays request and response (section 9), so an agent that is waiting calls `report_progress` on the item, no more than once a minute.
 
 ### User guidance
 

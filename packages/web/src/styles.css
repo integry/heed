@@ -881,3 +881,31 @@ fieldset {
   border-radius: 50%;
   background: var(--muted);
 }
+
+.handoff-card p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.handoff-replies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 6px;
+}
+
+.handoff-replies .handoff-chip {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.handoff-reply-form {
+  display: grid;
+  justify-items: start;
+  margin-top: 8px;
+}
+
+.handoff-reply-form textarea {
+  width: 100%;
+}

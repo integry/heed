@@ -485,6 +485,12 @@ function Workspace({
                   setRadarSelection(id);
                 }
               }}
+              inspectItem={(id) => {
+                setSelectedItem({ id });
+                setRadarSelection(id);
+                openPanel("inspector");
+              }}
+              save={connection.save}
               move={connection.mutate}
               reschedule={(id, date) => updateItem(id, { scheduled_on: date })}
               moveProject={(id, project) => updateItem(id, { project })}

@@ -14,6 +14,23 @@ function reconcileWorkspaceColumns(sql: SqlStorage): void {
   }
 }
 
+function ensureHandoffColumns(sql: SqlStorage): void {
+  const columns = new Set(
+    sql
+      .exec<{ name: string }>("SELECT name FROM pragma_table_info('items')")
+      .toArray()
+      .map(({ name }) => name),
+  );
+  for (const [name, definition] of [
+    ["handoff_options", "TEXT NOT NULL DEFAULT '[]'"],
+    ["handoff_answer", "TEXT"],
+    ["handoff_answered_at", "TEXT"],
+  ]) {
+    if (!columns.has(name))
+      sql.exec(`ALTER TABLE items ADD COLUMN ${name} ${definition}`);
+  }
+}
+
 const migrations = [
   // Version 1
   (sql: SqlStorage) => {
@@ -166,8 +183,11 @@ const migrations = [
       "ALTER TABLE items ADD COLUMN acceptance TEXT NOT NULL DEFAULT '[]'",
     );
   },
-  // Version 9 retires the sample workspace, keeping real items attached.
+  // Version 9 introduced handoff replies on the target branch.
+  ensureHandoffColumns,
+  // Version 10 reconciles both version-9 layouts and retires sample data.
   (sql: SqlStorage) => {
+    ensureHandoffColumns(sql);
     if (
       !sql
         .exec(

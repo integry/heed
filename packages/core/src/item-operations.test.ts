@@ -1,6 +1,8 @@
 import { expect, it } from "vitest";
 import {
   AddItemSchema,
+  AnswerHandoffSchema,
+  FlagHandoffSchema,
   ReportProgressSchema,
   UpdateItemSchema,
 } from "./item-operations.js";
@@ -45,4 +47,30 @@ it("preserves evidence text at the character limit", () => {
   expect(() =>
     ReportProgressSchema.parse({ ...input, evidence: evidence + "🙂" }),
   ).toThrow("Evidence must be at most 4,000 characters");
+});
+
+it("validates handoff reply lengths and the number of options", () => {
+  const handoff = { item_id: "item", note: "Which rollout?" };
+  expect(FlagHandoffSchema.safeParse(handoff).success).toBe(true);
+  expect(
+    FlagHandoffSchema.safeParse({
+      ...handoff,
+      options: Array<string>(4).fill("🙂".repeat(60)),
+    }).success,
+  ).toBe(true);
+  for (const options of [[""], ["a".repeat(61)], Array<string>(5).fill("a")]) {
+    expect(FlagHandoffSchema.safeParse({ ...handoff, options }).success).toBe(
+      false,
+    );
+  }
+  for (const [text, success] of [
+    ["", false],
+    ["a", true],
+    ["🙂".repeat(2_000), true],
+    ["a".repeat(2_001), false],
+  ] as const) {
+    expect(
+      AnswerHandoffSchema.safeParse({ item_id: "item", text }).success,
+    ).toBe(success);
+  }
 });
