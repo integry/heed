@@ -13,6 +13,8 @@ import {
   needsMeCount,
   progress,
   radarBandsFor,
+  radarSubgroups,
+  radarTimesToday,
   rollUpRing,
   streamOrder,
   streamRows,
@@ -61,6 +63,157 @@ function item(id: string, patch: Partial<Item> = {}): Item {
 function index(items: Item[]) {
   return new Map(items.map((item) => [item.id, item]));
 }
+
+describe("radar time zoom", () => {
+  const timezone = "America/Los_Angeles";
+
+  it("uses remaining local dates and always includes the radar's Tomorrow", () => {
+    const parent = item("parent", { scheduled_on: "2024-03-10" });
+    const child = item("child", { parent_id: parent.id });
+    const timed = item("timed", { time_at: "2024-03-11T06:59:00Z" });
+    expect(
+      radarSubgroups(
+        "this-week",
+        [child, timed],
+        index([parent]),
+        [],
+        Date.parse("2024-03-10T07:59:00Z"),
+        timezone,
+      ),
+    ).toEqual([
+      {
+        id: "2024-03-10",
+        day: "2024-03-10",
+        label: "Sun",
+        itemIds: ["child", "timed"],
+      },
+    ]);
+    expect(
+      radarSubgroups(
+        "this-week",
+        [],
+        index([]),
+        [],
+        Date.parse("2024-03-10T08:00:00Z"),
+        timezone,
+      ),
+    ).toEqual([
+      { id: "2024-03-11", day: "2024-03-11", label: "Mon", itemIds: [] },
+    ]);
+    expect(
+      radarSubgroups("this-week", [], index([]), [], now, utc).map(
+        ({ day }) => day,
+      ),
+    ).toEqual(["2024-04-04", "2024-04-05", "2024-04-06", "2024-04-07"]);
+  });
+
+  it("keeps four local calendar weeks before grouping remaining dates by month", () => {
+    const items = [
+      item("week-four", { time_at: "2025-01-27T07:59:00Z" }),
+      item("cutoff", { time_at: "2025-01-27T08:00:00Z" }),
+      item("february", { scheduled_on: "2025-02-01" }),
+      item("march", { scheduled_on: "2025-03-01" }),
+    ];
+    expect(
+      radarSubgroups(
+        "later",
+        items,
+        index(items),
+        [],
+        Date.parse("2024-12-29T08:30:00Z"),
+        timezone,
+      ).map(({ label, itemIds }) => [label, itemIds]),
+    ).toEqual([
+      ["Week of Dec 31", []],
+      ["Week of Jan 6", []],
+      ["Week of Jan 13", []],
+      ["Week of Jan 20", ["week-four"]],
+      ["Jan 2025", ["cutoff"]],
+      ["Feb 2025", ["february"]],
+      ["Mar 2025", ["march"]],
+    ]);
+  });
+
+  it("groups Today by attention and orders Next by manual order then priority", () => {
+    const items = [
+      item("low", { priority: 1 }),
+      item("manual-last", { sort_key: 2 }),
+      item("high", { priority: 10 }),
+      item("manual-first", { sort_key: 1, priority: 1, time_type: "fixed" }),
+      item("active", {
+        status: "active",
+        last_heartbeat_at: "2024-04-03T11:55:00Z",
+      }),
+      item("handoff", {
+        status: "active",
+        handoff: 1,
+        last_heartbeat_at: "2024-04-03T11:55:00Z",
+      }),
+      item("stale", { status: "active" }),
+      item("done-today", {
+        status: "done",
+        completed_at: "2024-04-03T07:00:00Z",
+      }),
+      item("done-yesterday", {
+        status: "done",
+        completed_at: "2024-04-03T06:59:00Z",
+      }),
+    ];
+    expect(
+      radarSubgroups("today", items, index(items), [], now, timezone).map(
+        ({ label, itemIds }) => [label, itemIds],
+      ),
+    ).toEqual([
+      ["Needs me", ["handoff", "stale"]],
+      ["Live now", ["active"]],
+      ["Next", ["manual-first", "manual-last", "high", "low"]],
+      ["Done today", ["done-today"]],
+    ]);
+    const projects = [
+      { id: "other", name: "Other project" },
+      { id: "inbox", name: "Inbox" },
+    ];
+    expect(
+      radarSubgroups(
+        "backlog",
+        items.slice(0, 1),
+        index(items),
+        projects,
+        now,
+        timezone,
+      ),
+    ).toEqual([
+      { id: "other", label: "Other project", itemIds: [] },
+      { id: "inbox", label: "Inbox", itemIds: ["low"] },
+    ]);
+  });
+
+  it("marks only fixed and deadline times on the workspace's local Today", () => {
+    const items = [
+      item("prior-day", {
+        time_type: "fixed",
+        time_at: "2024-04-03T06:59:00Z",
+      }),
+      item("today-fixed", {
+        time_type: "fixed",
+        time_at: "2024-04-03T07:00:00Z",
+      }),
+      item("today-deadline", {
+        time_type: "deadline",
+        time_at: "2024-04-04T06:59:00Z",
+      }),
+      item("next-day", {
+        time_type: "deadline",
+        time_at: "2024-04-04T07:00:00Z",
+      }),
+      item("flexible", { time_at: "2024-04-03T12:00:00Z" }),
+      item("missing", { time_type: "fixed" }),
+    ];
+    expect(
+      radarTimesToday(items, now, timezone).map(({ item }) => item.id),
+    ).toEqual(["today-fixed", "today-deadline"]);
+  });
+});
 
 describe("scheduling", () => {
   it.each([

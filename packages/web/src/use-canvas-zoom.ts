@@ -1,6 +1,6 @@
-import { select as d3Select } from "d3-selection";
+import { pointer, select as d3Select } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom";
-import { useEffect, useRef } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
 
 export function useCanvasZoom<
   Canvas extends SVGSVGElement | HTMLElement = SVGSVGElement,
@@ -15,21 +15,29 @@ export function useCanvasZoom<
     x = 0,
     y = 0,
     onZoom,
+    onZoomIn,
   }: {
     doubleTapZoom?: boolean;
     x?: number;
     y?: number;
     onZoom?: (scale: number) => void;
+    onZoomIn?: (point: { x: number; y: number }) => void;
   } = {},
 ) {
   const svg = useRef<Canvas>(null);
   const layer = useRef<Layer>(null);
   const behavior = useRef<ZoomBehavior<Canvas, unknown>>(null);
+  const reportsFocus = Boolean(onZoomIn);
+  const zoomInto = useEffectEvent((point: { x: number; y: number }) =>
+    onZoomIn?.(point),
+  );
 
   useEffect(() => {
     const element = svg.current!;
     const scene = layer.current!;
     const canvas = d3Select(element);
+    let startScale = 1;
+    let zoomedIn = false;
     const control = zoom<Canvas, unknown>()
       .extent([
         [x, y],
@@ -48,7 +56,30 @@ export function useCanvasZoom<
           !(event.target as Element).closest("[data-canvas-drag]")
         );
       })
-      .on("zoom", ({ transform }) => {
+      .on("start", ({ transform }) => {
+        startScale = transform.k;
+        zoomedIn = false;
+      })
+      .on("zoom", ({ transform, sourceEvent }) => {
+        // Use the scene's coordinates before this zoom step moves the target.
+        if (
+          reportsFocus &&
+          !zoomedIn &&
+          transform.k >= startScale * 1.12 &&
+          sourceEvent &&
+          !dragging()
+        ) {
+          const touches = (sourceEvent as TouchEvent).touches;
+          const points =
+            touches?.length === 2
+              ? [pointer(touches[0], scene), pointer(touches[1], scene)]
+              : [pointer(sourceEvent, scene)];
+          const [a, b = a] = points;
+          if (a.every(Number.isFinite) && b.every(Number.isFinite)) {
+            zoomedIn = true;
+            zoomInto({ x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2 });
+          }
+        }
         if (scene instanceof SVGElement)
           scene.setAttribute("transform", String(transform));
         else
@@ -75,7 +106,7 @@ export function useCanvasZoom<
       canvas.on(".zoom", null);
       behavior.current = null;
     };
-  }, [width, height, dragging, doubleTapZoom, x, y, onZoom]);
+  }, [width, height, dragging, doubleTapZoom, x, y, onZoom, reportsFocus]);
 
   function resetZoom() {
     if (behavior.current)

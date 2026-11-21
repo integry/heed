@@ -93,7 +93,7 @@ type LabelItem = {
   badge: string | null;
 };
 
-type LabelBox = {
+export type LabelBox = {
   x: number;
   y: number;
   halfWidth: number;
@@ -127,16 +127,20 @@ export function outsideLabels(
   items: readonly LabelItem[],
   scale: number,
   visibleBands: readonly RadarBand[],
+  reserved: readonly LabelBox[] = [],
 ) {
   const labels = new Map<string, OutsideLabel>();
-  const occupied = visibleBands.map((band) => {
-    const { point, halfWidth, halfHeight } = ringLabel(band);
-    return {
-      ...point,
-      halfWidth: halfWidth / scale,
-      halfHeight: halfHeight / scale,
-    };
-  });
+  const occupied = [
+    ...reserved,
+    ...visibleBands.map((band) => {
+      const { point, halfWidth, halfHeight } = ringLabel(band);
+      return {
+        ...point,
+        halfWidth: halfWidth / scale,
+        halfHeight: halfHeight / scale,
+      };
+    }),
+  ];
   const candidates = items
     // In crowded views, keep full titles available through interaction.
     .filter(({ stamp }) => stamp || items.length <= 32)

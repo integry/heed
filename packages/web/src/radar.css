@@ -147,7 +147,9 @@
 }
 
 .radar-project-label,
-.radar-band-label {
+.radar-band-label,
+.radar-subring-label,
+.radar-rim-marker text {
   paint-order: stroke;
   stroke: #152a28;
   stroke-width: 3px;
@@ -162,6 +164,50 @@
 
 .radar-band-label {
   fill: #afcfc0;
+  cursor: pointer;
+}
+
+.radar-band-label:is(:hover, :focus-visible, [aria-expanded="true"]) {
+  fill: #e0f8e9;
+  text-decoration: underline;
+}
+
+.radar-subring {
+  fill: none;
+  stroke: #81a89a;
+  stroke-opacity: 0.72;
+}
+
+.radar-subring-label {
+  fill: #d6e9de;
+  pointer-events: none;
+}
+
+.radar-rim-marker {
+  fill: #ffd49e;
+  pointer-events: none;
+}
+
+.radar-rim-marker line {
+  stroke: #ffd49e;
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
+
+.radar-band-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .radar-band {
+    transition: r 180ms ease-out;
+  }
+
+  .radar-chart:not([data-dragging="true"]) .radar-node {
+    transition: transform 180ms ease-out;
+  }
 }
 
 .radar-drop-cell {

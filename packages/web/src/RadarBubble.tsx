@@ -157,7 +157,11 @@ export const RadarBubble = memo(function RadarBubble({
   const handle = (radius + 6) / Math.SQRT2;
 
   return (
-    <g className="radar-node" transform={`translate(${point.x},${point.y})`}>
+    <g
+      className="radar-node"
+      transform={`translate(${point.x},${point.y})`}
+      style={{ transform: `translate(${point.x}px,${point.y}px)` }}
+    >
       <g
         data-canvas-drag
         data-radar-bubble={item.id}

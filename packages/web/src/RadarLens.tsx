@@ -11,7 +11,10 @@ import {
 import {
   effectiveSchedule,
   radarBandsFor,
+  radarSubgroups,
+  radarTimesToday,
   rollUpRing,
+  type RadarSubgroup,
   type StreamRow,
 } from "@heedwork/core";
 import type { CanvasItem } from "@heedwork/core";
@@ -21,6 +24,7 @@ import { RadarBubble, bubbleDetails, type Bubble } from "./RadarBubble";
 import { itemRing } from "./workspace-view";
 import {
   bubbleRadius,
+  bandBounds,
   cellBounds,
   cellPoint,
   CENTER,
@@ -30,6 +34,7 @@ import {
   HEIGHT,
   layoutGoal,
   layoutRadar,
+  labelWidth,
   MIN_FIELD_SCALE,
   polar,
   priorityForRadius,
@@ -37,6 +42,7 @@ import {
   RADAR_LABELS,
   RADAR_LABEL_FONT,
   RADAR_RADIUS,
+  radarBoundaries,
   radarDrop,
   radarViewport,
   readRadarPosition,
@@ -47,8 +53,9 @@ import {
   WIDTH,
   type Cell,
   type Point,
+  type RadialBounds,
 } from "./radar-geometry";
-import { outsideLabels, radarTimeBadge } from "./radar-labels";
+import { outsideLabels, radarTimeBadge, type LabelBox } from "./radar-labels";
 import { useCanvasDrag } from "./use-canvas-drag";
 import { useCanvasZoom } from "./use-canvas-zoom";
 import "./radar.css";
@@ -72,6 +79,11 @@ type Gesture = {
   radius: number;
 };
 type Preview = { id: string; point: Point; priority?: number };
+type Subring = RadarSubgroup & RadialBounds;
+
+function subgroupLabel({ inner, outer }: RadialBounds) {
+  return polar(-Math.PI / 2, (inner + outer) / 2);
+}
 
 function pathForCell(cell: Cell) {
   const { inner, outer, start, span } = cellBounds(cell);
@@ -97,13 +109,15 @@ function RadarField({
   highlight,
   scale,
   showLabels,
-  visibleBands,
+  edges,
+  subrings,
 }: {
   projects: readonly Project[];
   highlight: Cell | null;
   scale: number;
   showLabels: boolean;
-  visibleBands: readonly RadarBand[];
+  edges: number[];
+  subrings: readonly Subring[];
 }) {
   const sectors = projects.length || 1;
   const labelId = useId();
@@ -112,7 +126,7 @@ function RadarField({
   return (
     <g aria-hidden="true" className="radar-field">
       {[...RADAR_BANDS].reverse().map((band) => {
-        const { outer } = cellBounds({ band, sector: 0, sectors });
+        const { outer } = bandBounds(band, edges);
         return (
           <circle
             key={band}
@@ -124,6 +138,15 @@ function RadarField({
           />
         );
       })}
+      {subrings.slice(0, -1).map(({ id, outer }) => (
+        <circle
+          key={id}
+          cx={CENTER.x}
+          cy={CENTER.y}
+          r={outer}
+          className="radar-subring"
+        />
+      ))}
       {projects.map((project, sector) => {
         const { start, span } = cellBounds({
           band: "backlog",
@@ -181,22 +204,6 @@ function RadarField({
       {highlight && (
         <path d={pathForCell(highlight)} className="radar-drop-cell" />
       )}
-      {visibleBands.map((band) => {
-        const { point, text } = ringLabel(band);
-        return (
-          <text
-            key={band}
-            x={point.x}
-            y={point.y}
-            dy="0.35em"
-            fontSize={font}
-            className="radar-band-label"
-            textAnchor="middle"
-          >
-            {text}
-          </text>
-        );
-      })}
     </g>
   );
 }
@@ -271,6 +278,7 @@ export function RadarLens({
   const { cancel: cancelGesture, start: startDrag } = drag;
   const [tooltip, setTooltip] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
+  const [splitBand, setSplitBand] = useState<RadarBand | null>(null);
   const chart = useRef<HTMLDivElement>(null);
   const [{ width, height }, setSize] = useState({
     width: WIDTH,
@@ -298,6 +306,7 @@ export function RadarLens({
   );
   const requestedGoal = goalId ? rows.get(goalId) : undefined;
   const goal = requestedGoal?.children.length ? requestedGoal : undefined;
+  const split = goal ? null : splitBand;
   const entries = goal?.children ?? roots;
   const viewport = radarViewport(width, height, Boolean(goal));
   const labelScale = viewport.scale * zoom;
@@ -375,6 +384,75 @@ export function RadarLens({
   if (layout.signature !== signature) setLayout(buildLayout());
 
   const visibleBands = layout.radar?.visibleBands ?? [];
+  const splitView = useMemo(() => {
+    const viewItems = setup.map(({ item }) => item);
+    const groups = split
+      ? radarSubgroups(
+          split,
+          setup
+            .filter(({ cell }) => cell.band === split)
+            .map(({ item }) => item),
+          items,
+          projects,
+          now,
+          timezone,
+        )
+      : [];
+    const edges = radarBoundaries(split, groups.length);
+    const subrings: Subring[] = [];
+    const membership = new Map<
+      string,
+      { radial: Subring; orderedRadius?: number }
+    >();
+    if (split) {
+      const { inner, outer } = bandBounds(split, edges);
+      const step = (outer - inner) / groups.length;
+      for (const [index, group] of groups.entries()) {
+        const radial = {
+          ...group,
+          inner: inner + index * step,
+          outer: inner + (index + 1) * step,
+        };
+        subrings.push(radial);
+        group.itemIds.forEach((id, rank) =>
+          membership.set(id, {
+            radial,
+            orderedRadius:
+              split === "today" && group.id === "next"
+                ? (rank + 0.5) / group.itemIds.length
+                : undefined,
+          }),
+        );
+      }
+    }
+    const markers = new Map<string, string[]>();
+    if (split === "today") {
+      for (const { item, time } of radarTimesToday(viewItems, now, timezone)) {
+        const stamp = timeFormatter.format(time);
+        if (!markers.has(stamp)) markers.set(stamp, []);
+        markers.get(stamp)!.push(item.title);
+      }
+    }
+    return { edges, membership, subrings, markers };
+  }, [split, setup, items, projects, now, timezone, timeFormatter]);
+  const { edges, subrings, markers } = splitView;
+  const shownBands = split ? RADAR_BANDS : visibleBands;
+  const rim = useMemo(
+    () =>
+      [...markers].map(([stamp, titles]) => {
+        const [hour, minute] = stamp.split(":").map(Number);
+        const angle = ((hour + minute / 60) * Math.PI) / 12 - Math.PI / 2;
+        const { outer } = bandBounds("today", edges);
+        return {
+          stamp,
+          titles,
+          tick: polar(angle, outer),
+          end: polar(angle, outer + 5 / labelScale),
+          point: polar(angle, outer + 16 / labelScale),
+        };
+      }),
+    [markers, edges, labelScale],
+  );
   const allItems = useMemo(() => [...items.values()], [items]);
   const bubbles = useMemo(
     () =>
@@ -383,14 +461,33 @@ export function RadarLens({
         const plotted = layout.radar?.placements.get(item.id);
         const placement = goal ? packed : plotted;
         if (!placement) return [];
-        const { scale } = placement;
-        const radius = bubbleRadius(item.priority) * scale;
+        let { scale } = placement;
+        const size = bubbleRadius(item.priority);
+        const group = splitView.membership.get(item.id);
+        const radial = group?.radial ?? bandBounds(cell.band, splitView.edges);
+        const base = bandBounds(cell.band);
+        if (split && !goal)
+          scale *= Math.min(
+            1,
+            (radial.outer - radial.inner) / (base.outer - base.inner),
+          );
+        const radius = size * scale;
         const point =
           "point" in placement
             ? position
               ? goalPoint(position, radius)
               : placement.point
-            : cellPoint(cell, placement.position);
+            : cellPoint(
+                { ...cell, radial },
+                {
+                  angle: placement.position.angle,
+                  radius: group
+                    ? (position?.radius ??
+                      group.orderedRadius ??
+                      placement.position.radius)
+                    : placement.position.radius,
+                },
+              );
 
         const ring = itemRing(item, now, items, dependencies);
         const rollup =
@@ -412,25 +509,64 @@ export function RadarLens({
           } satisfies Bubble,
         ];
       }),
-    [setup, layout, goal, now, items, dependencies, projects, rows, allItems],
+    [
+      setup,
+      layout,
+      goal,
+      now,
+      items,
+      dependencies,
+      projects,
+      rows,
+      allItems,
+      split,
+      splitView,
+    ],
   );
-  const callouts = useMemo(
-    () =>
-      goal || labelScale < MIN_FIELD_SCALE
-        ? undefined
-        : outsideLabels(
-            bubbles.map(({ item, point, radius }) => ({
-              id: item.id,
-              title: item.title,
-              point,
-              radius,
-              ...radarTimeBadge(item, timeFormatter),
-            })),
-            labelScale,
-            visibleBands,
-          ),
-    [bubbles, goal, labelScale, timeFormatter, visibleBands],
-  );
+  const callouts = useMemo(() => {
+    if (goal || labelScale < MIN_FIELD_SCALE) return;
+    const reserved: LabelBox[] = [];
+    if (split) {
+      const font = RADAR_LABEL_FONT / labelScale;
+      for (const { point, text } of [
+        ...shownBands.map((band) => ringLabel(band, edges, band === split)),
+        ...subrings.map((group) => ({
+          point: subgroupLabel(group),
+          text: group.label,
+        })),
+        ...rim.map(({ point, stamp }) => ({ point, text: stamp })),
+      ]) {
+        reserved.push({
+          ...point,
+          halfWidth: labelWidth(text, font) / 2 + 5 / labelScale,
+          halfHeight: font / 2 + 5 / labelScale,
+        });
+      }
+    }
+    return outsideLabels(
+      bubbles.map(({ item, point, radius }) => ({
+        id: item.id,
+        title: item.title,
+        point,
+        radius,
+        ...radarTimeBadge(item, timeFormatter),
+      })),
+      labelScale,
+      split ? [] : visibleBands,
+      reserved,
+    );
+  }, [
+    bubbles,
+    goal,
+    labelScale,
+    timeFormatter,
+    visibleBands,
+    split,
+    shownBands,
+    edges,
+    subrings,
+    rim,
+  ]);
   const drawOrder = useMemo(
     () =>
       [...bubbles].sort(
@@ -465,7 +601,16 @@ export function RadarLens({
     viewport.height,
     goal?.item.id ?? null,
     drag.dragging,
-    { x: viewport.x, y: viewport.y, onZoom: setZoom },
+    {
+      x: viewport.x,
+      y: viewport.y,
+      onZoom: setZoom,
+      onZoomIn: (point) => {
+        if (goal) return;
+        const cell = targetCell(point, Math.max(1, projects.length), edges);
+        if (cell) setSplitBand(cell.band);
+      },
+    },
   );
 
   function scenePoint(event: PointerEvent): Point {
@@ -550,6 +695,19 @@ export function RadarLens({
     return false;
   }
 
+  function dropTarget(point: Point) {
+    const cell = targetCell(point, projects.length, edges);
+    const radialDistance = distance(point, CENTER);
+    const group =
+      cell?.band === split
+        ? subrings.find(({ outer }) => radialDistance <= outer + 1e-9)
+        : undefined;
+    return {
+      cell: cell && group ? { ...cell, radial: group } : cell,
+      day: group?.day,
+    };
+  }
+
   function release(event: PointerEvent<SVGSVGElement>) {
     const result = dragPreview(event, drag.finish(event));
     if (!result || !live) return;
@@ -577,6 +735,7 @@ export function RadarLens({
         );
       }
     } else {
+      const { cell, day } = dropTarget(next.point);
       const drop = radarDrop(
         next.point,
         projectIds,
@@ -587,6 +746,8 @@ export function RadarLens({
         },
         dropTime,
         timezone,
+        cell,
+        day,
       );
       if (!drop) return;
       const { band: target, ...placement } = drop;
@@ -623,7 +784,7 @@ export function RadarLens({
   const moving = preview && preview.priority === undefined;
   let highlight: Cell | null = null;
   if (!goal && moving) {
-    const cell = targetCell(preview.point, projects.length);
+    const { cell } = dropTarget(preview.point);
     const item = bubbleById.get(preview.id)?.item;
     if (
       cell &&
@@ -636,9 +797,24 @@ export function RadarLens({
   const selected = selectedId ? bubbleById.get(selectedId) : undefined;
   const activeTooltip =
     tooltip ?? (selected && bubbleDetails(selected, now, timeFormatter).detail);
+  const font = RADAR_LABEL_FONT / labelScale;
+
+  function toggleBand(band: RadarBand) {
+    setSplitBand((previous) => (previous === band ? null : band));
+    setTooltip(null);
+    setDropMessage(null);
+  }
 
   return (
-    <div className="radar">
+    <div
+      className="radar"
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && split) {
+          event.stopPropagation();
+          setSplitBand(null);
+        }
+      }}
+    >
       <div className="radar-toolbar">
         {goal && (
           <nav className="radar-breadcrumb" aria-label="Goal breadcrumb">
@@ -667,6 +843,27 @@ export function RadarLens({
             )}
           </nav>
         )}
+        {!goal && RADAR_BANDS.some((band) => !visibleBands.includes(band)) && (
+          <div
+            className="radar-band-controls"
+            role="group"
+            aria-label="Time bands"
+          >
+            {RADAR_BANDS.filter((band) => !visibleBands.includes(band)).map(
+              (band) => (
+                <button
+                  key={band}
+                  className="subtle"
+                  type="button"
+                  aria-expanded={band === split}
+                  onClick={() => toggleBand(band)}
+                >
+                  {RADAR_LABELS[band]}
+                </button>
+              ),
+            )}
+          </div>
+        )}
         <div
           className="radar-zoom-controls"
           aria-label="Radar zoom"
@@ -689,7 +886,10 @@ export function RadarLens({
             className="subtle"
             type="button"
             aria-label="Reset zoom"
-            onClick={resetZoom}
+            onClick={() => {
+              setSplitBand(null);
+              resetZoom();
+            }}
           >
             Fit
           </button>
@@ -789,7 +989,8 @@ export function RadarLens({
                 highlight={highlight}
                 scale={labelScale}
                 showLabels={viewport.scale >= MIN_FIELD_SCALE}
-                visibleBands={visibleBands}
+                edges={edges}
+                subrings={subrings}
               />
             )}
             {displayed.map((bubble) => (
@@ -810,10 +1011,91 @@ export function RadarLens({
                 onTooltip={setTooltip}
               />
             ))}
+            {!goal && (
+              <>
+                {subrings.map((group) => {
+                  const { x, y } = subgroupLabel(group);
+                  return (
+                    <text
+                      key={group.id}
+                      x={x}
+                      y={y}
+                      dy="0.35em"
+                      fontSize={font}
+                      textAnchor="middle"
+                      className="radar-subring-label"
+                      data-day={group.day}
+                    >
+                      {group.label}
+                    </text>
+                  );
+                })}
+                {rim.map(({ stamp, titles, tick, end, point }) => (
+                  <g
+                    key={stamp}
+                    className="radar-rim-marker"
+                    aria-label={`${stamp}, ${titles.join(", ")}`}
+                    role="img"
+                  >
+                    <title>{titles.join(", ")}</title>
+                    <line x1={tick.x} y1={tick.y} x2={end.x} y2={end.y} />
+                    <text
+                      x={point.x}
+                      y={point.y}
+                      dy="0.35em"
+                      textAnchor="middle"
+                      fontSize={font}
+                    >
+                      {stamp}
+                    </text>
+                  </g>
+                ))}
+                {shownBands.map((band) => {
+                  const { point, text } = ringLabel(
+                    band,
+                    edges,
+                    band === split,
+                  );
+                  return (
+                    <text
+                      key={band}
+                      x={point.x}
+                      y={point.y}
+                      dy="0.35em"
+                      fontSize={font}
+                      className="radar-band-label"
+                      textAnchor="middle"
+                      role="button"
+                      tabIndex={visibleBands.includes(band) ? 0 : undefined}
+                      aria-hidden={!visibleBands.includes(band) || undefined}
+                      aria-label={RADAR_LABELS[band]}
+                      aria-expanded={band === split}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleBand(band);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          toggleBand(band);
+                        }
+                      }}
+                    >
+                      {text}
+                    </text>
+                  );
+                })}
+              </>
+            )}
           </g>
         </svg>
         <div aria-live="polite">
           {dropMessage && <p className="radar-tooltip">{dropMessage}</p>}
+        </div>
+        <div className="sr-only" aria-live="polite">
+          {split
+            ? `${RADAR_LABELS[split]} split${subrings.length ? `: ${subrings.map(({ label }) => label).join(", ")}` : ""}.`
+            : "Whole radar."}
         </div>
         {!dropMessage && activeTooltip && !preview && (
           <p className="radar-tooltip">{activeTooltip}</p>
