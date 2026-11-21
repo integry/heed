@@ -748,7 +748,7 @@ it("sends Web Push only when an agent requests notification and records provider
         authorization: expect.stringMatching(/^vapid t=/),
       }),
       body: expect.any(Uint8Array),
-      redirect: "error",
+      redirect: "manual",
     }),
   );
   const log = await events(stub, item_id);
