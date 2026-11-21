@@ -62,7 +62,6 @@ export const GuidanceSchema = z.object({
 export const SettingsSchema = GuidanceSchema.extend({
   schema_version: z.int().positive(),
   timezone: TimezoneSchema,
-  onboarding_dismissed: z.boolean().optional(),
 });
 
 export const SettingSchema = z.object({

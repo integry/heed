@@ -190,10 +190,22 @@ export function useCommandBar(
 export function CommandBar({
   command,
   live,
+  enabled,
 }: {
   command: ReturnType<typeof useCommandBar>;
   live: boolean;
+  enabled: boolean;
 }) {
+  const input = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (
+      live &&
+      enabled &&
+      window.matchMedia?.("(min-width: 761px)").matches &&
+      document.activeElement === document.body
+    )
+      input.current?.focus({ preventScroll: true });
+  }, [live, enabled]);
   const { voice, action, undoing } = command;
   const busy = action.busy || Boolean(voice);
   const message = action.busy
@@ -210,6 +222,34 @@ export function CommandBar({
     : command.voiceError || action.error;
   return (
     <div className="command-bar">
+      <div
+        className="command-feedback"
+        hidden={!message && !error && !command.undoId}
+      >
+        {error && <p role="alert">{error}</p>}
+        <p role="status">{message}</p>
+        {command.clarification && (
+          <button
+            type="button"
+            className="subtle"
+            disabled={busy}
+            onClick={command.newCommand}
+          >
+            New command
+          </button>
+        )}
+        {command.undoId && (
+          <button
+            type="button"
+            className="subtle"
+            disabled={!enabled || !live || busy}
+            onClick={command.undo}
+          >
+            Undo
+          </button>
+        )}
+      </div>
+
       <form
         className="command-controls"
         onSubmit={(event) => {
@@ -217,7 +257,10 @@ export function CommandBar({
           if (live) command.submit();
         }}
       >
-        {command.microphone && (
+        <span className="command-prompt" aria-hidden="true">
+          ›
+        </span>
+        {enabled && command.microphone && (
           <button
             type="button"
             className="subtle command-mic"
@@ -244,20 +287,26 @@ export function CommandBar({
           </button>
         )}
         <textarea
+          ref={input}
           aria-label="Workspace command"
           rows={1}
           enterKeyHint="send"
           placeholder={
-            command.clarification
-              ? "Answer the question…"
-              : "Tell Heed what to change…"
+            !enabled
+              ? "Workspace commands unavailable"
+              : command.clarification
+                ? "Answer the question…"
+                : "Tell Heed what to change…"
           }
           value={command.draft}
           maxLength={COMMAND_TEXT_LIMIT}
           autoComplete="off"
-          disabled={!live || busy}
+          disabled={!enabled || !live || busy}
           onChange={(event) => command.setDraft(event.target.value)}
           onKeyDown={(event) => {
+            if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+              event.currentTarget.blur();
+            }
             if (
               event.key === "Enter" &&
               !event.shiftKey &&
@@ -268,40 +317,15 @@ export function CommandBar({
             }
           }}
         />
-        <button
-          className="primary"
-          disabled={!live || busy || !command.draft.trim()}
-        >
-          Send
-        </button>
+        {enabled && (
+          <button
+            className="text-control command-send"
+            disabled={!live || busy || !command.draft.trim()}
+          >
+            Send
+          </button>
+        )}
       </form>
-      <div
-        className="command-feedback"
-        hidden={!message && !error && !command.undoId}
-      >
-        {error && <p role="alert">{error}</p>}
-        <p role="status">{message}</p>
-        {command.clarification && (
-          <button
-            type="button"
-            className="subtle"
-            disabled={busy}
-            onClick={command.newCommand}
-          >
-            New command
-          </button>
-        )}
-        {command.undoId && (
-          <button
-            type="button"
-            className="subtle"
-            disabled={!live || busy}
-            onClick={command.undo}
-          >
-            Undo
-          </button>
-        )}
-      </div>
     </div>
   );
 }

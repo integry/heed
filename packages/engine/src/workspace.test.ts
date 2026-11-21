@@ -25,8 +25,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
   const stub = newWorkspace();
   const settings = await stub.getSettings();
   expect(SettingsSchema.parse(settings)).toEqual({
-    schema_version: 9,
-    onboarding_dismissed: false,
+    schema_version: 10,
     timezone: "UTC",
     guidance: "",
     guidance_updated_at: null,
@@ -71,7 +70,20 @@ it("migrates a fresh object and seeds Inbox", async () => {
 });
 
 it.each([
-  { layout: "current", version: 9, dropColumns: [], hasOAuth: true },
+  { layout: "current", version: 10, dropColumns: [], hasOAuth: true },
+  {
+    layout: "target branch version 9",
+    version: 9,
+    dropColumns: [],
+    hasOAuth: true,
+  },
+  {
+    layout: "PR branch version 9",
+    version: 9,
+    dropColumns: [],
+    hasOAuth: true,
+    hasHandoffColumns: false,
+  },
   { layout: "version 8", version: 8, dropColumns: [], hasOAuth: true },
   { layout: "version 7", version: 7, dropColumns: [], hasOAuth: true },
   {
@@ -100,7 +112,12 @@ it.each([
   },
 ])(
   "preserves stored data when opening the $layout schema after eviction",
-  async ({ version, dropColumns, hasOAuth }) => {
+  async ({
+    version,
+    dropColumns,
+    hasOAuth,
+    hasHandoffColumns = version >= 9,
+  }) => {
     const stub = newWorkspace();
     await stub.setTimezone("Europe/Tallinn");
     const user = { id: "user", email: "user@example.com", name: "User" };
@@ -111,10 +128,14 @@ it.each([
       title: "Send invoice",
       project: project.id,
     });
-    const { items } = await stub.flagHandoff(actor, {
+    await stub.flagHandoff(actor, {
       item_id,
       note: "Send this invoice today?",
+      options: hasHandoffColumns ? ["Send today"] : undefined,
     });
+    if (hasHandoffColumns)
+      await stub.answerHandoff(actor, { item_id, text: "Send today" });
+    const item = await stub.getItem({ item_id });
     const client = {
       id: "client",
       name: "MCP client",
@@ -125,14 +146,15 @@ it.each([
     };
     if (hasOAuth) await stub.registerOAuthClient(client);
 
-    if (version < 9) {
+    if (version < 10) {
       // Recreate the schema persisted by the older workspace.
       await runInDurableObject(stub, (_, { storage: { sql } }) => {
-        sql.exec(`
-          ALTER TABLE items DROP COLUMN handoff_options;
-          ALTER TABLE items DROP COLUMN handoff_answer;
-          ALTER TABLE items DROP COLUMN handoff_answered_at;
-        `);
+        if (!hasHandoffColumns)
+          sql.exec(`
+            ALTER TABLE items DROP COLUMN handoff_options;
+            ALTER TABLE items DROP COLUMN handoff_answer;
+            ALTER TABLE items DROP COLUMN handoff_answered_at;
+          `);
         if (version < 8) sql.exec("ALTER TABLE items DROP COLUMN acceptance");
         for (const path of dropColumns) {
           const [table, column] = path.split(".");
@@ -155,8 +177,7 @@ it.each([
     await evictDurableObject(stub);
 
     expect(await stub.getSettings()).toEqual({
-      schema_version: 9,
-      onboarding_dismissed: false,
+      schema_version: 10,
       timezone: "Europe/Tallinn",
       ...guidance,
     });
@@ -164,12 +185,15 @@ it.each([
       project,
       expect.objectContaining({ id: INBOX_PROJECT_ID }),
     ]);
-    expect(await stub.getItem({ item_id })).toEqual(items[0]);
+    expect(await stub.getItem({ item_id })).toEqual(item);
     expect(await stub.getItemEvents({ item_id })).toMatchObject([
+      ...(hasHandoffColumns ? [{ kind: "answered" }] : []),
       { kind: "handoff" },
       {
         kind: "created",
-        actor: dropColumns.includes("events.actor_user") ? user.name : user,
+        actor: dropColumns.some((column) => column === "events.actor_user")
+          ? user.name
+          : user,
       },
     ]);
     expect(await stub.findOAuthClient(client.id)).toEqual(
@@ -377,4 +401,52 @@ it("defaults to 50 canvas items and caps larger requests at 200 with open items 
     true,
   );
   expect(items[199].status).toBe("done");
+});
+
+it("retires legacy demo rows after eviction and retains real descendants and tokens", async () => {
+  const stub = newWorkspace();
+  const actor = { kind: "human" } as const;
+  const demo = await stub.createProject({ name: "Sample project" });
+  const root = await stub.addItem(actor, {
+    title: "Real goal",
+    project: demo.id,
+  });
+  const sample = await stub.addItem(actor, {
+    title: "Sample item",
+    parent_id: root.item_id,
+  });
+  const child = await stub.addItem(actor, {
+    title: "Real child",
+    parent_id: sample.item_id,
+  });
+  const token = await stub.createToken("Real token", "report", demo.id);
+  await runInDurableObject(stub, (_, { storage: { sql } }) => {
+    sql.exec("UPDATE settings SET value = '9' WHERE key = 'schema_version'");
+    sql.exec("UPDATE projects SET demo = 1 WHERE id = ?", demo.id);
+    sql.exec("UPDATE items SET demo = 1 WHERE id = ?", sample.item_id);
+  });
+  await evictDurableObject(stub);
+  expect(await stub.listProjects()).toMatchObject([
+    { id: INBOX_PROJECT_ID, demo: 0 },
+  ]);
+  expect(await stub.getItem({ item_id: root.item_id })).toMatchObject({
+    project_id: INBOX_PROJECT_ID,
+    depth: 1,
+    demo: 0,
+  });
+  expect(await stub.getItem({ item_id: child.item_id })).toMatchObject({
+    project_id: INBOX_PROJECT_ID,
+    parent_id: root.item_id,
+    depth: 2,
+    demo: 0,
+  });
+  const rows = await runInDurableObject(stub, (_, { storage: { sql } }) =>
+    sql
+      .exec("SELECT id FROM items WHERE demo <> 0 OR id = ?", sample.item_id)
+      .toArray(),
+  );
+  expect(rows).toEqual([]);
+  expect(await stub.listTokens()).toMatchObject([
+    { id: token.id, default_project_id: null },
+  ]);
 });

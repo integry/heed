@@ -59,7 +59,6 @@ import {
 import type {
   ChildCounts,
   CreatedToken,
-  OnboardingStatus,
   WorkspaceMessage,
 } from "@heedwork/core";
 import { workspaceOperationError } from "./api-response.js";
@@ -507,15 +506,6 @@ export class Workspace<
         case "SET_TIMEZONE":
           this.setTimezone(mutation.input.timezone);
           break;
-        case "DISMISS_ONBOARDING":
-          this.dismissOnboarding();
-          break;
-        case "LOAD_DEMO_DATA":
-          this.loadDemoData();
-          break;
-        case "REMOVE_DEMO_DATA":
-          this.removeDemoData();
-          break;
         case "SET_GUIDANCE":
           this.setGuidance(actor, mutation.input.text);
           break;
@@ -589,7 +579,7 @@ export class Workspace<
     return {
       type: "SNAPSHOT",
       ...this.#readSettings(),
-      onboarding: this.#onboardingStatus(),
+
       ...this.#canvasSnapshot(),
     };
   }
@@ -615,66 +605,6 @@ export class Workspace<
       items,
       dependencies: this.listDependencies(),
     };
-  }
-
-  #onboardingStatus(): OnboardingStatus {
-    const status = this.#sql
-      .exec<{
-        hasItems: number;
-        hasGoalOrProject: number;
-        hasDemoData: number;
-        hasToken: number;
-      }>(
-        `SELECT EXISTS(SELECT 1 FROM items) AS hasItems,
-         (EXISTS(SELECT 1 FROM projects WHERE demo = 0 AND id <> ?)
-           OR EXISTS(SELECT 1 FROM items WHERE demo = 0 AND parent_id IS NULL)) AS hasGoalOrProject,
-         (EXISTS(SELECT 1 FROM projects WHERE demo = 1)
-           OR EXISTS(SELECT 1 FROM items WHERE demo = 1)) AS hasDemoData,
-         EXISTS(SELECT 1 FROM tokens) AS hasToken`,
-        INBOX_PROJECT_ID,
-      )
-      .one();
-    return {
-      hasItems: !!status.hasItems,
-      hasGoalOrProject: !!status.hasGoalOrProject,
-      hasDemoData: !!status.hasDemoData,
-      hasToken: !!status.hasToken,
-    };
-  }
-
-  #broadcastOnboarding(sockets = this.ctx.getWebSockets()): void {
-    if (sockets.length)
-      this.#broadcast(
-        { type: "ONBOARDING_UPDATE", onboarding: this.#onboardingStatus() },
-        sockets,
-      );
-  }
-
-  #broadcastProjectChange(
-    message: Extract<
-      WorkspaceMessage,
-      { type: "PROJECT_UPSERT" | "PROJECT_REMOVE" }
-    >,
-  ): void {
-    const sockets = this.ctx.getWebSockets();
-    if (sockets.length)
-      this.#broadcast(
-        { ...message, onboarding: this.#onboardingStatus() },
-        sockets,
-      );
-  }
-
-  #broadcastCanvas(): void {
-    const sockets = this.ctx.getWebSockets();
-    if (sockets.length)
-      this.#broadcast(
-        {
-          type: "CANVAS_REPLACE",
-          onboarding: this.#onboardingStatus(),
-          ...this.#canvasSnapshot(),
-        },
-        sockets,
-      );
   }
 
   #childCounts(): Map<string, ChildCounts> {
@@ -989,16 +919,8 @@ export class Workspace<
         timezone: values.timezone ?? "UTC",
         guidance: values.guidance,
         guidance_updated_at: values.guidance_updated_at ?? null,
-        onboarding_dismissed: values.onboarding_dismissed === "1",
       },
     };
-  }
-
-  dismissOnboarding(): void {
-    const result = this.#sql.exec(
-      "INSERT OR IGNORE INTO settings (key, value) VALUES ('onboarding_dismissed', '1')",
-    );
-    if (result.rowsWritten) this.#broadcastSettings();
   }
 
   async createToken(
@@ -1037,7 +959,6 @@ export class Workspace<
         hash,
       )
       .one();
-    this.#broadcastOnboarding();
     return { ...metadata, token: `heed_${workspaceId}_${secret}` };
   }
 
@@ -1056,7 +977,6 @@ export class Workspace<
         "DELETE FROM tokens WHERE id = ? AND id NOT IN (SELECT id FROM oauth_grants)",
         id,
       ).rowsWritten > 0;
-    if (revoked) this.#broadcastOnboarding();
     return revoked;
   }
 
@@ -1453,137 +1373,27 @@ export class Workspace<
     input: Pick<Project, "name"> & Partial<Omit<Project, "id" | "name">>,
   ): Project {
     const project = this.#insertProject(parseInput(CreateProjectSchema, input));
-    this.#broadcastProjectChange({ type: "PROJECT_UPSERT", project });
+    this.#broadcast({ type: "PROJECT_UPSERT", project });
     return project;
   }
 
-  #insertProject(
-    {
-      name,
-      color = null,
-      sort = 0,
-      hidden = 0,
-    }: z.output<typeof CreateProjectSchema>,
-    demo: 0 | 1 = 0,
-  ): Project {
+  #insertProject({
+    name,
+    color = null,
+    sort = 0,
+    hidden = 0,
+  }: z.output<typeof CreateProjectSchema>): Project {
     return this.#sql
       .exec<Project>(
-        `INSERT INTO projects (id, name, color, sort, hidden, demo)
-         VALUES (?, ?, ?, ?, ?, ?) RETURNING *`,
+        `INSERT INTO projects (id, name, color, sort, hidden)
+         VALUES (?, ?, ?, ?, ?) RETURNING *`,
         crypto.randomUUID(),
         name,
         color,
         sort,
         hidden,
-        demo,
       )
       .one();
-  }
-
-  loadDemoData(): void {
-    this.#mutateItems(
-      { kind: "human" },
-      (mutation) => {
-        if (this.#onboardingStatus().hasDemoData) return "";
-
-        const existing = this.listProjects();
-        const names = new Set(existing.map(({ name }) => name));
-        let sort = Math.max(0, ...existing.map((project) => project.sort));
-        const addProject = (name: string, color: string) => {
-          let uniqueName = name;
-          for (let suffix = 2; names.has(uniqueName); suffix++)
-            uniqueName = `${name} (${suffix})`;
-          names.add(uniqueName);
-          return this.#insertProject(
-            { name: uniqueName, color, sort: ++sort },
-            1,
-          ).id;
-        };
-        const launch = addProject("Product launch", "#4ba7ed");
-        const research = addProject("Customer research", "#ab85e8");
-        const add = (item: AddItemInput) => this.#addItem(mutation, item, 1);
-        const schedule = today(mutation);
-        const release = add({
-          title: "Prepare the beta release",
-          project: launch,
-          scheduled_on: schedule,
-          priority: 8,
-        });
-        add({
-          title: "Run the smoke tests",
-          parent_id: release.id,
-          status: "active",
-          agent_name: "QA agent",
-          note: "Checkout passes. Checking the account flows now.",
-          priority: 7,
-        });
-        add({
-          title: "Draft release notes",
-          parent_id: release.id,
-          status: "done",
-        });
-        const interviews = add({
-          title: "Plan customer interviews",
-          project: research,
-          scheduled_on: new Date(Date.parse(schedule) + DAY_MS)
-            .toISOString()
-            .slice(0, 10),
-          priority: 6,
-        });
-        const review = add({
-          title: "Approve the interview script",
-          parent_id: interviews.id,
-          scheduled_on: schedule,
-          agent_name: "Research agent",
-          priority: 9,
-        });
-        this.#saveItem(mutation, review, {
-          handoff: 1,
-          handoff_note: "Can we ask customers about their current budget?",
-        });
-        add({ title: "Summarize interview themes", parent_id: interviews.id });
-        add({ title: "Outline the launch retrospective", project: launch });
-        return release.id;
-      },
-      true,
-    );
-  }
-
-  removeDemoData(): void {
-    const removed = this.ctx.storage.transactionSync(() => {
-      if (!this.#onboardingStatus().hasDemoData) return false;
-
-      // Keep real items attached to the nearest surviving ancestor. Move real
-      // work out of any project being removed, keeping each tree in one project.
-      this.#sql.exec(
-        `
-        WITH RECURSIVE tree(id, surviving_parent, surviving_depth, next_parent, next_depth) AS (
-          SELECT id, NULL, 1, CASE WHEN demo = 0 THEN id END, 1 + (demo = 0)
-          FROM items WHERE parent_id IS NULL
-          UNION ALL
-          SELECT child.id, tree.next_parent, tree.next_depth,
-                 CASE WHEN child.demo = 0 THEN child.id ELSE tree.next_parent END,
-                 tree.next_depth + (child.demo = 0)
-          FROM tree JOIN items AS child ON child.parent_id = tree.id
-        )
-        UPDATE items SET parent_id = tree.surviving_parent, depth = tree.surviving_depth,
-          project_id = CASE WHEN project_id IN (SELECT id FROM projects WHERE demo = 1)
-                            THEN ? ELSE project_id END
-        FROM tree WHERE items.id = tree.id AND items.demo = 0
-          AND (items.parent_id IS NOT tree.surviving_parent
-            OR items.depth <> tree.surviving_depth
-            OR items.project_id IN (SELECT id FROM projects WHERE demo = 1))
-      `,
-        INBOX_PROJECT_ID,
-      );
-      this.#sql.exec("DELETE FROM items WHERE demo = 1");
-      this.#sql.exec(
-        "UPDATE tokens SET default_project_id = NULL WHERE default_project_id IN (SELECT id FROM projects WHERE demo = 1)",
-      );
-      this.#sql.exec("DELETE FROM projects WHERE demo = 1");
-      return true;
-    });
-    if (removed) this.#broadcastCanvas();
   }
 
   updateProject(id: string, input: Partial<Omit<Project, "id">>): Project {
@@ -1650,7 +1460,7 @@ export class Workspace<
       const deleted = this.#sql.exec("DELETE FROM projects WHERE id = ?", id);
       if (deleted.rowsWritten === 0) throw new Error("Project not found");
     });
-    this.#broadcastProjectChange({ type: "PROJECT_REMOVE", project_id: id });
+    this.#broadcast({ type: "PROJECT_REMOVE", project_id: id });
   }
 
   moveProject(input: z.input<typeof MoveProjectSchema>): void {
@@ -1728,7 +1538,7 @@ export class Workspace<
     return existing.id;
   }
 
-  #addItem(mutation: Mutation, data: AddItemInput, demo: 0 | 1 = 0): Item {
+  #addItem(mutation: Mutation, data: AddItemInput): Item {
     const placement = this.#placement(mutation, data);
     const patch = this.#editPatch(mutation, data);
     if (patch.agent_name === undefined && mutation.actor.kind === "agent") {
@@ -1743,7 +1553,6 @@ export class Workspace<
       id,
       title: data.title,
       external_key: data.external_key ?? null,
-      demo,
       created_by: mutation.actor.kind === "agent" ? "agent" : "human",
       last_heartbeat_at: data.status === "active" ? now : null,
       created_at: now,
@@ -1763,7 +1572,7 @@ export class Workspace<
       note: item.note,
     });
     mutation.changes.push({ after: item });
-    if (!demo) mutation.pruneEvents = true;
+    mutation.pruneEvents = true;
     return item;
   }
 
@@ -2241,7 +2050,6 @@ export class Workspace<
   #mutateItems(
     input: Actor,
     operation: (mutation: Mutation) => string,
-    replaceCanvas = false,
   ): ItemOperationResult {
     const actor = parseInput(ActorSchema, input);
     const { mutation, result } = this.ctx.storage.transactionSync(() => {
@@ -2296,11 +2104,7 @@ export class Workspace<
             : undefined,
       });
     }
-    if (replaceCanvas) {
-      if (mutation.changes.length) this.#broadcastCanvas();
-    } else {
-      this.#broadcastItemChanges(mutation);
-    }
+    this.#broadcastItemChanges(mutation);
     return result;
   }
 
@@ -2309,28 +2113,6 @@ export class Workspace<
     if (changes.length === 0 && !throttledHeartbeat) return;
     const sockets = this.ctx.getWebSockets();
     if (sockets.length === 0) return;
-
-    const contentChanged = changes.some(
-      ({ before, after }) =>
-        !before || !after || before.parent_id !== after.parent_id,
-    );
-    const onboarding = contentChanged ? this.#onboardingStatus() : undefined;
-    let publishedOnboarding = false;
-    const publishItem = (
-      message: Extract<
-        WorkspaceMessage,
-        { type: "ITEM_UPSERT" | "ITEM_REMOVE" }
-      >,
-    ) => {
-      this.#broadcast(
-        {
-          ...message,
-          onboarding: publishedOnboarding ? undefined : onboarding,
-        },
-        sockets,
-      );
-      publishedOnboarding = true;
-    };
 
     const time = now.getTime();
     const upserts = new Map<string, Item>();
@@ -2344,7 +2126,7 @@ export class Workspace<
         upserts.set(after.id, after);
       } else if (before && (!after || isCanvasItem(before, time))) {
         removed.add(before.id);
-        publishItem({ type: "ITEM_REMOVE", item_id: before.id });
+        this.#broadcast({ type: "ITEM_REMOVE", item_id: before.id }, sockets);
       }
 
       const oldParent =
@@ -2370,17 +2152,18 @@ export class Workspace<
     if (upserts.size) {
       const counts = this.#childCounts();
       for (const item of upserts.values()) {
-        publishItem({
-          type: "ITEM_UPSERT",
-          item: {
-            ...item,
-            progress: counts.get(item.id) ?? { done: 0, total: 0 },
+        this.#broadcast(
+          {
+            type: "ITEM_UPSERT",
+            item: {
+              ...item,
+              progress: counts.get(item.id) ?? { done: 0, total: 0 },
+            },
           },
-        });
+          sockets,
+        );
       }
     }
-    if (onboarding && !publishedOnboarding)
-      this.#broadcast({ type: "ONBOARDING_UPDATE", onboarding }, sockets);
   }
 
   #findItem({

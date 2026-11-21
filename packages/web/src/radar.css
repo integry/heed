@@ -1,28 +1,3 @@
-.lens-menu {
-  position: relative;
-  margin-left: auto;
-  z-index: 1;
-}
-
-.lens-menu summary {
-  cursor: pointer;
-}
-
-.lens-menu label {
-  position: absolute;
-  inset: calc(100% + 6px) 0 auto auto;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 10px 12px;
-  white-space: nowrap;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: 0 6px 18px #1112;
-  font-size: 0.87rem;
-}
-
 .radar-toolbar,
 .radar-breadcrumb,
 .radar-zoom-controls {
@@ -33,7 +8,8 @@
 }
 
 .radar-toolbar {
-  margin-bottom: 8px;
+  order: 1;
+  padding-top: 4px;
   gap: 8px 14px;
 }
 
@@ -76,11 +52,6 @@
   min-height: 0;
 }
 
-.lens-pane[data-lens="radar"] {
-  display: flex;
-  flex-direction: column;
-}
-
 .radar-toolbar {
   flex: none;
 }
@@ -90,10 +61,6 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid #273e38;
-  border-radius: 16px;
-  color: #dce9e0;
-  background: radial-gradient(ellipse at center, #1c3732 0%, #111f20 72%);
 }
 
 .radar-svg {
@@ -102,7 +69,7 @@
   display: block;
   width: 100%;
   height: 100%;
-  touch-action: none;
+  touch-action: pan-y;
   -webkit-touch-callout: none;
   cursor: grab;
   user-select: none;
@@ -119,21 +86,21 @@
 
 .radar-band,
 .radar-goal-field {
-  fill: #a5d9b9;
-  fill-opacity: 0.045;
-  stroke: #628277;
+  fill: var(--surface);
+  stroke: var(--ring);
   stroke-width: 1;
 }
 
 .radar-band[data-band="today"] {
-  fill-opacity: 0.09;
-  stroke: #83a799;
+  fill: var(--page);
 }
 
 .radar-band[data-band="backlog"] {
-  fill-opacity: 0.015;
-  stroke: #55716b;
-  stroke-dasharray: 3 6;
+  fill: var(--surface);
+}
+
+.radar-band[data-band="later"] {
+  fill: var(--page);
 }
 
 .radar-goal-field {
@@ -141,7 +108,7 @@
 }
 
 .radar-sector-line {
-  stroke: #8fb3a3;
+  stroke: var(--ring);
   stroke-width: 0.8;
   stroke-opacity: 0.58;
 }
@@ -151,7 +118,7 @@
 .radar-subring-label,
 .radar-rim-marker text {
   paint-order: stroke;
-  stroke: #152a28;
+  stroke: var(--page);
   stroke-width: 3px;
   vector-effect: non-scaling-stroke;
   stroke-linejoin: round;
@@ -159,37 +126,37 @@
 }
 
 .radar-project-label {
-  fill: #b6d4c6;
+  fill: var(--muted);
 }
 
 .radar-band-label {
-  fill: #afcfc0;
+  fill: var(--faint);
   cursor: pointer;
 }
 
 .radar-band-label:is(:hover, :focus-visible, [aria-expanded="true"]) {
-  fill: #e0f8e9;
+  fill: var(--text);
   text-decoration: underline;
 }
 
 .radar-subring {
   fill: none;
-  stroke: #81a89a;
+  stroke: var(--ring);
   stroke-opacity: 0.72;
 }
 
 .radar-subring-label {
-  fill: #d6e9de;
+  fill: var(--muted);
   pointer-events: none;
 }
 
 .radar-rim-marker {
-  fill: #ffd49e;
+  fill: var(--muted);
   pointer-events: none;
 }
 
 .radar-rim-marker line {
-  stroke: #ffd49e;
+  stroke: var(--muted);
   stroke-width: 2px;
   vector-effect: non-scaling-stroke;
 }
@@ -211,9 +178,9 @@
 }
 
 .radar-drop-cell {
-  fill: #c1f5d5;
+  fill: var(--muted);
   fill-opacity: 0.2;
-  stroke: #bce5c8;
+  stroke: var(--text);
   stroke-width: 2;
 }
 
@@ -235,22 +202,32 @@
 }
 
 .radar-disc {
-  fill: #243c3a;
-  stroke-width: 2.5;
+  stroke: var(--muted);
+  fill: color-mix(in srgb, var(--text) 10%, var(--surface));
+  stroke-width: 1.5;
 }
 
 .radar-bubble:hover .radar-disc,
 .radar-bubble[aria-pressed="true"] .radar-disc {
-  fill: #34534c;
+  stroke: var(--muted);
+  fill: var(--ring);
 }
 
 .radar-bubble-title {
-  fill: #f0f6f1;
-  font-weight: 650;
+  fill: var(--text);
+  font-weight: 600;
+}
+
+.radar-callout text {
+  paint-order: stroke;
+  stroke: var(--page);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
 .radar-child-count {
-  fill: #c3e0d2;
+  fill: var(--muted);
   font-weight: 600;
 }
 
@@ -274,24 +251,24 @@
 }
 
 [data-ring="handoff"] {
-  --ring-color: #ffd386;
+  --ring-color: var(--attention);
 }
 
 [data-ring="stale"] {
-  --ring-color: #a0a79e;
+  --ring-color: var(--attention);
 }
 
 [data-ring="reopened"] {
-  --ring-color: #ff9eda;
+  --ring-color: var(--muted);
 }
 
 [data-ring="blocked"] {
-  --ring-color: #ffa888;
+  --ring-color: var(--muted);
 }
 
 [data-ring="live"],
 .radar-pulse {
-  --ring-color: #a7eabd;
+  --ring-color: var(--live);
 }
 
 .radar-state,
@@ -335,27 +312,27 @@
 
 .radar-selection,
 .radar-bubble:focus-visible .radar-disc {
-  stroke: #f1fff4;
+  stroke: var(--text);
 }
 
 .radar-progress-track {
-  stroke: #a9ddd2;
+  stroke: var(--muted);
   opacity: 0.25;
 }
 
 .radar-progress {
-  stroke: #aff6da;
+  stroke: var(--text);
   stroke-linecap: round;
 }
 
 .radar-time-badge rect {
-  fill: #152a28;
-  stroke: #6b8c7e;
+  fill: var(--page);
+  stroke: var(--ring);
   vector-effect: non-scaling-stroke;
 }
 
 .radar-time-badge text {
-  fill: #f5e3bb;
+  fill: var(--muted);
 }
 
 .radar-resize {
@@ -363,34 +340,34 @@
 }
 
 .radar-handle {
-  fill: #e2fff0;
-  stroke: #2a483e;
+  fill: var(--text);
+  stroke: var(--ring);
   stroke-width: 1.5;
 }
 
 .radar-edge {
   fill: none;
-  stroke: #eabb9c;
+  stroke: var(--muted);
   stroke-width: 2;
 }
 
 .radar-arrow path {
-  fill: #eabb9c;
+  fill: var(--muted);
 }
 
 .radar-goal-drop rect {
-  fill: #203e36;
-  stroke: #9abdad;
+  fill: var(--surface);
+  stroke: var(--ring);
 }
 
 .radar-goal-drop[data-target="true"] rect {
-  fill: #426b59;
-  stroke: #d7f6e3;
+  fill: var(--ring);
+  stroke: var(--text);
   stroke-width: 2;
 }
 
 .radar-goal-drop text {
-  fill: #e8f4ed;
+  fill: var(--text);
   font-size: 15px;
 }
 
@@ -400,25 +377,77 @@
   max-width: calc(100% - 20px);
   padding: 6px 10px;
   border-radius: 6px;
-  border: 1px solid #708d82;
-  background: #142522;
-  color: #eef9f1;
+  border: 1px solid var(--ring);
+  background: var(--surface);
+  color: var(--text);
   font-size: 0.82rem;
   pointer-events: none;
   overflow-wrap: anywhere;
 }
 
-.radar-callout :is(line, rect) {
-  stroke: #587b71;
+.radar-callout line {
+  stroke: var(--ring);
   vector-effect: non-scaling-stroke;
 }
 
-.radar-callout rect {
-  fill: #152a28;
+.radar-callout-time {
+  fill: var(--muted);
 }
 
-.radar-callout-time {
-  fill: #f5e3bb;
+.radar .subtle {
+  border: 0;
+  border-radius: 0;
+  padding: 2px 5px;
+  background: transparent;
+}
+
+.radar-band-label,
+.radar-subring-label,
+.radar-project-label,
+.radar-rim-marker,
+.radar-time-badge,
+.radar-callout-time,
+.radar-toolbar {
+  font-family: var(--mono);
+}
+
+.radar-band-label,
+.radar-subring-label {
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.radar-bubble[data-ghost="true"] .radar-disc {
+  fill: transparent;
+  stroke: var(--done);
+}
+
+.radar-state:is([data-ring="live"], [data-ring="handoff"]) {
+  stroke-width: 2;
+}
+
+.radar-bubble:has(.radar-state[data-ring="handoff"]:not(.radar-rollup))
+  .radar-disc {
+  fill: color-mix(in srgb, var(--attention) 46%, var(--surface));
+  stroke: var(--attention);
+}
+
+.radar-bubble:has(.radar-state[data-ring="live"]:not(.radar-rollup))
+  .radar-disc {
+  fill: color-mix(in srgb, var(--live) 46%, var(--surface));
+  stroke: var(--live);
+}
+
+.radar-bubble,
+.radar-resize {
+  touch-action: none;
+}
+
+@media (pointer: coarse) {
+  .radar-zoom-controls button {
+    min-height: 32px;
+  }
 }
 
 .radar-handoff {

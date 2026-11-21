@@ -33,7 +33,7 @@ Paste the generated value into `SESSION_SECRET` in `.dev.vars` and set `DEV_LOGI
 npm run dev
 ```
 
-In another terminal, optionally run `npm run seed:radar` to populate a demo workspace. Use `npm run seed:radar -- --dense` for a larger demo. Open <http://localhost:8787/auth/dev-login> to sign in. Restart the dev command after frontend changes to rebuild its static assets.
+Open <http://localhost:8787/auth/dev-login> to sign in. Restart the dev command after frontend changes to rebuild its static assets.
 
 ## Repository layout
 

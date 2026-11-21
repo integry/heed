@@ -1,4 +1,3 @@
-import { useResource } from "./api";
 import type { ReactNode } from "react";
 import {
   carriedOverFrom,
@@ -6,10 +5,9 @@ import {
   isBlocked,
   isLive,
   isStale,
-  JudgedDetailSchema,
   workspaceInstant,
 } from "@heedwork/core";
-import type { CanvasItem, Event } from "@heedwork/core";
+import type { CanvasItem } from "@heedwork/core";
 import type { Dependency } from "@heedwork/core";
 
 const timeLabels = { flexible: "FLEX", fixed: "FIXED", deadline: "DUE" };
@@ -87,57 +85,6 @@ export function ItemTimeBadge({
   );
 }
 
-export function DemoBadge() {
-  return <span className="demo-badge">Demo</span>;
-}
-
-export function ShadowVerdictMarker({
-  item,
-  revision,
-  id,
-}: {
-  item: CanvasItem;
-  revision: string;
-  id?: string;
-}) {
-  const { data, loading } = useResource<Event[]>(
-    item.status === "done" || item.reopen_count > 0
-      ? `/api/items/${encodeURIComponent(item.id)}/events`
-      : null,
-    JSON.stringify([
-      revision,
-      item.status,
-      item.completed_at,
-      item.reopen_count,
-    ]),
-  );
-  if (loading || !Array.isArray(data)) return null;
-  const completion = data.find(
-    ({ kind, detail }) =>
-      kind === "status" && JSON.parse(detail ?? "null")?.new === "done",
-  );
-  if (
-    !completion ||
-    !data.some(
-      ({ kind, detail }) =>
-        kind === "judged" &&
-        JudgedDetailSchema.safeParse(JSON.parse(detail ?? "null")).data
-          ?.status_event_id === completion.id,
-    )
-  )
-    return null;
-
-  return (
-    <span
-      id={id}
-      className="shadow-verdict-marker"
-      role="img"
-      aria-label="Shadow verdict available"
-      title="Shadow verdict available"
-    />
-  );
-}
-
 export function ItemMarkers({
   item,
   items,
@@ -166,7 +113,6 @@ export function ItemMarkers({
   return (
     <span className="stream-meta" id={id}>
       {leading}
-      {item.demo === 1 && <DemoBadge />}
       {(item.agent_name || stale || active) && (
         <span className="stream-agent">
           {active && (

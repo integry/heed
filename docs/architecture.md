@@ -31,7 +31,7 @@ Terminology: an **item** is anything shown in Heed (goal, task, sub-task, meetin
 
 Heed is agent-first. Agents and the user's own words change things; the screen is for seeing. It must not look or behave like an admin dashboard. The approved visual reference is [design/attention-field.html](design/attention-field.html); where the wireframes and rules in 2.1 to 2.3 disagree with this section, this section wins.
 
-* **The radar is the screen.** It fills the page with no surrounding panels and is the first thing shown after sign-in, including for an empty workspace: the empty rings, the day sentence ("Nothing needs you. Nothing is scheduled.") and the text line. There is no onboarding screen, setup wizard or welcome dialog; demo items and first-run hints are removed.
+* **The radar is the screen.** It fills the page with no surrounding panels and is the first thing shown after sign-in, including for an empty workspace: the empty rings, the day sentence ("Nothing needs you. Nothing is scheduled.") and the text line. There is no onboarding screen, setup wizard or welcome dialog, and the app does not seed sample items or show first-run hints.
 * **One sentence states the day**, over the field: what needs the user, how many agents are working, what is left today. It is derived in the browser.
 * **Handoffs are questions.** An item with a handoff shows as a question bubble on the field: who asks, the handoff note, up to four suggested replies as one-tap chips when the agent supplied them, and "Type a reply". Answering stores the reply for the agent (section 6, "Answers to handoffs"), clears the handoff and removes the bubble.
 * **One text line drives everything.** It is always visible at the bottom and focused on load on desktop. Text typed there is interpreted against the selected item if there is one ("done", "Friday", "make it urgent"), otherwise against the workspace ("move the SDK upgrade to Friday", "what is blocked?", "zoom into today", "from now on only notify me about billing"). A one-line reply appears above it. Voice uses the same line.
@@ -243,7 +243,7 @@ Design notes:
 ```sql
 CREATE TABLE settings (
   key TEXT PRIMARY KEY,                     -- 'schema_version', 'timezone' (IANA, e.g. 'Europe/Tallinn'),
-  value TEXT NOT NULL                       -- 'guidance' (free-form text), 'guidance_updated_at', 'onboarding_dismissed'
+  value TEXT NOT NULL                       -- 'guidance' (free-form text), 'guidance_updated_at'
 );
 
 CREATE TABLE projects (
@@ -329,6 +329,8 @@ CREATE INDEX idx_events_item ON events(item_id, at);
 -- No secondary indexes on items: a workspace holds hundreds of rows, scans are effectively free,
 -- and every index adds to the cost of each write (see section 9).
 ```
+
+Legacy demo flags stay in the schema for migration. The migration removes sample rows, reattaches real descendants to the nearest surviving ancestor, and moves real items in removed projects to Inbox.
 
 ### Derived state (never stored)
 
@@ -457,14 +459,12 @@ Agents only report if the tool text tells them when to. The server `instructions
 ## 7. Real-Time & Voice Protocol
 
 * **WebSocket (`/ws`)**
-  * On connect the DO sends `{ type: "SNAPSHOT", settings, projects, items, dependencies, onboarding }`. `items` contains every open item plus ghosts, and per-parent done/total counts; older history is not included.
+  * On connect the DO sends `{ type: "SNAPSHOT", settings, projects, items, dependencies }`. `items` contains every open item plus ghosts, and per-parent done/total counts; older history is not included.
   * On any change it broadcasts `ITEM_UPSERT`, `ITEM_REMOVE`, `PROJECT_UPSERT`, `DEPENDENCY_ADD` or `DEPENDENCY_REMOVE`.
   * Uses the WebSocket Hibernation API so idle tabs do not keep the DO running.
   * History is fetched on demand: `GET /api/history?q=&project=&before=`. An item's timeline comes from `GET /api/items/:id/events`.
 * **First-run setup**
   * An empty workspace shows the guide until it is dismissed. Dismissal belongs to the workspace. Settings and empty lens and stream views can reopen the guide.
-  * The snapshot includes onboarding status from stored items, projects, and tokens. The notification step checks this browser's registered push subscription.
-  * Demo items and projects carry a stored flag. Demo load and removal are atomic WebSocket operations that broadcast a replacement canvas. Removing demo data preserves real items. It reattaches them to the nearest surviving ancestor and moves them to Inbox if their project was removed.
 * **Push**
   * The browser registers a Web Push subscription after sign-in (`POST /api/push/subscribe`).
   * A push is sent only when an agent raises a handoff with `notify: true`. The text is the item title plus the handoff note; tapping it opens the item.
