@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  AddItemSchema,
   COMMAND_TEXT_LIMIT,
   VOICE_BYTES_LIMIT,
   VOICE_SAMPLE_RATE,
@@ -11,7 +12,12 @@ import type { CommandExchange, CommandProvider } from "./command-provider.js";
 import { commandTools } from "./command-tools.js";
 import type { HumanActor } from "./session.js";
 import type { AppContext } from "./app.js";
-import { checkLimit, LimitError, recordUsage } from "./seams.js";
+import {
+  checkLimit,
+  LimitError,
+  recordUsage,
+  withItemCreateLimit,
+} from "./seams.js";
 import type { CommandConfiguration } from "./seams.js";
 import { getWorkspaceStub } from "./workspace.js";
 
@@ -109,44 +115,63 @@ export async function runCommand(
       if (turn.calls.length > callsRemaining) break;
       const replies = [];
       for (const call of turn.calls) {
-        if (request) {
-          const { app, actor } = request;
-          const action =
-            call.name === "add_item"
-              ? "item.create"
-              : call.name === "flag_handoff" &&
-                  call.input &&
-                  typeof call.input === "object" &&
-                  "notify" in call.input &&
-                  call.input.notify === true
-                ? "push"
-                : null;
-          if (action) {
-            try {
-              await checkLimit(app.limits, actor.workspaceId, action);
-            } catch (error) {
-              if (!(error instanceof LimitError)) throw error;
-              refusal ??= error;
-              replies.push({
-                call,
-                content: JSON.stringify({ error: error.detail }),
-                isError: true,
-              });
-              continue;
+        const execute = (allowItemCreation = true) =>
+          workspace.executeCommandTool(
+            call.name,
+            call.input,
+            request?.actor.user,
+            allowItemCreation,
+          );
+        try {
+          let result;
+          if (request && call.name === "add_item") {
+            const { app, actor } = request;
+            const input = AddItemSchema.safeParse(call.input);
+            result = input.success
+              ? await withItemCreateLimit(
+                  app.limits,
+                  actor.workspaceId,
+                  execute,
+                  input.data.external_key
+                    ? async () => {
+                        const update = await execute(false);
+                        return update.needsItemCreation ? null : update;
+                      }
+                    : undefined,
+                )
+              : await execute(false);
+          } else {
+            if (
+              request &&
+              call.name === "flag_handoff" &&
+              call.input &&
+              typeof call.input === "object" &&
+              "notify" in call.input &&
+              call.input.notify === true
+            ) {
+              await checkLimit(
+                request.app.limits,
+                request.actor.workspaceId,
+                "push",
+              );
             }
+            result = await execute();
           }
+          effects.push(...result.effects);
+          replies.push({
+            call,
+            content: result.content,
+            isError: result.isError,
+          });
+        } catch (error) {
+          if (!(error instanceof LimitError)) throw error;
+          refusal ??= error;
+          replies.push({
+            call,
+            content: JSON.stringify({ error: error.detail }),
+            isError: true,
+          });
         }
-        const {
-          content,
-          isError,
-          effects: writes,
-        } = await workspace.executeCommandTool(
-          call.name,
-          call.input,
-          request?.actor.user,
-        );
-        effects.push(...writes);
-        replies.push({ call, content, isError });
       }
       callsRemaining -= turn.calls.length;
       history.push({ turn, replies });

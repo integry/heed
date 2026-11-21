@@ -18,6 +18,7 @@ import {
   UpdateItemSchema,
 } from "@heedwork/core";
 import type { Actor, ItemOperationResult } from "@heedwork/core";
+import { addItemWithLimit } from "./workspace.js";
 import type { getWorkspaceStub } from "./workspace.js";
 import type { AppContext } from "./app.js";
 import {
@@ -46,9 +47,9 @@ function defineTool<T>(
     workspace: WorkspaceStub,
     actor: Agent,
     input: T,
-    pushCap: number | null,
+    context: { pushCap: number | null; app: AppContext; workspaceId: string },
   ) => Promise<Record<string, unknown>>,
-  limit?: (input: T) => "item.create" | "push" | undefined,
+  limit?: (input: T) => "push" | undefined,
 ) {
   const inputSchema = z.toJSONSchema(schema, { io: "input" });
   const definition: Tool = {
@@ -77,7 +78,11 @@ function defineTool<T>(
         action && (await checkLimit(app.limits, workspaceId, action));
       const pushCap =
         decision instanceof OpenPushAllowance ? decision.cap : null;
-      const result = await run(workspace, actor, input.data, pushCap);
+      const result = await run(workspace, actor, input.data, {
+        pushCap,
+        app,
+        workspaceId,
+      });
       if (name !== "get_canvas")
         recordUsage(app.ctx, app.usage, workspaceId, {
           type: "agent.write",
@@ -109,9 +114,16 @@ const tools = [
     "add_item",
     "Add work to the user's view. Use it when you start something that has no item yet, when you split a task into parts (pass parent_id), or when you discover follow-up work that should not be forgotten (leave it in the backlog). Call get_canvas first to avoid duplicates, and pass external_key (PR URL or repo#branch) so retries update the same item.",
     AddItemSchema,
-    async (workspace, actor, input) =>
-      itemResult(await workspace.addItem(actor, input)),
-    () => "item.create",
+    async (workspace, actor, input, { app, workspaceId }) =>
+      itemResult(
+        await addItemWithLimit(
+          () => workspace,
+          actor,
+          input,
+          app.limits,
+          workspaceId,
+        ),
+      ),
   ),
   defineTool(
     "report_progress",
@@ -140,7 +152,7 @@ const tools = [
     "flag_handoff",
     "Use when the user must decide or provide something before the work can continue or be trusted: a decision, a review, a credential, a manual step. Say exactly what you need in the note, phrased so it can be answered in one line. Set notify to true only if the user's guidance says this kind of thing is worth interrupting them for; a notification reaches their phone immediately. When in doubt, flag without notifying.",
     FlagHandoffSchema,
-    async (workspace, actor, input, pushCap) => {
+    async (workspace, actor, input, { pushCap }) => {
       const result = await workspace.flagHandoff(actor, input, pushCap);
       const { notification } = result;
       return {

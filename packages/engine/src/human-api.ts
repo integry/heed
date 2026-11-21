@@ -20,6 +20,7 @@ import {
 import { commandCapabilities, handleCommandApi } from "./command-api.js";
 import type { AppContext } from "./app.js";
 import { checkLimit, LimitError } from "./seams.js";
+import { addItemWithLimit } from "./workspace.js";
 import { apiError, workspaceOperationError } from "./api-response.js";
 import type { HumanActor } from "./session.js";
 import {
@@ -97,10 +98,14 @@ export async function handleHumanApi(
         return await withJson(
           request,
           AddItemSchema,
-          async (input) => {
-            await checkLimit(app.limits, session.workspaceId, "item.create");
-            return workspace().addItem(actor, input);
-          },
+          (input) =>
+            addItemWithLimit(
+              workspace,
+              actor,
+              input,
+              app.limits,
+              session.workspaceId,
+            ),
           201,
         );
       case "POST /api/dependencies":

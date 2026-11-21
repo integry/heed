@@ -86,7 +86,13 @@ import type {
 } from "./web-push.js";
 import { basicPushCap } from "./basic-limits.js";
 import { migrateWorkspace } from "./workspace-migrations.js";
-import { checkLimit, LimitError, noUsage, recordUsage } from "./seams.js";
+import {
+  checkLimit,
+  LimitError,
+  noUsage,
+  recordUsage,
+  withItemCreateLimit,
+} from "./seams.js";
 import type { LimitAction, Limits, UsageSink } from "./seams.js";
 
 type CanvasRow = Pick<
@@ -107,6 +113,26 @@ export function getWorkspaceStub(
   workspaceId: string,
 ) {
   return env.WORKSPACE.getByName(workspaceId);
+}
+
+export function addItemWithLimit(
+  workspace: () => Pick<
+    Workspace | ReturnType<typeof getWorkspaceStub>,
+    "addItem" | "updateExistingItem"
+  >,
+  actor: Actor,
+  input: AddItemInput,
+  limits: Limits,
+  workspaceId: string,
+) {
+  return withItemCreateLimit(
+    limits,
+    workspaceId,
+    () => workspace().addItem(actor, input),
+    input.external_key
+      ? () => workspace().updateExistingItem(actor, input)
+      : undefined,
+  );
 }
 
 function parseInput<T>(schema: ZodType<T>, input: unknown): T {
@@ -143,7 +169,6 @@ type EventRow = Omit<Event, "actor"> & {
 const SOCKET_CREATE_LIMITS: Partial<
   Record<z.output<typeof SocketRequestSchema>["type"], LimitAction>
 > = {
-  ADD_ITEM: "item.create",
   CREATE_PROJECT: "project.create",
   CREATE_TOKEN: "token.create",
 };
@@ -331,7 +356,15 @@ export class Workspace<
           this.#undoCommand(mutation.input.id, actor);
           break;
         case "ADD_ITEM":
-          this.addItem(actor, mutation.input);
+          if (limits && this.ctx.id.name)
+            await addItemWithLimit(
+              () => this,
+              actor,
+              mutation.input,
+              limits,
+              this.ctx.id.name,
+            );
+          else this.addItem(actor, mutation.input);
           break;
         case "DELETE_ITEM":
           this.deleteItem(actor, mutation.input);
@@ -521,10 +554,12 @@ export class Workspace<
     name: string,
     input: unknown,
     user?: WorkspaceUser,
+    allowItemCreation = true,
   ): Promise<{
     content: string;
     isError: boolean;
     effects: CommandEffect[];
+    needsItemCreation?: true;
   }> {
     const tool = commandTools.find(
       ({ definition }) => definition.name === name,
@@ -542,7 +577,7 @@ export class Workspace<
       this.#commandEffects = effects;
       // Operations record their writes synchronously, including handoffs before
       // external notification delivery. Never keep the capture open across I/O.
-      operation = tool.execute(this, input, user);
+      operation = tool.execute(this, input, user, allowItemCreation);
     } catch (error) {
       operation = Promise.reject(error);
     } finally {
@@ -550,6 +585,13 @@ export class Workspace<
     }
     try {
       const output = await operation;
+      if (output === null && name === "add_item")
+        return {
+          content: "",
+          isError: false,
+          effects,
+          needsItemCreation: true,
+        };
       const content = JSON.stringify(output);
       if (content.length > 20_000)
         return {
@@ -1164,10 +1206,24 @@ export class Workspace<
 
   addItem(actor: Actor, input: AddItemInput): ItemOperationResult {
     const data = parseInput(AddItemSchema, input);
+    return this.#addItem(actor, data, this.#findItemByExternalKey(data));
+  }
+
+  updateExistingItem(
+    actor: Actor,
+    input: AddItemInput,
+  ): ItemOperationResult | null {
+    const data = parseInput(AddItemSchema, input);
+    const existing = this.#findItemByExternalKey(data);
+    return existing ? this.#addItem(actor, data, existing) : null;
+  }
+
+  #findItemByExternalKey({ external_key }: AddItemInput) {
+    return external_key ? this.#findItem({ external_key }) : undefined;
+  }
+
+  #addItem(actor: Actor, data: AddItemInput, existing: Item | undefined) {
     return this.#mutateItems(actor, (mutation) => {
-      const existing = data.external_key
-        ? this.#findItem({ external_key: data.external_key })
-        : undefined;
       if (existing) {
         this.#editItem(mutation, existing, data, {
           heartbeat: data.status === "active",

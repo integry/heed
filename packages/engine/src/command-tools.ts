@@ -31,6 +31,7 @@ function tool<T extends z.ZodType>(
     workspace: Workspace,
     args: z.output<T>,
     actor: typeof commandActor & { user?: WorkspaceUser },
+    allowItemCreation: boolean,
   ) => unknown,
 ) {
   const parameters = z.toJSONSchema(schema, {
@@ -39,13 +40,23 @@ function tool<T extends z.ZodType>(
   delete parameters.$schema;
   return {
     definition: { name, description, parameters } satisfies ToolDefinition,
-    execute(workspace: Workspace, args: unknown, user?: WorkspaceUser) {
+    execute(
+      workspace: Workspace,
+      args: unknown,
+      user: WorkspaceUser | undefined,
+      allowItemCreation: boolean,
+    ) {
       const result = schema.safeParse(args);
       if (!result.success) {
         const { path, message } = result.error.issues[0];
         return { error: [path.join("."), message].filter(Boolean).join(": ") };
       }
-      return run(workspace, result.data, { ...commandActor, user });
+      return run(
+        workspace,
+        result.data,
+        { ...commandActor, user },
+        allowItemCreation,
+      );
     },
   };
 }
@@ -98,7 +109,12 @@ export const commandTools = [
     "add_item",
     "Add an item or child. Use a project ID. An existing external_key updates its item.",
     AddItemSchema,
-    (workspace, input, actor) => itemResult(workspace.addItem(actor, input)),
+    (workspace, input, actor, allowItemCreation) => {
+      const result = allowItemCreation
+        ? workspace.addItem(actor, input)
+        : workspace.updateExistingItem(actor, input);
+      return result && itemResult(result);
+    },
   ),
   tool(
     "report_progress",

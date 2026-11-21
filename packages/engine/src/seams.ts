@@ -119,6 +119,29 @@ export async function checkLimit(
   return decision;
 }
 
+export async function withItemCreateLimit<T>(
+  limits: Limits,
+  workspaceId: string,
+  add: () => T | Promise<T>,
+  updateExisting?: () => T | null | Promise<T | null>,
+): Promise<T> {
+  if (updateExisting) {
+    const result = await updateExisting();
+    if (result !== null) return result;
+  }
+  try {
+    await checkLimit(limits, workspaceId, "item.create");
+  } catch (error) {
+    // A concurrent insertion may have made this an update during the check.
+    if (error instanceof LimitError && updateExisting) {
+      const result = await updateExisting();
+      if (result !== null) return result;
+    }
+    throw error;
+  }
+  return add();
+}
+
 export class OpenLimitRefusal {
   readonly ok = false;
   constructor(readonly error: LimitError) {}

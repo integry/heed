@@ -94,7 +94,7 @@ async function openSocket(response: Response) {
   };
 }
 
-function setupHost() {
+function setupHost(limits = hostLimits) {
   const id = crypto.randomUUID();
   const alpha = `alpha_${id}`;
   const beta = `limited_${id}`;
@@ -148,7 +148,7 @@ function setupHost() {
         return workspaceId && ids.includes(workspaceId) ? workspaceId : null;
       },
     },
-    limits: hostLimits,
+    limits,
     usage: { record },
     keys: { commandProvider: keys },
   });
@@ -392,6 +392,138 @@ it("refuses creation before the workspace operation and returns structured HTTP,
     "command",
     "command",
   ]);
+});
+
+it("updates an existing external key at the creation limit through HTTP, MCP, sockets and commands", async () => {
+  const check = vi.fn(hostLimits.check);
+  const host = setupHost({ check });
+  const { beta, fetch, human } = host;
+  const workspace = host.workspace(beta);
+  const external_key = "repo#branch";
+  const newItem = { title: "Denied", external_key: "repo#new" };
+  const { item_id } = await workspace.addItem(
+    { kind: "human" },
+    { title: "Original", external_key },
+  );
+  const { token } = await workspace.createToken("Agent B");
+
+  const http = await fetch(
+    human(beta, "/api/items", { title: "HTTP update", external_key }),
+  );
+  expect(http.status).toBe(201);
+  expect(await http.json()).toMatchObject({
+    item_id,
+    items: [{ id: item_id, title: "HTTP update" }],
+  });
+  expect((await fetch(human(beta, "/api/items", newItem))).status).toBe(429);
+
+  expect(
+    await toolResult(
+      await fetch(
+        rpc(token, "add_item", { title: "MCP update", external_key }),
+      ),
+    ),
+  ).toMatchObject({ structuredContent: { item_id } });
+  expect(await workspace.getItem({ item_id })).toMatchObject({
+    title: "MCP update",
+  });
+  expect(
+    await toolResult(await fetch(rpc(token, "add_item", newItem))),
+  ).toMatchObject({
+    isError: true,
+    structuredContent: { limit: "item.create" },
+  });
+
+  const socket = await openSocket(
+    await fetch(human(beta, "/ws", undefined, { Upgrade: "websocket" })),
+  );
+  expect(await socket.next()).toMatchObject({ type: "SNAPSHOT" });
+  socket.socket.send(
+    JSON.stringify({
+      type: "ADD_ITEM",
+      input: { title: "Socket update", external_key },
+      requestId: "update",
+    }),
+  );
+  expect(await socket.next()).toMatchObject({
+    type: "ITEM_UPSERT",
+    item: { id: item_id, title: "Socket update" },
+  });
+  expect(await socket.next()).toMatchObject({
+    type: "ACK",
+    requestId: "update",
+  });
+  socket.socket.send(
+    JSON.stringify({ type: "ADD_ITEM", input: newItem, requestId: "create" }),
+  );
+  expect(await socket.next()).toMatchObject({
+    type: "ERROR",
+    requestId: "create",
+    error: { limit: "item.create" },
+  });
+
+  host.keys.mockResolvedValueOnce({
+    managed: true,
+    configuration: { command: host.configuredProvider },
+  });
+  host.configuredProvider.next.mockResolvedValueOnce({
+    text: "",
+    calls: [
+      { id: "create", name: "add_item", input: newItem },
+      {
+        id: "update",
+        name: "add_item",
+        input: { title: "Command update", external_key },
+      },
+    ],
+  });
+  const command = await fetch(
+    human(beta, "/api/command", {
+      text: "Update the branch and add a new one",
+    }),
+  );
+  expect(command.status).toBe(200);
+  expect(await command.json()).toMatchObject({
+    changes: [{ type: "item", id: item_id }],
+    undoId: expect.any(String),
+    refusal: { limit: "item.create" },
+  });
+  expect(await workspace.getCanvas()).toMatchObject({
+    items: [{ id: item_id, title: "Command update" }],
+  });
+  expect(
+    check.mock.calls.filter(([, action]) => action === "item.create"),
+  ).toHaveLength(3);
+  await waitOnExecutionContext(host.ctx);
+});
+
+it("updates a key inserted while the hosted creation check was pending", async () => {
+  const check = vi.fn(hostLimits.check);
+  const host = setupHost({ check });
+  const { beta, fetch, human } = host;
+  const workspace = host.workspace(beta);
+  const external_key = "repo#branch";
+  let insertedId: string | undefined;
+  check.mockImplementation(async (workspaceId, action) => {
+    if (action === "item.create") {
+      const item = await workspace.addItem(
+        { kind: "human" },
+        { title: "Concurrent insert", external_key },
+      );
+      insertedId = item.item_id;
+    }
+    return hostLimits.check(workspaceId, action);
+  });
+
+  const response = await fetch(
+    human(beta, "/api/items", { title: "Retry update", external_key }),
+  );
+  expect(response.status).toBe(201);
+  expect(insertedId).toEqual(expect.any(String));
+  expect(await response.json()).toMatchObject({ item_id: insertedId });
+  expect(await workspace.getCanvas()).toMatchObject({
+    items: [{ id: insertedId, title: "Retry update" }],
+  });
 });
 
 function oneSecondWav() {
