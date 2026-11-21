@@ -6,7 +6,12 @@ import {
   type CSSProperties,
 } from "react";
 import type { CommandCapabilities } from "@heedwork/core";
-import { CommandBar, Microphone, useCommandBar } from "./CommandBar";
+import {
+  CommandBar,
+  Microphone,
+  ModelKeyHint,
+  useCommandBar,
+} from "./CommandBar";
 import { Panel } from "./workspace-controls";
 import type { StreamRow } from "@heedwork/core";
 import type { CanvasItem } from "@heedwork/core";
@@ -29,7 +34,9 @@ import { HorizonStream, type LensSelection } from "./horizon-stream";
 import { isRadarRowVisible } from "./RadarLens";
 import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
-import { readApi, useAction } from "./workspace-controls";
+import { useAction } from "./workspace-controls";
+import { ApiContext, createApi, useApi, useResource } from "./api";
+import type { AppUser, MountAppOptions } from "./web-options";
 import { workspaceView, type MutationInput } from "./workspace-state";
 import { selectWorkspace } from "./workspace-view";
 
@@ -38,7 +45,9 @@ type Session =
   | { status: "signed-out"; devLoginEnabled: boolean }
   | {
       status: "signed-in";
-      email: string;
+      user: AppUser;
+      role: string;
+      managed?: boolean;
       workspaceId: string;
       capabilities: CommandCapabilities;
     };
@@ -144,16 +153,30 @@ function ErrorBanner({
 }
 
 function Workspace({
-  email,
-  capabilities,
+  session,
+  options,
   registry,
   onSessionExpired,
+  onWorkspaceChange,
 }: {
-  email: string;
-  capabilities: CommandCapabilities;
+  session: Extract<Session, { status: "signed-in" }>;
+  options?: MountAppOptions;
   registry: readonly [Lens, ...Lens[]];
-  onSessionExpired: () => void;
+  onSessionExpired: (devLoginEnabled?: boolean) => void;
+  onWorkspaceChange: () => void;
 }) {
+  const { user, workspaceId, role, managed, capabilities } = session;
+  const { getJson, postJson } = useApi();
+  const api = useMemo(
+    () => ({ getJson, postJson, useResource }),
+    [getJson, postJson],
+  );
+  const screenProps = { user, workspaceId, role, api };
+  const slotProps = { ...screenProps, onWorkspaceChange };
+  const HeaderStart = options?.headerStart;
+  const HeaderEnd = options?.headerEnd;
+  const showModelKeyHint = managed === false && !capabilities.command;
+  const signOut = options?.onSignOut;
   const [lensId, setLensId] = useState(readLensId);
   const [selectedItem, setSelectedItem] = useState<{
     id: string;
@@ -227,7 +250,7 @@ function Workspace({
   useEffect(() => {
     if (!linkedId || !live) return;
     const controller = new AbortController();
-    void readApi<Item>(
+    void getJson<Item>(
       `/api/items/${encodeURIComponent(linkedId)}`,
       controller.signal,
     )
@@ -245,7 +268,7 @@ function Workspace({
         }
       });
     return () => controller.abort();
-  }, [connection, linkedId, live, notificationItemVersion]);
+  }, [connection, getJson, linkedId, live, notificationItemVersion]);
   const fallback =
     linkedItem?.version === notificationItemVersion &&
     linkedItem.item.id === linkedId
@@ -502,6 +525,7 @@ function Workspace({
   return (
     <div className="workspace" data-layout={desktop ? "desktop" : "mobile"}>
       <header className="workspace-header">
+        {HeaderStart && <HeaderStart {...slotProps} />}
         <Wordmark />
         {desktop ? (
           projectToggles
@@ -553,6 +577,7 @@ function Workspace({
               </div>
             </details>
           )}
+          {HeaderEnd && <HeaderEnd {...slotProps} />}
         </div>
       </header>
 
@@ -657,6 +682,11 @@ function Workspace({
           {inspector}
           {desktop && capabilities.command && (
             <CommandBar command={command} live={live} />
+          )}
+          {showModelKeyHint && (
+            <div className="command-bar">
+              <ModelKeyHint />
+            </div>
           )}
         </section>
         <section
@@ -829,7 +859,16 @@ function Workspace({
           projects={projects}
           items={state.items}
           timezone={timezone}
-          email={email}
+          screenProps={screenProps}
+          options={options}
+          showModelKeyHint={showModelKeyHint}
+          onSignOut={
+            signOut &&
+            (async () => {
+              await signOut();
+              onSessionExpired();
+            })
+          }
           live={live}
           save={connection.save}
           close={closePanel}
@@ -852,60 +891,93 @@ function Workspace({
 
 export function App({
   registry = lensRegistry,
-}: { registry?: readonly [Lens, ...Lens[]] } = {}) {
+  options,
+  scopeSignal,
+  onWorkspaceChange = () => {},
+}: {
+  registry?: readonly [Lens, ...Lens[]];
+  options?: MountAppOptions;
+  scopeSignal?: AbortSignal;
+  onWorkspaceChange?: () => void;
+} = {}) {
   const [session, setSession] = useState<Session>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
-  // Changing the attempt restarts the gate when the connection detects an expired session.
+  const [expireSession] = useState(() => (devLoginEnabled = false) => {
+    setSession((current) =>
+      current.status === "signed-in"
+        ? { status: "signed-out", devLoginEnabled }
+        : current,
+    );
+  });
+  const [api] = useState(() => createApi(expireSession, scopeSignal));
   const [reauthenticate] = useState(() => () => {
     setSession({ status: "loading" });
     setAttempt((value) => value + 1);
   });
   useEffect(() => {
     const controller = new AbortController();
+    const { signal } = controller;
+    const isActive = () => !signal.aborted && !scopeSignal?.aborted;
     async function checkSession() {
       try {
-        const response = await fetch("/api/me", { signal: controller.signal });
+        const response = await fetch("/api/me", { signal });
         if (response.status === 401) {
           const data = await response.json().catch(() => ({}));
-          if (!controller.signal.aborted)
+          if (isActive())
             setSession({
               status: "signed-out",
-              devLoginEnabled: data.devLoginEnabled === true,
+              devLoginEnabled: data?.devLoginEnabled === true,
             });
           return;
         }
         if (!response.ok) throw new Error("Session lookup failed");
-        const { email, workspaceId, capabilities } = await response.json();
-        if (typeof email !== "string" || typeof workspaceId !== "string")
+        const { email, user, workspaceId, role, capabilities, managed } =
+          await response.json();
+        const userEmail = user?.email ?? email;
+        if (typeof userEmail !== "string" || typeof workspaceId !== "string")
           throw new Error("Invalid session");
-        if (!controller.signal.aborted)
+        if (isActive())
           setSession({
             status: "signed-in",
-            email,
+            user: {
+              id: typeof user?.id === "string" ? user.id : userEmail,
+              email: userEmail,
+              name: typeof user?.name === "string" ? user.name : null,
+            },
             workspaceId,
+            role: typeof role === "string" ? role : "owner",
+            managed: typeof managed === "boolean" ? managed : undefined,
             capabilities: {
               command: capabilities?.command === true,
               transcription: capabilities?.transcription === true,
             },
           });
       } catch {
-        if (!controller.signal.aborted) setSession({ status: "error" });
+        if (isActive()) setSession({ status: "error" });
       }
     }
     void checkSession();
     return () => controller.abort();
-  }, [attempt]);
+  }, [attempt, scopeSignal]);
 
   if (session.status === "signed-in") {
     return (
-      <Workspace
-        key={session.workspaceId}
-        email={session.email}
-        capabilities={session.capabilities}
-        registry={registry}
-        onSessionExpired={reauthenticate}
-      />
+      <ApiContext.Provider value={api}>
+        <Workspace
+          session={session}
+          options={options}
+          registry={registry}
+          onSessionExpired={expireSession}
+          onWorkspaceChange={onWorkspaceChange}
+        />
+      </ApiContext.Provider>
     );
+  }
+
+  const SignIn = options?.signIn;
+  if (session.status === "signed-out" && SignIn) {
+    const { pathname, search, hash } = window.location;
+    return <SignIn returnTo={pathname + search + hash} />;
   }
 
   const item = new URLSearchParams(window.location.search).get("item");

@@ -1,15 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { INBOX_PROJECT_ID, ScopeSchema, TimezoneSchema } from "@heedwork/core";
 import type { Item, Project, Scope, TokenMetadata } from "@heedwork/core";
 import type { CreatedToken } from "@heedwork/core";
-import {
-  Panel,
-  ProjectOptions,
-  readApi,
-  useAction,
-} from "./workspace-controls";
+import { Panel, ProjectOptions, useAction } from "./workspace-controls";
 import type { SaveMutation } from "./workspace-controls";
 import { PushSettings } from "./PushSettings";
+import { ModelKeyHint } from "./CommandBar";
+import { useApi } from "./api";
+import type {
+  MountAppOptions,
+  SettingsScreen,
+  SettingsScreenProps,
+} from "./web-options";
 
 type SettingsActions = { live: boolean; save: SaveMutation };
 
@@ -215,7 +217,10 @@ function Projects({
           if (!name) return;
           void run(async () => {
             const sort = Math.max(0, ...projects.map(({ sort }) => sort)) + 1;
-            await save({ type: "CREATE_PROJECT", input: { name, sort } });
+            await save(
+              { type: "CREATE_PROJECT", input: { name, sort } },
+              { callerReportsError: true },
+            );
             form.reset();
           });
         }}
@@ -311,6 +316,7 @@ function Tokens({
   live,
   save,
 }: SettingsActions & { projects: readonly Project[] }) {
+  const { getJson } = useApi();
   const [tokens, setTokens] = useState<TokenMetadata[]>();
   const [loadError, setLoadError] = useState("");
   const [retry, setRetry] = useState(0);
@@ -318,7 +324,7 @@ function Tokens({
   const { busy, error, run } = useAction();
   useEffect(() => {
     const controller = new AbortController();
-    void readApi<TokenMetadata[]>("/api/tokens", controller.signal)
+    void getJson<TokenMetadata[]>("/api/tokens", controller.signal)
       .then((result) => {
         if (!Array.isArray(result))
           throw new Error("Couldn’t load API tokens.");
@@ -331,7 +337,7 @@ function Tokens({
         if (!controller.signal.aborted) setLoadError(error.message);
       });
     return () => controller.abort();
-  }, [retry]);
+  }, [getJson, retry]);
 
   return (
     <section className="settings-section" aria-labelledby="tokens-heading">
@@ -397,14 +403,17 @@ function Tokens({
             const form = event.currentTarget;
             const data = new FormData(form);
             void run(async () => {
-              const { createdToken } = await save({
-                type: "CREATE_TOKEN",
-                input: {
-                  label: String(data.get("label")).trim(),
-                  scope: ScopeSchema.parse(data.get("scope")),
-                  default_project_id: String(data.get("project")) || null,
+              const { createdToken } = await save(
+                {
+                  type: "CREATE_TOKEN",
+                  input: {
+                    label: String(data.get("label")).trim(),
+                    scope: ScopeSchema.parse(data.get("scope")),
+                    default_project_id: String(data.get("project")) || null,
+                  },
                 },
-              });
+                { callerReportsError: true },
+              );
               if (!createdToken)
                 throw new Error(
                   "The token response was missing. Check the token list.",
@@ -458,7 +467,12 @@ function Account({
   email,
   live,
   save,
-}: SettingsActions & { timezone: string; email: string }) {
+  onSignOut,
+}: SettingsActions & {
+  timezone: string;
+  email: string;
+  onSignOut?: () => Promise<void>;
+}) {
   const [draft, setDraft] = useState<string>();
   const { busy, error, run } = useAction();
   const value = (draft ?? timezone).trim();
@@ -503,10 +517,36 @@ function Account({
         action="/auth/logout"
         method="post"
         className="inline-actions settings-add"
+        onSubmit={
+          onSignOut &&
+          ((event) => {
+            event.preventDefault();
+            void run(onSignOut);
+          })
+        }
       >
         <p className="muted">Signed in as {email}</p>
-        <button className="subtle">Sign out</button>
+        <button className="subtle" disabled={onSignOut ? busy : undefined}>
+          Sign out
+        </button>
       </form>
+    </section>
+  );
+}
+
+function ExtraSettings({
+  screen,
+  screenProps,
+}: {
+  screen: SettingsScreen;
+  screenProps: SettingsScreenProps;
+}) {
+  const heading = useId();
+  const Component = screen.component;
+  return (
+    <section className="settings-section" aria-labelledby={heading}>
+      <h3 id={heading}>{screen.label}</h3>
+      <Component {...screenProps} />
     </section>
   );
 }
@@ -515,7 +555,10 @@ export function Settings({
   projects,
   items,
   timezone,
-  email,
+  screenProps,
+  options,
+  showModelKeyHint,
+  onSignOut,
   live,
   save,
   close,
@@ -523,15 +566,47 @@ export function Settings({
   projects: readonly Project[];
   items: ReadonlyMap<string, Item>;
   timezone: string;
-  email: string;
+  screenProps: SettingsScreenProps;
+  options?: MountAppOptions;
+  showModelKeyHint: boolean;
+  onSignOut?: () => Promise<void>;
   close: () => void;
 }) {
+  const hidden = options?.hideScreens ?? [];
   return (
     <Panel title="Settings" close={close} className="settings-panel">
-      <PushSettings />
-      <Projects projects={projects} items={items} live={live} save={save} />
-      <Tokens projects={projects} live={live} save={save} />
-      <Account timezone={timezone} email={email} live={live} save={save} />
+      {!hidden.includes("notifications") && <PushSettings />}
+      {!hidden.includes("projects") && (
+        <Projects projects={projects} items={items} live={live} save={save} />
+      )}
+      {!hidden.includes("tokens") && (
+        <Tokens projects={projects} live={live} save={save} />
+      )}
+      {!hidden.includes("account") && (
+        <Account
+          timezone={timezone}
+          email={screenProps.user.email}
+          live={live}
+          save={save}
+          onSignOut={onSignOut}
+        />
+      )}
+      {showModelKeyHint && !hidden.includes("model-keys") && (
+        <section
+          className="settings-section"
+          aria-labelledby="model-keys-heading"
+        >
+          <h3 id="model-keys-heading">Model keys</h3>
+          <ModelKeyHint />
+        </section>
+      )}
+      {options?.extraSettingsScreens?.map((screen) => (
+        <ExtraSettings
+          key={screen.id}
+          screen={screen}
+          screenProps={screenProps}
+        />
+      ))}
     </Panel>
   );
 }

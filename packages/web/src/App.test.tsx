@@ -12,6 +12,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { COMMAND_TEXT_LIMIT } from "@heedwork/core";
 import type { SocketMessage, SocketRequest } from "@heedwork/core";
 import { App } from "./App";
+import { mountApp, type MountedApp, type MountAppOptions } from "./index";
 import { lensRegistry, type Lens } from "./lenses";
 import {
   cellPoint,
@@ -55,6 +56,7 @@ class TestSocket extends EventTarget {
 }
 
 const fetchSession = vi.fn();
+let mounted: MountedApp | undefined;
 
 Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
   configurable: true,
@@ -70,6 +72,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  act(() => mounted?.unmount());
+  mounted = undefined;
   cleanup();
   window.history.replaceState(null, "", "/");
   localStorage.clear();
@@ -84,7 +88,7 @@ it.each([true, false])(
     fetchSession.mockResolvedValue(
       Response.json({ devLoginEnabled }, { status: 401 }),
     );
-    render(<App />);
+    mountHost();
     expect(screen.getByRole("status").textContent).toContain(
       "Checking your session",
     );
@@ -100,6 +104,245 @@ it.each([true, false])(
     expect(
       screen.queryByRole("heading", { name: "Horizon Stream" }),
     ).toBeNull();
+  },
+);
+
+function mountHost(options?: MountAppOptions) {
+  const root = document.createElement("div");
+  document.body.append(root);
+  act(() => {
+    const app = mountApp(root, options);
+    mounted = {
+      ...app,
+      unmount() {
+        app.unmount();
+        root.remove();
+      },
+    };
+  });
+  return mounted!;
+}
+
+it("mounts a host sign-in with the full return path on a session 401", async () => {
+  fetchSession.mockImplementation(
+    async () => new Response(null, { status: 401 }),
+  );
+  window.history.replaceState(null, "", "/workspace?item=goal#stream");
+  mountHost({ signIn: ({ returnTo }) => <p>Continue to {returnTo}</p> });
+  expect(
+    await screen.findByText("Continue to /workspace?item=goal#stream"),
+  ).toBeTruthy();
+  expect(
+    screen.queryByRole("link", { name: "Sign in with Google" }),
+  ).toBeNull();
+});
+
+it("mounts host settings and header slots and drops workspace state on switch", async () => {
+  const previousSocket = TestSocket.current;
+  let activeWorkspaceId = "launch";
+  let role = "editor";
+  fetchSession.mockImplementation(async (path: string) =>
+    path === "/api/me"
+      ? Response.json({
+          workspaceId: activeWorkspaceId,
+          role,
+          user: {
+            id: "user-1",
+            name: "Workspace user",
+            email: "user@example.test",
+          },
+          managed: true,
+        })
+      : Response.json({ plan: "Team" }),
+  );
+  const signOut = vi.fn(async () => {});
+  const app = mountHost({
+    signIn: () => <h1>Host sign-in</h1>,
+    onSignOut: signOut,
+    headerStart: ({ workspaceId, onWorkspaceChange }) => (
+      <button
+        onClick={() => {
+          activeWorkspaceId = "research";
+          role = "viewer";
+          onWorkspaceChange();
+        }}
+      >
+        {workspaceId}
+      </button>
+    ),
+    headerEnd: ({ user }) => <span>{user.name}</span>,
+    hideScreens: ["projects", "tokens", "notifications"],
+    extraSettingsScreens: [
+      {
+        id: "plan",
+        label: "Workspace plan",
+        component: ({ user, workspaceId, role, api }) => {
+          const { data } = api.useResource<{ plan: string }>("/api/plan");
+          return (
+            <p>
+              {user.id} / {workspaceId} / {role} / {data?.plan}
+            </p>
+          );
+        },
+      },
+    ],
+  });
+  const header = await screen.findByRole("banner");
+  expect(within(header).getByText("Workspace user")).toBeTruthy();
+  await waitFor(() => expect(TestSocket.current).not.toBe(previousSocket));
+  const first = TestSocket.current;
+  first.receive(snapshot);
+  const stream = screen.getByRole("region", { name: "Horizon Stream" });
+  expect(within(stream).getByRole("button", { name: goal.title })).toBeTruthy();
+
+  fireEvent.click(within(header).getByRole("button", { name: "Settings" }));
+  const settings = screen.getByRole("dialog", { name: "Settings" });
+  expect(
+    within(settings).getByRole("region", { name: "Workspace plan" }),
+  ).toBeTruthy();
+  expect(
+    await within(settings).findByText("user-1 / launch / editor / Team"),
+  ).toBeTruthy();
+  for (const name of ["Projects", "API tokens", "Notifications", "Model keys"])
+    expect(within(settings).queryByRole("region", { name })).toBeNull();
+  expect(screen.queryByText(/Configure Workers AI/)).toBeNull();
+
+  fireEvent.click(within(settings).getByRole("button", { name: "Close" }));
+  fireEvent.click(within(header).getByRole("button", { name: "launch" }));
+  await screen.findByRole("button", { name: "research" });
+  expect(TestSocket.current).not.toBe(first);
+  expect(first.readyState).toBe(3);
+  TestSocket.current.receive({ ...snapshot, items: [] });
+  expect(screen.queryByRole("button", { name: goal.title })).toBeNull();
+
+  const second = TestSocket.current;
+  act(() => app.onWorkspaceChange());
+  await waitFor(() => expect(TestSocket.current).not.toBe(second));
+  expect(second.readyState).toBe(3);
+
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  expect(
+    await screen.findByText("user-1 / research / viewer / Team"),
+  ).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  expect(
+    await screen.findByRole("heading", { name: "Host sign-in" }),
+  ).toBeTruthy();
+  expect(signOut).toHaveBeenCalledOnce();
+});
+
+it("shows the host sign-in on a 401 from a host screen API call", async () => {
+  fetchSession.mockImplementation(async (path: string) =>
+    path === "/api/me"
+      ? Response.json({ email: "user@example.test", workspaceId: "default" })
+      : new Response(null, { status: 401 }),
+  );
+  mountHost({
+    signIn: () => <h1>Host sign-in</h1>,
+    hideScreens: ["tokens"],
+    extraSettingsScreens: [
+      {
+        id: "members",
+        label: "Members",
+        component: ({ api }) => (
+          <button
+            onClick={() =>
+              void api.postJson("/api/members", {}).catch(() => {})
+            }
+          >
+            Add member
+          </button>
+        ),
+      },
+    ],
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+  expect(
+    await screen.findByRole("heading", { name: "Host sign-in" }),
+  ).toBeTruthy();
+  expect(TestSocket.current.readyState).toBe(3);
+});
+
+it.each([true, false])(
+  "applies key management to the command hint when managed is %s",
+  async (managed) => {
+    fetchSession.mockImplementation(async () =>
+      Response.json({
+        email: "user@example.test",
+        workspaceId: "default",
+        managed,
+      }),
+    );
+    mountHost({ hideScreens: ["model-keys", "tokens"] });
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    expect(screen.queryAllByText(/Configure Workers AI/)).toHaveLength(
+      managed ? 0 : 1,
+    );
+    expect(
+      within(screen.getByRole("dialog")).queryByRole("heading", {
+        name: "Model keys",
+      }),
+    ).toBeNull();
+  },
+);
+
+it.each([
+  {
+    open: "+ Goal",
+    region: "Add a goal",
+    field: "Title",
+    submit: "Add goal",
+    type: "ADD_ITEM",
+  },
+  {
+    open: "Settings",
+    region: "Projects",
+    field: "New project name",
+    submit: "Create project",
+    type: "CREATE_PROJECT",
+  },
+  {
+    open: "Settings",
+    region: "API tokens",
+    field: "Label",
+    submit: "Create token",
+    type: "CREATE_TOKEN",
+  },
+])(
+  "shows the limit refusal inline for $submit",
+  async ({ open, region, field, submit, type }) => {
+    await openWorkspace();
+    fireEvent.click(screen.getByRole("button", { name: open }));
+    const form = within(
+      screen.getByRole(open === "Settings" ? "region" : "dialog", {
+        name: region,
+      }),
+    );
+    fireEvent.change(await form.findByLabelText(field), {
+      target: { value: "Launch" },
+    });
+    fireEvent.click(form.getByRole("button", { name: submit }));
+    const socket = TestSocket.current;
+    expect(socket.latestRequest().type).toBe(type);
+    await act(async () =>
+      socket.receive({
+        seq: 2,
+        type: "ERROR",
+        requestId: socket.latestRequest().requestId,
+        error: {
+          code: "limit_exceeded",
+          message: "Creation refused",
+          reason: "This workspace has reached its plan limit.",
+        },
+      }),
+    );
+    const alert = form.getByRole("alert");
+    expect(alert.textContent).toBe(
+      "This workspace has reached its plan limit.",
+    );
+    expect(screen.getAllByRole("alert")).toEqual([alert]);
+    expect(form.getByDisplayValue("Launch")).toBeTruthy();
   },
 );
 

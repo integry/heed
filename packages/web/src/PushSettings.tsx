@@ -1,45 +1,48 @@
+import { useApi } from "./api";
 import { useEffect, useState } from "react";
-import { readApi, useAction } from "./workspace-controls";
+import { useAction } from "./workspace-controls";
 
 const subscriptionPath = "/api/push/subscribe";
 let pendingDeviceChange: Promise<void> | undefined;
 
-async function requestSubscription(
+async function requestSubscription<T>(
+  requestJson: ReturnType<typeof useApi>["requestJson"],
   path: string,
   method: "POST" | "DELETE",
   body: PushSubscriptionJSON,
   errorMessage: string,
   signal?: AbortSignal,
 ) {
-  const response = await fetch(path, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!response.ok) {
-    const data = await response.json().catch(() => null);
-    throw new Error(data?.error?.message ?? errorMessage);
-  }
-  return response;
+  return requestJson<T>(
+    path,
+    {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    },
+    errorMessage,
+  );
 }
 
 async function registeredSubscription(
+  requestJson: ReturnType<typeof useApi>["requestJson"],
   subscription: PushSubscription,
   signal?: AbortSignal,
 ) {
-  const response = await requestSubscription(
+  const { registered } = await requestSubscription<{ registered: boolean }>(
+    requestJson,
     "/api/push/status",
     "POST",
     subscription.toJSON(),
     "Couldn’t check notification registration.",
     signal,
   );
-  const { registered } = (await response.json()) as { registered: boolean };
   return registered ? subscription : null;
 }
 
 export function PushSettings() {
+  const { getJson, requestJson } = useApi();
   const supported =
     "serviceWorker" in navigator &&
     "PushManager" in window &&
@@ -62,12 +65,12 @@ export function PushSettings() {
       const existing = await worker.pushManager.getSubscription();
       if (controller.signal.aborted) return;
       const registered = existing
-        ? await registeredSubscription(existing, controller.signal)
+        ? await registeredSubscription(requestJson, existing, controller.signal)
         : null;
       if (controller.signal.aborted) return;
       setRegistration(worker);
       setSubscription(registered);
-      const { publicKey } = await readApi<{ publicKey: string }>(
+      const { publicKey } = await getJson<{ publicKey: string }>(
         "/api/push/key",
         controller.signal,
       );
@@ -77,7 +80,7 @@ export function PushSettings() {
       if (!controller.signal.aborted) setLoadError(error.message);
     });
     return () => controller.abort();
-  }, [supported]);
+  }, [getJson, requestJson, supported]);
 
   async function updateSubscription(
     method: "POST" | "DELETE",
@@ -85,6 +88,7 @@ export function PushSettings() {
   ) {
     try {
       await requestSubscription(
+        requestJson,
         subscriptionPath,
         method,
         method === "POST" ? device.toJSON() : { endpoint: device.endpoint },
@@ -94,7 +98,9 @@ export function PushSettings() {
       // A lost response does not tell us whether the server committed the change.
       setSubscription(undefined);
       setSubscription(
-        await registeredSubscription(device).catch(() => undefined),
+        await registeredSubscription(requestJson, device).catch(
+          () => undefined,
+        ),
       );
       throw error;
     }

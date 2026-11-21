@@ -29,20 +29,6 @@ export function useAction() {
   return { busy, error, run };
 }
 
-export async function readApi<T>(
-  path: string,
-  signal: AbortSignal,
-): Promise<T> {
-  const response = await fetch(path, { signal, cache: "no-store" });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(
-      body?.error?.message ?? "Couldn’t load the requested data.",
-    );
-  }
-  return response.json();
-}
-
 export function Panel({
   title,
   close,

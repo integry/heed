@@ -53,22 +53,25 @@ export function QuickAdd({
               const title = String(data.get("title")).trim();
               if (!title) throw new Error("Enter a title.");
               const date = String(data.get("date"));
-              await save({
-                type: "ADD_ITEM",
-                input: {
-                  title,
-                  ...(parent
-                    ? { parent_id: parent.id }
-                    : { project: String(data.get("project")) }),
-                  ...(date ? { scheduled_on: date } : {}),
-                  ...(type === "flexible"
-                    ? {}
-                    : {
-                        time_type: type,
-                        time_at: timeInputInstant(at, timezone),
-                      }),
+              await save(
+                {
+                  type: "ADD_ITEM",
+                  input: {
+                    title,
+                    ...(parent
+                      ? { parent_id: parent.id }
+                      : { project: String(data.get("project")) }),
+                    ...(date ? { scheduled_on: date } : {}),
+                    ...(type === "flexible"
+                      ? {}
+                      : {
+                          time_type: type,
+                          time_at: timeInputInstant(at, timezone),
+                        }),
+                  },
                 },
-              });
+                { callerReportsError: true },
+              );
               close();
             });
           }}

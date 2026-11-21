@@ -76,7 +76,7 @@ export function createWorkspaceConnection(notificationItemId: string | null) {
     });
   }
 
-  function start(onSessionExpired: () => void) {
+  function start(onSessionExpired: (devLoginEnabled?: boolean) => void) {
     const controller = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
     let watchdog: ReturnType<typeof setTimeout> | undefined;
@@ -87,7 +87,9 @@ export function createWorkspaceConnection(notificationItemId: string | null) {
       try {
         const response = await fetch("/api/me", { signal: controller.signal });
         if (response.status === 401 && !controller.signal.aborted) {
-          onSessionExpired();
+          const data = await response.json().catch(() => null);
+          if (!controller.signal.aborted)
+            onSessionExpired(data?.devLoginEnabled === true);
           return;
         }
       } catch {
@@ -178,7 +180,10 @@ export function createWorkspaceConnection(notificationItemId: string | null) {
           const reply = replies.get(message.requestId);
           replies.delete(message.requestId);
           if (message.type === "ACK") reply?.resolve(message);
-          else reply?.reject(new Error(message.error.message));
+          else
+            reply?.reject(
+              new Error(message.error.reason ?? message.error.message),
+            );
         }
         if (message.type === "SNAPSHOT") {
           rejectReplies(
