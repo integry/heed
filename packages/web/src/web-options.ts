@@ -1,6 +1,7 @@
 import type { CommandContext } from "@heedwork/core";
 import type { ComponentType } from "react";
 import type { ApiHelpers } from "./api.js";
+import type { SolvConfig } from "./solv.js";
 
 export interface SignInProps {
   returnTo: string;
@@ -39,6 +40,7 @@ export type BuiltInScreenId =
   | "data";
 
 export interface MountAppOptions {
+  solv?: SolvConfig;
   freeText?: (
     text: string,
     context: CommandContext,

@@ -395,6 +395,127 @@ function switchLens(name: string) {
   fireEvent.keyDown(document.body, { key });
 }
 
+it("hands free text to the configured widget and exposes four view-only page actions", async () => {
+  const send = vi.fn().mockResolvedValue({ text: "Start with the release." });
+  const open = vi.fn();
+  const setToolCredential = vi.fn();
+  type RunAction = (input: Record<string, unknown>) => { ok: boolean };
+  const actions = new Map<string, RunAction>();
+  vi.stubGlobal("solv", {
+    actions: {
+      register: ({ name, run }: { name: string; run: RunAction }) =>
+        actions.set(name, run),
+      unregister: (name: string) => actions.delete(name),
+    },
+  });
+  customElements.define(
+    "solv-chat",
+    class extends HTMLElement {
+      setToolCredential = setToolCredential;
+      send = send;
+      open = open;
+    },
+  );
+  const solv = {
+    widgetUrl: "https://assistant.example.test/widget.js",
+    assistantKey: "release",
+  };
+  let workspaceId = "launch";
+  fetchSession.mockImplementation(async (path: string) => {
+    if (path === "/api/me")
+      return Response.json({ workspaceId, email: "person@example.test", solv });
+    if (path === "/api/assistant-token")
+      return Response.json({
+        access_token: workspaceId,
+        expires_in: 900,
+        workspace_id: workspaceId,
+        user_id: "person@example.test",
+      });
+    return Response.json([]);
+  });
+  const app = mountHost();
+  await screen.findByRole("banner");
+  const initialSocket = TestSocket.current;
+  initialSocket.receive(snapshot);
+  const script = document.querySelector(`script[src="${solv.widgetUrl}"]`)!;
+  await act(async () => script.dispatchEvent(new Event("load")));
+  expect(setToolCredential).toHaveBeenCalledWith(
+    new URL("/mcp", location.href).href,
+    "launch",
+  );
+  expect([...actions.keys()]).toEqual([
+    "select_item",
+    "zoom_band",
+    "switch_lens",
+    "open_guidance_editor",
+  ]);
+  const apply = (name: string, input: Record<string, unknown> = {}) => {
+    act(() => expect(actions.get(name)?.(input)).toEqual({ ok: true }));
+  };
+  const socketMessages = initialSocket.send.mock.calls.length;
+  apply("select_item", { item_id: goal.id });
+  expect(
+    within(screen.getByRole("region", { name: "Selected item" })).getByRole(
+      "heading",
+      { name: goal.title },
+    ),
+  ).toBeTruthy();
+  apply("switch_lens", { lens: "board" });
+  expect(
+    screen.getByRole("table", { name: "Projects by time band" }),
+  ).toBeTruthy();
+  apply("zoom_band", { band: "today" });
+  expect(
+    screen.getByRole("button", { name: "Today", expanded: true }),
+  ).toBeTruthy();
+  apply("open_guidance_editor");
+  expect(screen.getByRole("dialog", { name: "Guidance" })).toBeTruthy();
+  fireEvent.click(
+    within(screen.getByRole("dialog", { name: "Guidance" })).getByRole(
+      "button",
+      { name: "Close" },
+    ),
+  );
+  expect(initialSocket.send).toHaveBeenCalledTimes(socketMessages);
+
+  await sendCommand("What should I focus on?");
+  expect(screen.getByRole("status").textContent).toBe(
+    "Start with the release.",
+  );
+  expect(send).toHaveBeenCalledExactlyOnceWith("What should I focus on?");
+  expect(open).not.toHaveBeenCalled();
+  await sendCommand("open chat");
+  expect(open).toHaveBeenCalledExactlyOnceWith({ mode: "side", focus: true });
+
+  const previousWidget = document.querySelector("solv-chat");
+  workspaceId = "research";
+  act(() => app.onWorkspaceChange());
+  await waitFor(() =>
+    expect(setToolCredential).toHaveBeenLastCalledWith(
+      new URL("/mcp", location.href).href,
+      "research",
+    ),
+  );
+  expect(previousWidget?.isConnected).toBe(false);
+  expect(
+    document.querySelectorAll('script[src*="assistant.example.test"]'),
+  ).toHaveLength(1);
+  act(() => app.unmount());
+  expect(actions.size).toBe(0);
+  script.remove();
+});
+
+it("keeps the existing free-text response and never loads a widget when unconfigured", async () => {
+  await openWorkspace();
+  await sendCommand("open chat");
+  expect(screen.getByText(COMMAND_HELP)).toBeTruthy();
+  expect(document.querySelector("solv-chat")).toBeNull();
+  expect(document.querySelector("script[src]")).toBeNull();
+  expect(fetchSession.mock.calls.map(([path]) => path)).not.toContain(
+    "/api/assistant-token",
+  );
+});
+
 function openGraph() {
   const radar = within(screen.getByRole("region", { name: "Attention field" }));
   fireEvent.click(radar.getByRole("button", { name: goal.title }));

@@ -51,6 +51,7 @@ export const ActorSchema = z.discriminatedUnion("kind", [
     kind: z.literal("agent"),
     scope: ScopeSchema,
     name: agentName,
+    user: WorkspaceUserSchema.optional(),
     token_id: id.optional(),
     default_project_id: id.nullish(),
   }),

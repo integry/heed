@@ -1,6 +1,7 @@
 import {
   createExecutionContext,
   evictDurableObject,
+  runInDurableObject,
   waitOnExecutionContext,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -785,6 +786,126 @@ it("preserves the open request Durable Object lookup and RPC budgets", async () 
       response.webSocket.close(1000);
     }
   }
+});
+
+it("requires a same-origin signed-in session and an active workspace to issue an assistant token", async () => {
+  const { alpha, suspended, fetch, human, getByName } = setupHost();
+  const path = "/api/assistant-token";
+  expect((await fetch(request(path, undefined, {}))).status).toBe(401);
+  expect(
+    (
+      await fetch(
+        new Request(origin + path, {
+          method: "POST",
+          headers: { Origin: "https://other.test", "X-Test-Workspace": alpha },
+        }),
+      )
+    ).status,
+  ).toBe(403);
+  const refused = await fetch(human(suspended, path, {}));
+  expect(refused.status).toBe(403);
+  expect(await refused.json()).toMatchObject({
+    error: { limit: "connect", message: "Workspace suspended." },
+  });
+  expect(getByName).not.toHaveBeenCalled();
+});
+
+it("issues an expiring steer token for MCP and attributes its locked edits to the signed-in user", async () => {
+  const { alpha, beta, fetch, human, workspace } = setupHost();
+  const response = await fetch(human(alpha, "/api/assistant-token", {}));
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Cache-Control")).toBe("no-store");
+  const token = await response.json<{ access_token: string }>();
+  expect(token).toEqual({
+    access_token: expect.any(String),
+    token_type: "Bearer",
+    expires_in: 900,
+    scope: "steer",
+    workspace_id: alpha,
+    user_id: user.id,
+  });
+  const { secret, workspaceId } = tokenParts(token.access_token)!;
+  expect(workspaceId).toBe(alpha);
+  expect(await workspace(alpha).listConnectedApps()).toMatchObject([
+    { client_name: "assistant", label: "assistant", scope: "steer" },
+  ]);
+  expect(
+    (await fetch(rpc(`heed_${beta}_${secret}`, "get_canvas"))).status,
+  ).toBe(401);
+  const wrongAudience = new Request(
+    "https://other.test/mcp",
+    rpc(token.access_token, "get_canvas"),
+  );
+  wrongAudience.headers.delete("Origin");
+  expect((await fetch(wrongAudience)).status).toBe(401);
+  expect((await fetch(report(token.access_token, "item"))).status).toBe(401);
+
+  const { item_id } = await workspace(alpha).addItem(
+    { kind: "human" },
+    { title: "Plan release" },
+  );
+  const result = await toolResult(
+    await fetch(
+      rpc(token.access_token, "update_item", {
+        item_id,
+        scheduled_on: "2026-11-29",
+      }),
+    ),
+  );
+  expect(result.isError).toBeUndefined();
+  expect(await workspace(alpha).getItem({ item_id })).toMatchObject({
+    scheduled_on: "2026-11-29",
+    locked_fields: '["scheduled_on"]',
+  });
+  expect(await workspace(alpha).getItemEvents({ item_id })).toEqual(
+    expect.arrayContaining([expect.objectContaining({ actor: user })]),
+  );
+
+  const hash = await hashSecret(secret);
+  await runInDurableObject(workspace(alpha), (_, { storage: { sql } }) => {
+    sql.exec(
+      "UPDATE oauth_grants SET access_expires_at = ? WHERE id = (SELECT id FROM tokens WHERE secret_hash = ?)",
+      Date.now(),
+      hash,
+    );
+  });
+  expect((await fetch(rpc(token.access_token, "get_canvas"))).status).toBe(401);
+});
+
+it("publishes optional widget settings and applies the normal MCP token rate limit", async () => {
+  const secret = newTokenSecret();
+  const cookie = (await issueSession(user.email, secret)).split(";")[0];
+  const limit = vi.fn().mockResolvedValue({ success: false });
+  const openEnv = {
+    ...env,
+    SESSION_SECRET: secret,
+    ALLOWED_EMAILS: user.email,
+    TOKEN_RATE_LIMITER: { limit },
+  };
+  const browser = (path: string, body?: object) =>
+    request(path, new Headers({ Cookie: cookie }), body);
+  expect(
+    await (await fetchOpen(browser("/api/me"), openEnv)).json(),
+  ).not.toHaveProperty("solv");
+  const configured = await fetchOpen(browser("/api/me"), {
+    ...openEnv,
+    SOLV_WIDGET_URL: "https://assistant.example.test/widget.js",
+    SOLV_ASSISTANT_KEY: "example-assistant",
+  });
+  expect(await configured.json()).toMatchObject({
+    solv: {
+      widgetUrl: "https://assistant.example.test/widget.js",
+      assistantKey: "example-assistant",
+    },
+  });
+  const { access_token } = await (
+    await fetchOpen(browser("/api/assistant-token", {}), openEnv)
+  ).json<{ access_token: string }>();
+  const refused = await fetchOpen(rpc(access_token, "get_canvas"), openEnv);
+  expect(refused.status).toBe(429);
+  expect(limit).toHaveBeenCalledWith(
+    expect.objectContaining({ key: await hashSecret(access_token) }),
+  );
 });
 
 it("connects a registered MCP client to the active hosted workspace and revokes its credentials", async () => {
