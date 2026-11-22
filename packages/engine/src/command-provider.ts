@@ -8,6 +8,8 @@ export interface EnvKeysEnv {
   WORKERS_AI_COMMAND_MODEL?: string;
   ANTHROPIC_API_KEY?: string;
   ANTHROPIC_COMMAND_MODEL?: string;
+  /** Anthropic-compatible Messages endpoint, such as OpenRouter's. Defaults to Anthropic. */
+  ANTHROPIC_MESSAGES_URL?: string;
 }
 
 export interface ToolCall {
@@ -109,12 +111,16 @@ function commandProvider(env: EnvKeysEnv): CommandProvider | undefined {
     WORKERS_AI_COMMAND_MODEL,
     ANTHROPIC_COMMAND_MODEL,
     ANTHROPIC_API_KEY,
+    ANTHROPIC_MESSAGES_URL,
   } = env;
   if (ANTHROPIC_COMMAND_MODEL?.trim() && ANTHROPIC_API_KEY?.trim()) {
     return {
       model: ANTHROPIC_COMMAND_MODEL,
       async next({ system, text, tools, history }) {
-        const response = await fetch("https://api.anthropic.com/v1/messages", {
+        const url =
+          ANTHROPIC_MESSAGES_URL?.trim() ||
+          "https://api.anthropic.com/v1/messages";
+        const response = await fetch(url, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
