@@ -810,6 +810,25 @@ it("requires a same-origin signed-in session and an active workspace to issue an
   expect(getByName).not.toHaveBeenCalled();
 });
 
+it("refuses assistant token creation without persisting a grant when the host denies token.create", async () => {
+  const { beta, fetch, human, getByName, workspace } = setupHost();
+  const refused = await fetch(human(beta, "/api/assistant-token", {}));
+
+  expect(refused.status).toBe(429);
+  expect(await refused.json()).toMatchObject({
+    error: {
+      limit: "token.create",
+      message:
+        "Workspace creation allowance reached. Remove an existing resource.",
+    },
+  });
+  expect(getByName).not.toHaveBeenCalled();
+  await runInDurableObject(workspace(beta), (_, { storage: { sql } }) => {
+    expect(sql.exec("SELECT id FROM oauth_grants").toArray()).toEqual([]);
+    expect(sql.exec("SELECT id FROM tokens").toArray()).toEqual([]);
+  });
+});
+
 it("issues an expiring steer token for MCP and attributes its locked edits to the signed-in user", async () => {
   const { alpha, beta, fetch, human, workspace } = setupHost();
   const response = await fetch(human(alpha, "/api/assistant-token", {}));

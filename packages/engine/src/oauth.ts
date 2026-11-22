@@ -455,6 +455,7 @@ export async function issueAssistantToken(
   { workspaceId, user }: HumanActor,
   app: AppContext,
 ) {
+  await checkLimit(app.limits, workspaceId, "token.create");
   const access = await app
     .workspace(workspaceId)
     .issueAssistantAccessToken(new URL("/mcp", url).href, user);
