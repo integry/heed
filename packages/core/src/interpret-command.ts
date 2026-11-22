@@ -186,7 +186,7 @@ const builtInLenses = ["radar", "board", "treemap", "list", "dependencies"].map(
 );
 
 export const COMMAND_HELP =
-  "Try add <title>, zoom into today, fit, a lens name, what needs me, what is blocked, edit guidance, new token, enable notifications, export workspace, reset workspace, or sign out. Select or name an item to change its date, priority, visibility, or status. For token options, try new steer token in <project> for <label>.";
+  "I didn’t catch that. Try “add <title>”, “done <item>”, “move <item> to friday” or “zoom into today”.";
 
 export function interpretCommand(
   raw: string,
