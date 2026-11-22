@@ -1,12 +1,22 @@
 import { workspaceCalendar } from "./derived-state.js";
 import { LockableFieldSchema } from "./item-operations.js";
 import { INBOX_PROJECT_ID, RadarBandSchema, ScopeSchema } from "./workspace.js";
-import type { RadarBand, Scope } from "./workspace.js";
+import type { RadarBand, Scope, Status } from "./workspace.js";
 import type { WorkspaceMutation } from "./workspace-socket.js";
 import { z } from "zod";
 
 type Named = { id: string; title: string };
-type CommandItem = Named & { handoff?: number | boolean };
+type CommandItem = Named & { handoff?: number | boolean; status?: Status };
+
+export function hasOpenHandoff(
+  item: Pick<CommandItem, "handoff" | "status">,
+): boolean {
+  return (
+    Boolean(item.handoff) &&
+    item.status !== "done" &&
+    item.status !== "cancelled"
+  );
+}
 
 export interface CommandContext {
   selected?: CommandItem | null;
@@ -184,10 +194,12 @@ export function interpretCommand(
 ): CommandIntent {
   const text = raw.trim();
   if (!text) return { type: "unknown" };
-  if (context.replyTo?.handoff) return answer(context.replyTo, text);
+  const { replyTo, selected } = context;
+  if (replyTo && hasOpenHandoff(replyTo)) return answer(replyTo, text);
+  const selectedHandoff =
+    !replyTo && selected && hasOpenHandoff(selected) ? selected : undefined;
   const reply = /^reply(?: with)? (.+)$/i.exec(text);
-  if (context.selected?.handoff && reply)
-    return answer(context.selected, reply[1]);
+  if (reply && selectedHandoff) return answer(selectedHandoff, reply[1]);
 
   const command = text.replace(/\?$/, "").toLowerCase();
   const dates = () => workspaceCalendar(context.today, context.timezone);
@@ -587,6 +599,6 @@ export function interpretCommand(
       name: match[2],
     };
 
-  if (context.selected?.handoff) return answer(context.selected, text);
+  if (selectedHandoff) return answer(selectedHandoff, text);
   return { type: "unknown" };
 }

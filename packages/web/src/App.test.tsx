@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
+  COMMAND_HELP,
   COMMAND_TEXT_LIMIT,
   RESET_WORKSPACE_CONFIRMATION,
 } from "@heedwork/core";
@@ -605,6 +606,37 @@ it("runs a standalone built-in after New command cancels a clarification", async
   expect(submit).toHaveBeenCalledTimes(1);
 });
 
+it("starts item creation after a pending model command offers clarification", async () => {
+  const question = "Which date should I use?";
+  const { send, submit } = await openCommandBar(
+    Response.json({ summary: question, needsClarification: true, changes: [] }),
+  );
+  send("Could you arrange the billing review?");
+  const add = menuAction("Add item") as HTMLButtonElement;
+  expect(add.disabled).toBe(true);
+  await screen.findByText(question);
+
+  fireEvent.click(add);
+  expect(screen.queryByText(question)).toBeNull();
+  expect(commandInput().value).toBe("add ");
+  expect(document.activeElement).toBe(commandInput());
+  await sendCommand("add Check billing logs");
+
+  const socket = TestSocket.current;
+  expect(socket.latestRequest()).toMatchObject({
+    type: "ADD_ITEM",
+    input: { title: "Check billing logs" },
+  });
+  expect(submit).toHaveBeenCalledTimes(1);
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 2,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+});
+
 it("starts a fresh command after an ordinary result ending in a question mark", async () => {
   const summary = 'No item has the title "Ready?" — could it be archived?';
   const { draft, send, submit } = await openCommandBar(
@@ -699,7 +731,7 @@ async function openNotificationItem(lookup: () => Response) {
   return TestSocket.current;
 }
 
-it.each(["blocked", "done"])(
+it.each(["blocked", "done", "cancelled"])(
   "shows only open handoffs for off-canvas notification items (status: %s)",
   async (status) => {
     const item = {
@@ -721,6 +753,10 @@ it.each(["blocked", "done"])(
       ).toBeTruthy();
     } else {
       expect(bubble).toBeNull();
+      const socket = TestSocket.current;
+      await sendCommand("Please summarize last quarter");
+      expect(screen.getByText(COMMAND_HELP)).toBeTruthy();
+      expect(socket.send).not.toHaveBeenCalled();
     }
   },
 );
@@ -3423,6 +3459,38 @@ it("keeps one selected question as visibility changes and removes it when termin
   expect(screen.queryByRole("region", question)).toBeNull();
   expect(commandInput().value).toBe("");
   expect(socket.send).not.toHaveBeenCalled();
+});
+
+it("starts item creation without answering the open handoff in reply mode", async () => {
+  const item = { ...goal, handoff: 1, agent_name: "Release agent" } as const;
+  await openWorkspace(undefined, { ...snapshot, items: [item] });
+  const question = screen.getByRole("region", {
+    name: `Question about ${item.title}`,
+  });
+  fireEvent.click(
+    within(question).getByRole("button", { name: "Type a reply" }),
+  );
+  expect(commandInput().placeholder).toBe("Reply to Release agent…");
+
+  fireEvent.click(menuAction("Add item"));
+  expect(screen.queryByRole("button", { name: "Exit reply" })).toBeNull();
+  expect(commandInput().value).toBe("add ");
+  expect(document.activeElement).toBe(commandInput());
+  await sendCommand("add Check billing logs");
+
+  const socket = TestSocket.current;
+  expect(socket.latestRequest()).toMatchObject({
+    type: "ADD_ITEM",
+    input: { title: "Check billing logs" },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 2,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  expect(question.isConnected).toBe(true);
 });
 
 it("applies built-in commands before handing unknown input to the host", async () => {

@@ -3,7 +3,12 @@ import { interpretCommand, type CommandContext } from "./interpret-command.js";
 
 const sdk = { id: "sdk", title: "SDK upgrade" };
 const sdkDocs = { id: "docs", title: "SDK documentation" };
-const other = { id: "other", title: "Build API", handoff: 1 };
+const other = {
+  id: "other",
+  title: "Build API",
+  handoff: 1,
+  status: "blocked",
+} as const;
 const context: CommandContext = {
   items: [sdk, sdkDocs, other],
   today: Date.parse("2026-11-23T02:30:00Z"),
@@ -206,4 +211,38 @@ describe("interpretCommand", () => {
       },
     });
   });
+
+  it.each(["done", "cancelled"] as const)(
+    "keeps a %s handoff selected for commands without accepting answers",
+    (status) => {
+      const item = { ...other, status };
+      const selectedContext = { ...context, selected: item };
+      expect(interpretCommand("Ship it", selectedContext)).toEqual({
+        type: "unknown",
+      });
+      expect(interpretCommand("reply with Ship it", selectedContext)).toEqual({
+        type: "unknown",
+      });
+      expect(
+        interpretCommand("add Write tests", {
+          ...selectedContext,
+          replyTo: item,
+        }),
+      ).toMatchObject({
+        type: "mutate",
+        mutation: { type: "ADD_ITEM", input: { title: "Write tests" } },
+      });
+      expect(
+        interpretCommand("Ship it", {
+          ...context,
+          selected: other,
+          replyTo: { ...item, id: sdk.id },
+        }),
+      ).toEqual({ type: "unknown" });
+      expect(interpretCommand("reopen", selectedContext)).toMatchObject({
+        type: "mutate",
+        mutation: { type: "REOPEN_ITEM", input: { item_id: item.id } },
+      });
+    },
+  );
 });

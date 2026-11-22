@@ -10,6 +10,7 @@ import {
   RESET_WORKSPACE_CONFIRMATION,
   interpretCommand,
   effectiveSchedule,
+  hasOpenHandoff,
   progress,
   isBlocked,
   matchCommandName,
@@ -93,12 +94,6 @@ type Session =
 
 function Wordmark() {
   return <span className="wordmark">heed</span>;
-}
-
-function hasOpenHandoff(item: Item) {
-  return (
-    item.handoff === 1 && item.status !== "done" && item.status !== "cancelled"
-  );
 }
 
 function useMinuteClock() {
@@ -849,10 +844,12 @@ function Workspace({
               className="text-control"
               type="button"
               onClick={() => {
+                setReplyId(undefined);
+                command.newCommand();
                 command.setDraft("add ");
                 command.line.current?.focus({ preventScroll: true });
               }}
-              disabled={!live}
+              disabled={!live || command.action.busy || Boolean(command.voice)}
             >
               Add item
             </button>
