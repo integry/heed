@@ -195,8 +195,14 @@ const ringLabels = RADAR_BANDS.map((band) => {
 
 export function ringLabel(band: RadarBand, edges = boundaries, split = false) {
   const label = ringLabels[RADAR_BANDS.indexOf(band)];
-  if (edges === boundaries || band === "today") return label;
+  if (edges === boundaries) return label;
   const { inner, outer } = bandBounds(band, edges);
+  // Split into attention groups, the centre holds the "Needs me" group and its bubbles,
+  // so the band's own label moves to the bottom edge of the band.
+  if (band === "today")
+    return split
+      ? { ...label, point: polar(Math.PI / 2, outer - label.halfHeight - 2) }
+      : label;
   return {
     ...label,
     point: polar(split ? Math.PI / 2 : START, (inner + outer) / 2),
