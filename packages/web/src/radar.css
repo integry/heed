@@ -449,24 +449,3 @@
     min-height: 32px;
   }
 }
-
-.radar-handoff {
-  position: absolute;
-  inset: auto auto 10px 10px;
-  width: min(340px, calc(100% - 20px));
-  max-height: calc(100% - 20px);
-  margin: 0;
-  overflow: auto;
-}
-
-.radar-handoff header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.radar-handoff header button {
-  margin-top: 0;
-}

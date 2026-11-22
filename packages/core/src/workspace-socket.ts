@@ -114,6 +114,14 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
 ]);
 
 export type SocketRequest = z.infer<typeof SocketRequestSchema>;
+type Mutation = Exclude<SocketRequest, { type: "GET_SNAPSHOT" }>;
+export type WorkspaceMutation = {
+  [Type in Mutation["type"]]: Omit<
+    Extract<Mutation, { type: Type }>,
+    "requestId"
+  >;
+}[Mutation["type"]];
+
 export type ChildCounts = { done: number; total: number };
 export type CanvasItem = Item & { progress: ChildCounts };
 

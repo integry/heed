@@ -32,7 +32,10 @@ export function Guidance({
           event.preventDefault();
           if (!valid || draft === settings.guidance) return;
           void run(async () => {
-            await save({ type: "SET_GUIDANCE", input: { text: draft } });
+            await save(
+              { type: "SET_GUIDANCE", input: { text: draft } },
+              { callerReportsError: true },
+            );
             setEdit(undefined);
             setSaved(true);
           });
@@ -41,6 +44,7 @@ export function Guidance({
         <label className="form-field">
           Instructions for your agents
           <textarea
+            autoFocus
             rows={7}
             value={draft}
             disabled={busy}

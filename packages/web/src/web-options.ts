@@ -1,3 +1,4 @@
+import type { CommandContext } from "@heedwork/core";
 import type { ComponentType } from "react";
 import type { ApiHelpers } from "./api.js";
 
@@ -38,6 +39,10 @@ export type BuiltInScreenId =
   | "data";
 
 export interface MountAppOptions {
+  freeText?: (
+    text: string,
+    context: CommandContext,
+  ) => Promise<{ text: string }>;
   signIn?: ComponentType<SignInProps>;
   onSignOut?: () => void | Promise<void>;
   extraSettingsScreens?: readonly SettingsScreen[];

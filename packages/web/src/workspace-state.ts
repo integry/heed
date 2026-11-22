@@ -1,13 +1,11 @@
-import type { CanvasItem, SocketMessage, SocketRequest } from "@heedwork/core";
+import type {
+  CanvasItem,
+  SocketMessage,
+  WorkspaceMutation,
+} from "@heedwork/core";
 import type { Dependency, Project, Settings } from "@heedwork/core";
 
-type Mutation = Exclude<SocketRequest, { type: "GET_SNAPSHOT" }>;
-export type MutationInput = {
-  [Type in Mutation["type"]]: Omit<
-    Extract<Mutation, { type: Type }>,
-    "requestId"
-  >;
-}[Mutation["type"]];
+export type MutationInput = WorkspaceMutation;
 
 export interface WorkspaceData {
   settings: Settings | null;

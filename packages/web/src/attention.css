@@ -1,5 +1,5 @@
 .attention-app {
-  height: 100dvh;
+  height: var(--attention-height, 100dvh);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 8px;
@@ -234,8 +234,8 @@
 .selected-summary {
   position: absolute;
   z-index: 2;
-  inset: auto 0 36px auto;
-  width: min(330px, 100%);
+  inset: auto auto 36px 0;
+  width: min(330px, 50%);
   max-height: 42%;
   overflow: auto;
   padding: 10px 14px;
@@ -309,14 +309,13 @@
 }
 
 .command-prompt {
-  color: var(--muted);
+  color: var(--live);
   font-family: var(--mono);
 }
 
-.command-controls textarea {
+.command-controls input {
   flex: 1;
   min-width: 0;
-  max-height: 6rem;
   margin: 0;
   padding: 6px 3px;
   border: 0;
@@ -324,11 +323,9 @@
   background: transparent;
   color: var(--text);
   font: 400 16px / 1.25 var(--body);
-  field-sizing: content;
-  resize: none;
 }
 
-.command-controls textarea::placeholder {
+.command-controls input::placeholder {
   color: var(--faint);
 }
 
@@ -351,7 +348,7 @@
 .command-feedback {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  min-width: 0;
   gap: 6px 12px;
   font-size: 14px;
   color: var(--muted);
@@ -359,6 +356,97 @@
 
 .command-feedback[hidden] {
   display: none;
+}
+
+.command-feedback p {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.command-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 14px;
+}
+
+.command-examples button {
+  border: 0;
+  padding: 2px 0;
+  background: transparent;
+  color: var(--muted);
+  font: 400 11px var(--mono);
+  text-decoration: underline dotted;
+  text-underline-offset: 4px;
+}
+
+.command-examples button:hover {
+  color: var(--text);
+}
+
+.field-questions {
+  position: absolute;
+  z-index: 1;
+  right: 0;
+  bottom: 42px;
+  display: grid;
+  gap: 8px;
+  width: min(330px, 43%);
+  max-height: 58%;
+  overflow: auto;
+}
+
+.field-question {
+  padding: 10px 14px;
+  border-radius: 4px 18px 18px 18px;
+  background: var(--attention);
+  color: var(--page);
+  overflow-wrap: anywhere;
+}
+
+.field-question small {
+  display: block;
+  font: 500 11px var(--mono);
+}
+
+.field-question p {
+  margin: 4px 0 7px;
+  font-weight: 600;
+  white-space: pre-wrap;
+}
+
+.question-replies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.question-replies button {
+  padding: 4px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+}
+
+.question-replies button:focus-visible {
+  outline-color: currentColor;
+}
+
+.selected-activity,
+.history-projects {
+  margin-block: 12px;
+}
+
+.token-secret {
+  font-family: var(--mono);
+}
+
+.token-config {
+  overflow-x: auto;
+  user-select: all;
 }
 
 @media (max-width: 760px) {
@@ -397,6 +485,17 @@
   .attention-field[data-lens="list"] .attention-lens {
     height: auto;
     max-height: 40dvh;
+  }
+
+  .field-questions {
+    position: static;
+    width: 100%;
+    max-height: none;
+    margin-block: 6px;
+  }
+
+  .attention-app:has(.command-controls input:focus) .command-examples {
+    display: none;
   }
 
   .selected-summary {

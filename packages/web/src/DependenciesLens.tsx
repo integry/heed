@@ -91,24 +91,22 @@ function DependencyGraph({
     return (
       <div className="dependency-picker">
         <p>Pick a goal to see its dependencies.</p>
-        <label className="form-field">
-          Goal
-          <select
-            value=""
-            onChange={(event) => {
-              if (!event.target.value) return;
-              focusGoal(event.target.value);
-              select(event.target.value);
-            }}
-          >
-            <option value="">Choose a goal</option>
-            {goals.map(({ id, title }) => (
-              <option key={id} value={id}>
+        <ul className="item-list">
+          {goals.map(({ id, title }) => (
+            <li key={id}>
+              <button
+                className="item-row"
+                type="button"
+                onClick={() => {
+                  focusGoal(id);
+                  select(id);
+                }}
+              >
                 {title}
-              </option>
-            ))}
-          </select>
-        </label>
+              </button>
+            </li>
+          ))}
+        </ul>
       </div>
     );
   }
