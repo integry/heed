@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -52,6 +53,7 @@ import {
 } from "./workspace-controls";
 import { ApiContext, createApi, useApi, useResource } from "./api";
 import type { AppUser, BuiltInScreenId, MountAppOptions } from "./web-options";
+import { connectSolv, type SolvConfig, type SolvView } from "./solv";
 import { workspaceView, type MutationInput } from "./workspace-state";
 import { selectWorkspace } from "./workspace-view";
 
@@ -90,6 +92,7 @@ type Session =
       managed?: boolean;
       workspaceId: string;
       capabilities: CommandCapabilities;
+      solv?: SolvConfig;
     };
 
 function Wordmark() {
@@ -146,14 +149,21 @@ function Workspace({
   registry,
   onSessionExpired,
   onWorkspaceChange,
+  scopeSignal,
 }: {
   session: Extract<Session, { status: "signed-in" }>;
   options?: MountAppOptions;
   registry: readonly [Lens, ...Lens[]];
   onSessionExpired: (devLoginEnabled?: boolean) => void;
   onWorkspaceChange: () => void;
+  scopeSignal?: AbortSignal;
 }) {
   const { user, workspaceId, role, managed, capabilities } = session;
+  const solv = options?.solv ?? session.solv;
+  const widgetUrl = solv?.widgetUrl;
+  const assistantKey = solv?.assistantKey;
+  const assistant = useRef<ReturnType<typeof connectSolv>>(null);
+  const solvView = useRef<SolvView>(null);
   const workspaceApi = useApi();
   const { getJson, postJson } = workspaceApi;
   const api = useMemo(
@@ -216,6 +226,55 @@ function Workspace({
     capabilities.command,
     executeCommand,
   );
+  const { line } = command;
+  useLayoutEffect(() => {
+    solvView.current = {
+      selectItem(id) {
+        if (!view.items.has(id)) return false;
+        selectStreamItem(id);
+        return true;
+      },
+      zoomBand,
+      switchLens,
+      openGuidance,
+    };
+  });
+  useEffect(() => {
+    if (!widgetUrl || !assistantKey || scopeSignal?.aborted) return;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    scopeSignal?.addEventListener("abort", abort);
+    assistant.current = connectSolv(
+      { widgetUrl, assistantKey },
+      {
+        workspaceId,
+        userId: user.id,
+        requestToken: (signal) =>
+          postJson("/api/assistant-token", null, signal),
+        view: {
+          selectItem: (id) => solvView.current?.selectItem(id) ?? false,
+          zoomBand: (band) => solvView.current?.zoomBand(band) ?? false,
+          switchLens: (id) => solvView.current?.switchLens(id) ?? false,
+          openGuidance: () => solvView.current?.openGuidance() ?? false,
+        },
+        signal: controller.signal,
+        focusLine: () => line.current?.focus({ preventScroll: true }),
+      },
+    );
+    return () => {
+      abort();
+      assistant.current = null;
+      scopeSignal?.removeEventListener("abort", abort);
+    };
+  }, [
+    widgetUrl,
+    assistantKey,
+    scopeSignal,
+    workspaceId,
+    user.id,
+    postJson,
+    line,
+  ]);
   const view = useMemo(() => workspaceView(state), [state]);
   const derived = useMemo(() => {
     // A broadcast can carry a heartbeat newer than the last clock tick.
@@ -531,8 +590,31 @@ function Workspace({
     command.setSummary(result);
   }
 
+  function switchLens(id: string) {
+    if (!registry.some((entry) => entry.id === id)) return false;
+    if (id === "dependencies" && inspectedGoal) focusGoal(inspectedGoal);
+    setLensId(id);
+    return true;
+  }
+
+  function zoomBand(band: RadarBand | null) {
+    if (!radarLens) return false;
+    focusGoal(null);
+    setLensId(radarLens.id);
+    setRadarZoom({ band });
+    return true;
+  }
+
+  function openGuidance() {
+    if (!state.settings) return false;
+    setActivePanel({ kind: "guidance" });
+    return true;
+  }
+
   async function executeCommand(text: string): Promise<string | undefined> {
     if (replyId && !replyTarget) return "That question is no longer open.";
+    if (!replyTarget && assistant.current && /^open chat$/i.test(text))
+      return assistant.current.open();
     const context = {
       selected: inspected,
       items:
@@ -548,6 +630,7 @@ function Workspace({
     const intent = interpretCommand(text, context);
     switch (intent.type) {
       case "unknown":
+        if (assistant.current) return assistant.current.send(text);
         if (options?.freeText)
           return (await options.freeText(text, context)).text;
         return capabilities.command ? undefined : COMMAND_HELP;
@@ -596,15 +679,10 @@ function Workspace({
           .join(" · ");
       }
       case "lens":
-        if (intent.id === "dependencies" && inspectedGoal)
-          focusGoal(inspectedGoal);
-        setLensId(intent.id);
+        switchLens(intent.id);
         return `${registry.find(({ id }) => id === intent.id)?.label} lens.`;
       case "zoom":
-        if (!radarLens) return "Radar is unavailable.";
-        focusGoal(null);
-        setLensId(radarLens.id);
-        setRadarZoom({ band: intent.band });
+        if (!zoomBand(intent.band)) return "Radar is unavailable.";
         return intent.band
           ? `Zoomed into ${intent.band.replace("-", " ")}.`
           : "Whole radar.";
@@ -707,9 +785,8 @@ function Workspace({
             return `${needs ? "Needs you" : "Blocked"} · ${matches.map(({ title }) => title).join(", ")}`;
           }
           case "edit guidance":
-            if (!state.settings)
+            if (!openGuidance())
               return "Guidance will be available when the workspace connects.";
-            setActivePanel({ kind: "guidance" });
             return "";
           case "history":
           case "hidden items":
@@ -1247,7 +1324,7 @@ export function App({
           return;
         }
         if (!response.ok) throw new Error("Session lookup failed");
-        const { email, user, workspaceId, role, capabilities, managed } =
+        const { email, user, workspaceId, role, capabilities, managed, solv } =
           await response.json();
         const userEmail = user?.email ?? email;
         if (typeof userEmail !== "string" || typeof workspaceId !== "string")
@@ -1263,6 +1340,11 @@ export function App({
             workspaceId,
             role: typeof role === "string" ? role : "owner",
             managed: typeof managed === "boolean" ? managed : undefined,
+            solv:
+              typeof solv?.widgetUrl === "string" &&
+              typeof solv?.assistantKey === "string"
+                ? { widgetUrl: solv.widgetUrl, assistantKey: solv.assistantKey }
+                : undefined,
             capabilities: {
               command: capabilities?.command === true,
               transcription: capabilities?.transcription === true,
@@ -1285,6 +1367,7 @@ export function App({
           registry={registry}
           onSessionExpired={expireSession}
           onWorkspaceChange={onWorkspaceChange}
+          scopeSignal={scopeSignal}
         />
       </ApiContext.Provider>
     );

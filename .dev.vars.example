@@ -33,6 +33,10 @@ ALLOWED_EMAILS=
 # COMMAND_DAILY_LIMIT=100
 # TRANSCRIBE_DAILY_LIMIT=100
 
+# Optional solv.chat integration. Export both in the shell at build time too.
+# SOLV_WIDGET_URL=https://chat.example.com/widget.js
+# SOLV_ASSISTANT_KEY=
+
 # Optional shadow judge. Set all three and use a versioned model ID.
 # JUDGE_URL=https://api.typesafe.ai/v1/systemone
 # JUDGE_MODEL=jev-1.14.0

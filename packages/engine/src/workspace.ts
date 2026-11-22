@@ -1015,6 +1015,10 @@ export class Workspace<
     return this.#oauth.exchange(input);
   }
 
+  issueAssistantAccessToken(resource: string, user: WorkspaceUser) {
+    return this.#oauth.issueAssistant(resource, user);
+  }
+
   listConnectedApps() {
     return this.#oauth.list();
   }
@@ -1057,9 +1061,13 @@ export class Workspace<
     // Use the prefix for indexed lookup and compare the full digest in constant time.
     const token = this.#sql
       .exec<
-        Token & { resource: string | null; access_expires_at: number | null }
+        Token & {
+          resource: string | null;
+          access_expires_at: number | null;
+          assistant_user: string | null;
+        }
       >(
-        `SELECT t.*, g.resource, g.access_expires_at FROM tokens t
+        `SELECT t.*, g.resource, g.access_expires_at, g.assistant_user FROM tokens t
           LEFT JOIN oauth_grants g ON g.id = t.id
           WHERE substr(t.secret_hash, 1, 16) = ?`,
         hash.slice(0, 16),
@@ -1092,6 +1100,9 @@ export class Workspace<
       token_id: token.id,
       scope: token.scope,
       default_project_id: token.default_project_id,
+      ...(token.assistant_user && {
+        user: WorkspaceUserSchema.parse(JSON.parse(token.assistant_user)),
+      }),
     };
     return { actor, oauth: token.resource !== null };
   }
@@ -1541,7 +1552,11 @@ export class Workspace<
   #addItem(mutation: Mutation, data: AddItemInput): Item {
     const placement = this.#placement(mutation, data);
     const patch = this.#editPatch(mutation, data);
-    if (patch.agent_name === undefined && mutation.actor.kind === "agent") {
+    if (
+      patch.agent_name === undefined &&
+      mutation.actor.kind === "agent" &&
+      !mutation.actor.user
+    ) {
       patch.agent_name = mutation.actor.name;
     }
     Object.assign(patch, placement);
@@ -1553,7 +1568,10 @@ export class Workspace<
       id,
       title: data.title,
       external_key: data.external_key ?? null,
-      created_by: mutation.actor.kind === "agent" ? "agent" : "human",
+      created_by:
+        mutation.actor.kind === "agent" && !mutation.actor.user
+          ? "agent"
+          : "human",
       last_heartbeat_at: data.status === "active" ? now : null,
       created_at: now,
       updated_at: now,
@@ -1690,10 +1708,7 @@ export class Workspace<
           notification = "queued";
           delivery = {
             actorName: agent ? agent.name : "Command bar",
-            user:
-              mutation.actor.kind === "command"
-                ? mutation.actor.user
-                : undefined,
+            user: mutation.actor.user,
             payload: {
               title: item.title,
               body: data.note,
@@ -2521,7 +2536,7 @@ export class Workspace<
     return this.#insertEvent(
       id,
       mutation.now,
-      actor.kind === "agent" ? actor.name : (actor.user ?? "human"),
+      actor.user ?? (actor.kind === "agent" ? actor.name : "human"),
       kind,
       detail,
     ).id;

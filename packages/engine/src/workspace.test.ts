@@ -25,7 +25,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
   const stub = newWorkspace();
   const settings = await stub.getSettings();
   expect(SettingsSchema.parse(settings)).toEqual({
-    schema_version: 10,
+    schema_version: 11,
     timezone: "UTC",
     guidance: "",
     guidance_updated_at: null,
@@ -70,7 +70,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
 });
 
 it.each([
-  { layout: "current", version: 10, dropColumns: [], hasOAuth: true },
+  { layout: "current", version: 11, dropColumns: [], hasOAuth: true },
   {
     layout: "target branch version 9",
     version: 9,
@@ -146,7 +146,7 @@ it.each([
     };
     if (hasOAuth) await stub.registerOAuthClient(client);
 
-    if (version < 10) {
+    if (version < 11) {
       // Recreate the schema persisted by the older workspace.
       await runInDurableObject(stub, (_, { storage: { sql } }) => {
         if (!hasHandoffColumns)
@@ -160,7 +160,9 @@ it.each([
           const [table, column] = path.split(".");
           sql.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
         }
-        if (!hasOAuth) {
+        if (hasOAuth) {
+          sql.exec("ALTER TABLE oauth_grants DROP COLUMN assistant_user");
+        } else {
           sql.exec(`
             DROP TABLE oauth_used_refresh_tokens;
             DROP TABLE oauth_grants;
@@ -177,7 +179,7 @@ it.each([
     await evictDurableObject(stub);
 
     expect(await stub.getSettings()).toEqual({
-      schema_version: 10,
+      schema_version: 11,
       timezone: "Europe/Tallinn",
       ...guidance,
     });
@@ -421,6 +423,7 @@ it("retires legacy demo rows after eviction and retains real descendants and tok
   });
   const token = await stub.createToken("Real token", "report", demo.id);
   await runInDurableObject(stub, (_, { storage: { sql } }) => {
+    sql.exec("ALTER TABLE oauth_grants DROP COLUMN assistant_user");
     sql.exec("UPDATE settings SET value = '9' WHERE key = 'schema_version'");
     sql.exec("UPDATE projects SET demo = 1 WHERE id = ?", demo.id);
     sql.exec("UPDATE items SET demo = 1 WHERE id = ?", sample.item_id);

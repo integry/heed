@@ -223,6 +223,9 @@ const migrations = [
     );
     sql.exec("DELETE FROM projects WHERE demo = 1");
   },
+  (sql: SqlStorage) => {
+    sql.exec("ALTER TABLE oauth_grants ADD COLUMN assistant_user TEXT");
+  },
 ];
 
 export function migrateWorkspace(storage: DurableObjectStorage): void {

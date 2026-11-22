@@ -3,7 +3,7 @@ import { apiError, limitResponse } from "./api-response.js";
 import { requireAgent, requireAgentToken } from "./agent-auth.js";
 import { handleHumanApi } from "./human-api.js";
 import { scheduleJudge } from "./judge.js";
-import { handleOAuth, mcpChallenge } from "./oauth.js";
+import { handleOAuth, issueAssistantToken, mcpChallenge } from "./oauth.js";
 import { requireSession } from "./session.js";
 import { handleTokenBootstrap } from "./token-admin.js";
 import type { TokenAdminEnv } from "./token-admin.js";
@@ -16,6 +16,8 @@ import type { AppSeams, WorkspaceSession } from "./seams.js";
 
 export interface AppEnv extends TokenAdminEnv, PushEnv {
   WORKSPACE: DurableObjectNamespace<Workspace>;
+  SOLV_WIDGET_URL?: string;
+  SOLV_ASSISTANT_KEY?: string;
 }
 
 export interface AppOptions<Bindings extends AppEnv = AppEnv> {
@@ -233,6 +235,8 @@ async function route<Bindings extends AppEnv>(
       app.limits,
       (actor) => {
         session = actor;
+        if (request.method === "POST" && pathname === "/api/assistant-token")
+          return issueAssistantToken(url, actor, app);
         return handleHumanApi(request, url, actor, env, app);
       },
     );
