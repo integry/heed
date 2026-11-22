@@ -705,6 +705,28 @@ it("sends Anthropic tool results with their original tool-use IDs", async () => 
   }
 });
 
+it("sends Anthropic-format commands to a configured compatible endpoint", async () => {
+  const fetchMessage = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    Response.json({
+      content: [{ type: "text", text: "Nothing needs you." }],
+    }),
+  );
+  try {
+    const response = await command("What needs me?", {
+      ...bindings,
+      ANTHROPIC_API_KEY: "fixture-key",
+      ANTHROPIC_COMMAND_MODEL: "fixture-model",
+      ANTHROPIC_MESSAGES_URL: "https://gateway.example/v1/messages",
+    } as typeof bindings);
+    expect(response.status).toBe(200);
+    expect(fetchMessage.mock.calls[0][0]).toBe(
+      "https://gateway.example/v1/messages",
+    );
+  } finally {
+    fetchMessage.mockRestore();
+  }
+});
+
 it("returns the user's handoff reply from a command and records their identity", async () => {
   const { item_id } = await workspace.addItem(human, {
     title: "Rollout",

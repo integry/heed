@@ -67,7 +67,7 @@ On each device, open **Settings → Notifications** and select **Enable notifica
 ### Optional voice and chat
 
 - **Workers AI.** Uncomment the `ai` binding in [wrangler.jsonc](../wrangler.jsonc), then redeploy and set `WORKERS_AI_COMMAND_MODEL` to a model that supports multi-turn tool calling. Local Wrangler also requires Cloudflare sign-in when this binding is enabled.
-- **Anthropic.** Set the `ANTHROPIC_API_KEY` secret and the `ANTHROPIC_COMMAND_MODEL` text variable. Anthropic takes precedence when both providers are configured.
+- **Anthropic.** Set the `ANTHROPIC_API_KEY` secret and the `ANTHROPIC_COMMAND_MODEL` text variable. Anthropic takes precedence when both providers are configured. To use an Anthropic-compatible gateway such as OpenRouter, also set `ANTHROPIC_MESSAGES_URL` (for OpenRouter, `https://openrouter.ai/api/v1/messages`) and use the gateway's key and model name.
 
 The command bar appears when a provider is configured. Heed sends the command, standing guidance, and a compact workspace view to that provider. Voice uses browser speech recognition where available, with Workers AI Whisper as a fallback when the `AI` binding is enabled. See [AI limits and costs](cost.md#optional-ai-usage).
 

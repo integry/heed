@@ -26,6 +26,8 @@ ALLOWED_EMAILS=
 # WORKERS_AI_COMMAND_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast
 # ANTHROPIC_COMMAND_MODEL=
 # ANTHROPIC_API_KEY=
+# Optional Anthropic-compatible endpoint, such as https://openrouter.ai/api/v1/messages
+# ANTHROPIC_MESSAGES_URL=
 #
 # Per-session, per-minute limit applied separately to commands and transcription.
 # COMMAND_RATE_LIMIT_PER_MINUTE=8
