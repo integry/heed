@@ -178,7 +178,6 @@ export function createWorkspaceConnection(notificationItemId: string | null) {
           next !== previous &&
           next.connection === "live" &&
           (message.type === "SNAPSHOT" ||
-            message.type === "CANVAS_REPLACE" ||
             (message.type === "ITEM_UPSERT" &&
               message.item.id === notificationItemId) ||
             (message.type === "ITEM_REMOVE" &&

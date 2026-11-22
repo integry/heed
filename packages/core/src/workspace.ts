@@ -21,6 +21,7 @@ export const EventKindSchema = z.enum([
   "status",
   "note",
   "handoff",
+  "answered",
   "reopened",
   "moved",
   "notified",
@@ -61,7 +62,6 @@ export const GuidanceSchema = z.object({
 export const SettingsSchema = GuidanceSchema.extend({
   schema_version: z.int().positive(),
   timezone: TimezoneSchema,
-  onboarding_dismissed: z.boolean().optional(),
 });
 
 export const SettingSchema = z.object({
@@ -106,6 +106,9 @@ export const ItemSchema = z.object({
   status: StatusSchema,
   handoff: sqliteFlag,
   handoff_note: nullableText,
+  handoff_options: z.string(),
+  handoff_answer: nullableText,
+  handoff_answered_at: nullableText,
   reopen_count: z.int().nonnegative(),
   reopen_reason: nullableText,
   agent_name: nullableText,

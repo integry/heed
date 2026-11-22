@@ -86,6 +86,10 @@ export function useCanvasZoom<
           scene.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})`;
         onZoom?.(transform.k);
       });
+    const motion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    const updateMotion = () => control.duration(motion?.matches ? 0 : 250);
+    updateMotion();
+    motion?.addEventListener("change", updateMotion);
     behavior.current = control;
     canvas.call(control);
     // Lenses with their own double-click or double-tap meaning opt out.
@@ -102,6 +106,7 @@ export function useCanvasZoom<
       passive: false,
     });
     return () => {
+      motion?.removeEventListener("change", updateMotion);
       element.removeEventListener("touchmove", singleFingerDrag, true);
       canvas.on(".zoom", null);
       behavior.current = null;

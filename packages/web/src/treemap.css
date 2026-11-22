@@ -43,10 +43,10 @@
   height: clamp(380px, 68dvh, 660px);
   isolation: isolate;
   overflow: hidden;
-  border: 1px solid #273e38;
+  border: 1px solid var(--border);
   border-radius: 14px;
-  background: #111f20;
-  color: #f0f6f1;
+  background: var(--page);
+  color: var(--text);
   /* Pinch, pan and long-press drags are handled by the lens. */
   touch-action: none;
   user-select: none;
@@ -68,7 +68,7 @@
 }
 
 .treemap-tile {
-  --tile-color: var(--tile-project, #72a395);
+  --tile-color: var(--tile-project, var(--muted));
   isolation: isolate;
   overflow: hidden;
 }
@@ -82,9 +82,9 @@
   position: absolute;
   inset: 0;
   box-sizing: border-box;
-  border: 1px solid color-mix(in srgb, var(--tile-color) 55%, #172b29);
+  border: 1px solid color-mix(in srgb, var(--tile-color) 55%, var(--surface));
   border-radius: 4px;
-  background: color-mix(in srgb, var(--tile-color) 18%, #172b29);
+  background: color-mix(in srgb, var(--tile-color) 18%, var(--surface));
   pointer-events: none;
 }
 
@@ -106,7 +106,7 @@
 }
 
 .treemap-tile[data-parent="true"]::before {
-  background: color-mix(in srgb, var(--tile-color) 22%, #142522);
+  background: color-mix(in srgb, var(--tile-color) 22%, var(--surface));
 }
 
 .treemap-tile[data-kind="project"]::before {
@@ -130,7 +130,7 @@
 .treemap-tile:has(
     > .treemap-tile-button:is(:hover, [aria-pressed="true"])
   )::before {
-  background: color-mix(in srgb, var(--tile-color) 27%, #172b29);
+  background: color-mix(in srgb, var(--tile-color) 27%, var(--surface));
 }
 
 .treemap-tile[data-canvas-drag] > .treemap-tile-button {
@@ -138,13 +138,13 @@
 }
 
 .treemap-tile[data-target="true"]::before {
-  border-color: #e5f6df;
+  border-color: var(--focus);
   border-width: 3px;
 }
 
 .treemap-tile-button:focus-visible,
 .treemap-tile:has(> .treemap-tile-button[aria-pressed="true"])::before {
-  outline: 2px solid #f1fff4;
+  outline: 2px solid var(--focus);
   outline-offset: -3px;
   opacity: 1;
 }
@@ -207,9 +207,9 @@
   display: grid;
   place-content: center;
   padding: 0;
-  border: 1px solid #ffffff36;
+  border: 1px solid var(--border);
   border-radius: 5px;
-  background: #152a28;
+  background: var(--page);
   color: inherit;
   font-size: 1rem;
   line-height: 1;
@@ -217,7 +217,7 @@
 }
 
 .treemap-zoom:hover {
-  background: #34534c;
+  background: var(--ring);
 }
 
 .treemap-rollup {
@@ -231,45 +231,19 @@
   inset: auto 3px 1px;
   height: 2px;
   overflow: hidden;
-  background: #a9ddd240;
+  background: var(--ring);
   pointer-events: none;
 }
 
 .treemap-progress > span {
   display: block;
   height: 100%;
-  background: #aff6da;
+  background: var(--text);
 }
 
-.lens-pane[data-lens="treemap"] .inspector {
-  position: static;
-  width: 100%;
-  max-width: 600px;
-  margin-top: 12px;
-}
-
-@media (max-width: 767px) {
+@media (max-width: 760px) {
   .treemap-chart {
-    height: clamp(360px, 57dvh, 540px);
-  }
-}
-
-@media (width < 768px) {
-  /* The full-screen mobile lens overlays the toolbar on the chart. */
-  .treemap {
-    flex-direction: column;
-  }
-
-  .treemap-chart {
-    height: auto;
-    margin-top: 56px;
-  }
-
-  .treemap-toolbar {
-    pointer-events: none;
-  }
-
-  .treemap-toolbar button {
-    pointer-events: auto;
+    height: 100%;
+    min-height: 240px;
   }
 }

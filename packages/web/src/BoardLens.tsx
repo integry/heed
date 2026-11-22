@@ -1,4 +1,3 @@
-import { GuideEmpty } from "./Onboarding";
 import {
   useLayoutEffect,
   useMemo,
@@ -10,12 +9,7 @@ import { radarBandsFor } from "@heedwork/core";
 import type { CanvasItem } from "@heedwork/core";
 import type { RadarBand } from "@heedwork/core";
 import { boardMove, type BoardSlot } from "./board-move";
-import {
-  DemoBadge,
-  ItemMarkers,
-  ItemTimeBadge,
-  itemTimeFormats,
-} from "./item-markers";
+import { ItemMarkers, ItemTimeBadge, itemTimeFormats } from "./item-markers";
 import type { LensProps } from "./lenses";
 import { RADAR_BANDS, RADAR_LABELS } from "./radar-geometry";
 import { hasFixedOrder } from "./stream-move";
@@ -52,7 +46,6 @@ export function BoardLens({
   showGhosts,
   select,
   move,
-  openGuide,
 }: LensProps) {
   const [message, setMessage] = useState<{
     text: string;
@@ -180,13 +173,11 @@ export function BoardLens({
   }
 
   if (!visibleProjects.length)
-    return <GuideEmpty openGuide={openGuide}>No visible projects.</GuideEmpty>;
+    return <p className="empty">No visible projects.</p>;
 
   return (
     <>
-      {!cells.size && (
-        <GuideEmpty openGuide={openGuide}>No items in this view.</GuideEmpty>
-      )}
+      {!cells.size && <p className="empty">No items in this view.</p>}
       <p
         className={message?.problem ? "stream-move-notice" : "sr-only"}
         aria-live="polite"
@@ -225,15 +216,7 @@ export function BoardLens({
                       style={{ backgroundColor: project.color ?? undefined }}
                       aria-hidden="true"
                     />
-                    <span>
-                      {project.name}
-                      {project.demo === 1 && (
-                        <>
-                          <br />
-                          <DemoBadge />
-                        </>
-                      )}
-                    </span>
+                    <span>{project.name}</span>
                   </span>
                 </th>
                 {RADAR_BANDS.map((band) => {

@@ -1,4 +1,4 @@
-import type { ConnectedApp, Scope } from "@heedwork/core";
+import type { ConnectedApp, Scope, WorkspaceUser } from "@heedwork/core";
 import {
   equalSecretHashes,
   hashSecret,
@@ -50,6 +50,7 @@ type GrantRow = {
 };
 
 const ACCESS_SECONDS = 60 * 60;
+const ASSISTANT_SECONDS = 15 * 60;
 const REFRESH_MS = 90 * 24 * 60 * 60 * 1000;
 const CODE_MS = 5 * 60 * 1000;
 export const CONSENT_SECONDS = 10 * 60;
@@ -128,12 +129,7 @@ export class OAuthStorage {
       sql.exec("DELETE FROM oauth_consents WHERE hash = ?", csrfHash);
       if (!decision) return { authorization, code: null };
 
-      sql.exec(
-        `DELETE FROM tokens WHERE id IN (
-          SELECT id FROM oauth_grants WHERE COALESCE(refresh_expires_at, access_expires_at, code_expires_at) <= ?
-        )`,
-        now,
-      );
+      this.#pruneExpired(now);
       const id = crypto.randomUUID();
       sql.exec(
         "INSERT INTO tokens (id, label, scope, secret_hash) VALUES (?, ?, ?, ?)",
@@ -153,6 +149,37 @@ export class OAuthStorage {
         now + CODE_MS,
       );
       return { authorization, code: `heed-code_${this.workspaceId}_${code}` };
+    });
+  }
+
+  async issueAssistant(resource: string, user: WorkspaceUser) {
+    const access = newTokenSecret();
+    const accessHash = await hashSecret(access);
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    const { sql } = this.storage;
+    return this.storage.transactionSync(() => {
+      this.#pruneExpired(now);
+      sql.exec(
+        "INSERT INTO tokens (id, label, scope, secret_hash) VALUES (?, 'assistant', 'steer', '')",
+        id,
+      );
+      sql.exec(
+        `INSERT INTO oauth_grants (id, client_name, authorization, resource, code_expires_at, assistant_user)
+         VALUES (?, 'assistant', '{}', ?, ?, ?)`,
+        id,
+        resource,
+        now,
+        JSON.stringify(user),
+      );
+      return this.#issueAccess(
+        id,
+        "steer",
+        access,
+        accessHash,
+        now,
+        now + ASSISTANT_SECONDS * 1000,
+      );
     });
   }
 
@@ -230,30 +257,57 @@ export class OAuthStorage {
         now + ACCESS_SECONDS * 1000,
         refreshExpiresAt ?? Infinity,
       );
-      sql.exec(
-        "UPDATE tokens SET secret_hash = ? WHERE id = ?",
+      return this.#issueAccess(
+        row.id,
+        row.scope,
+        access,
         accessHash,
-        row.id,
-      );
-      sql.exec(
-        `UPDATE oauth_grants SET code_hash = NULL, access_expires_at = ?,
-           refresh_hash = ?, refresh_expires_at = ? WHERE id = ?`,
+        now,
         accessExpiresAt,
-        client.refresh ? refreshHash : null,
-        refreshExpiresAt,
-        row.id,
+        refreshExpiresAt === null
+          ? undefined
+          : { secret: refresh, hash: refreshHash, expiresAt: refreshExpiresAt },
       );
-
-      return {
-        access_token: `heed_${this.workspaceId}_${access}`,
-        token_type: "Bearer",
-        expires_in: Math.floor((accessExpiresAt - now) / 1000),
-        ...(client.refresh && {
-          refresh_token: `heed-refresh_${this.workspaceId}_${refresh}`,
-        }),
-        scope: row.scope,
-      };
     });
+  }
+
+  #issueAccess(
+    id: string,
+    scope: Scope,
+    secret: string,
+    hash: string,
+    now: number,
+    expiresAt: number,
+    refresh?: { secret: string; hash: string; expiresAt: number },
+  ) {
+    const { sql } = this.storage;
+    sql.exec("UPDATE tokens SET secret_hash = ? WHERE id = ?", hash, id);
+    sql.exec(
+      `UPDATE oauth_grants SET code_hash = NULL, access_expires_at = ?,
+         refresh_hash = ?, refresh_expires_at = ? WHERE id = ?`,
+      expiresAt,
+      refresh?.hash ?? null,
+      refresh?.expiresAt ?? null,
+      id,
+    );
+    return {
+      access_token: `heed_${this.workspaceId}_${secret}`,
+      token_type: "Bearer",
+      expires_in: Math.floor((expiresAt - now) / 1000),
+      ...(refresh && {
+        refresh_token: `heed-refresh_${this.workspaceId}_${refresh.secret}`,
+      }),
+      scope,
+    };
+  }
+
+  #pruneExpired(now: number) {
+    this.storage.sql.exec(
+      `DELETE FROM tokens WHERE id IN (
+        SELECT id FROM oauth_grants WHERE COALESCE(refresh_expires_at, access_expires_at, code_expires_at) <= ?
+      )`,
+      now,
+    );
   }
 
   list(): ConnectedApp[] {

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AddItemSchema,
+  AnswerHandoffSchema,
   FlagHandoffSchema,
   ItemIdSchema,
   ReopenItemSchema,
@@ -61,6 +62,7 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
   mutation("REOPEN_ITEM", ReopenItemSchema),
   mutation("FLAG_HANDOFF", FlagHandoffSchema.omit({ notify: true })),
   mutation("CLEAR_HANDOFF", ItemIdSchema),
+  mutation("ANSWER_HANDOFF", AnswerHandoffSchema),
   mutation(
     "JUDGE_FEEDBACK",
     ItemIdSchema.extend(JudgeFeedbackDetailSchema.shape),
@@ -74,9 +76,6 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
   mutation("MOVE_PROJECT", MoveProjectSchema),
   mutation("DELETE_PROJECT", z.strictObject({ project_id: resourceId })),
   mutation("SET_TIMEZONE", TimezoneBodySchema),
-  mutation("DISMISS_ONBOARDING", z.strictObject({})),
-  mutation("LOAD_DEMO_DATA", z.strictObject({})),
-  mutation("REMOVE_DEMO_DATA", z.strictObject({})),
   mutation("CREATE_TOKEN", CreateTokenSchema),
   mutation("REVOKE_TOKEN", z.strictObject({ token_id: resourceId })),
   mutation("RESET_WORKSPACE", ResetWorkspaceBodySchema),
@@ -115,15 +114,16 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
 ]);
 
 export type SocketRequest = z.infer<typeof SocketRequestSchema>;
+type Mutation = Exclude<SocketRequest, { type: "GET_SNAPSHOT" }>;
+export type WorkspaceMutation = {
+  [Type in Mutation["type"]]: Omit<
+    Extract<Mutation, { type: Type }>,
+    "requestId"
+  >;
+}[Mutation["type"]];
+
 export type ChildCounts = { done: number; total: number };
 export type CanvasItem = Item & { progress: ChildCounts };
-
-export interface OnboardingStatus {
-  hasItems: boolean;
-  hasGoalOrProject: boolean;
-  hasDemoData: boolean;
-  hasToken: boolean;
-}
 
 interface CanvasSnapshot {
   projects: Project[];
@@ -131,14 +131,12 @@ interface CanvasSnapshot {
   dependencies: Dependency[];
 }
 
-export type WorkspaceMessage = { onboarding?: OnboardingStatus } & (
+export type WorkspaceMessage =
   | ({
       type: "SNAPSHOT";
       settings: Settings;
       timezoneConfigured: boolean;
     } & CanvasSnapshot)
-  | (CanvasSnapshot & { type: "CANVAS_REPLACE" })
-  | { type: "ONBOARDING_UPDATE"; onboarding: OnboardingStatus }
   // Clients retaining an item should keep the newest last_heartbeat_at they have seen.
   | { type: "ITEM_UPSERT"; item: CanvasItem }
   | { type: "ITEM_REMOVE"; item_id: string }
@@ -157,8 +155,7 @@ export type WorkspaceMessage = { onboarding?: OnboardingStatus } & (
       type: "ERROR";
       requestId: string | null;
       error: { code: string; message: string; limit?: string; reason?: string };
-    }
-);
+    };
 
 // Sequence numbers are consecutive per connection, including replies and snapshots.
 // The runtime-managed text ping/pong keepalive is outside the JSON protocol.

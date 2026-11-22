@@ -10,7 +10,6 @@ export interface Bubble {
   point: Point;
   radius: number;
   scale: number;
-  color: string;
   ring: Ring | null;
   rollup: Ring | null;
   opensGoal: boolean;
@@ -37,7 +36,6 @@ export function bubbleDetails(
   const { done, total } = item.progress;
   const detail = [
     item.title,
-    item.demo === 1 && "Demo",
     ghost ? "Completed" : ring && ringLabels[ring],
     stale,
     stamp,
@@ -76,14 +74,7 @@ function BubbleCallout({
         y2={dy * (1 - edge)}
       />
       <g transform={`translate(${dx},${dy})`}>
-        <rect
-          x={-halfWidth}
-          y={-halfHeight}
-          width={2 * halfWidth}
-          height={2 * halfHeight}
-          rx={4 / scale}
-        />
-        <text fontSize={font} textAnchor="middle">
+        <text textAnchor="middle" fontSize={font}>
           {lines.map((line, index) => (
             <tspan
               key={index}
@@ -140,7 +131,7 @@ export const RadarBubble = memo(function RadarBubble({
   onPriority: (id: string, priority: number) => void;
   onTooltip: (text: string | null) => void;
 }) {
-  const { item, point, radius, ring, rollup, opensGoal, color } = bubble;
+  const { item, point, radius, ring, rollup, opensGoal } = bubble;
   const ghost = item.status === "done";
   const showResize = selected && live && !ghost;
   const { detail, stamp, badge } = bubbleDetails(bubble, now, timeFormatter);
@@ -204,7 +195,7 @@ export const RadarBubble = memo(function RadarBubble({
         {ring && (
           <circle className="radar-state" data-ring={ring} r={radius + 3} />
         )}
-        <circle r={radius} className="radar-disc" stroke={color} />
+        <circle r={radius} className="radar-disc" />
         {selected && (
           <circle r={radius + (rollup ? 13 : 8)} className="radar-selection" />
         )}
@@ -257,17 +248,6 @@ export const RadarBubble = memo(function RadarBubble({
               {visibleBadge.text}
             </text>
           </g>
-        )}
-        {item.demo === 1 && (
-          <text
-            className="radar-demo-badge"
-            textAnchor="middle"
-            y={radius + 11 / labelScale}
-            fontSize={10 / labelScale}
-            aria-hidden="true"
-          >
-            Demo
-          </text>
         )}
         {outsideLabel && (
           <BubbleCallout

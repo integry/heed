@@ -19,7 +19,7 @@ import {
   UpdateProjectSchema,
 } from "@heedwork/core";
 import { commandCapabilities, handleCommandApi } from "./command-api.js";
-import type { AppContext } from "./app.js";
+import type { AppContext, AppEnv } from "./app.js";
 import { checkLimit, LimitError } from "./seams.js";
 import { addItemWithLimit } from "./workspace.js";
 import { apiError, workspaceOperationError } from "./api-response.js";
@@ -29,7 +29,6 @@ import {
   PushSubscriptionSchema,
   vapidKeys,
 } from "./web-push.js";
-import type { PushEnv } from "./web-push.js";
 
 const updateItemBodySchema = UpdateItemSchema.omit({ item_id: true });
 
@@ -50,13 +49,22 @@ export async function handleHumanApi(
   request: Request,
   url: URL,
   session: HumanActor,
-  env: PushEnv,
+  env: AppEnv,
   app: AppContext,
 ): Promise<Response> {
   const { method } = request;
   const { pathname } = url;
   if (method === "GET" && pathname === "/api/me") {
     const keys = await app.keys.commandProvider(session.workspaceId);
+    const widget = URL.parse(env.SOLV_WIDGET_URL?.trim() ?? "");
+    const assistantKey = env.SOLV_ASSISTANT_KEY?.trim();
+    const solv =
+      widget?.protocol === "https:" &&
+      !widget.username &&
+      !widget.password &&
+      assistantKey
+        ? { widgetUrl: widget.href, assistantKey }
+        : undefined;
     return Response.json({
       user: session.user,
       // Retain the email field for existing clients.
@@ -65,6 +73,7 @@ export async function handleHumanApi(
       role: session.role,
       managed: keys.managed,
       capabilities: commandCapabilities(keys.configuration),
+      solv,
     });
   }
 
@@ -213,7 +222,9 @@ export async function handleHumanApi(
           return await withJson(request, HandoffBodySchema, (input) =>
             "clear" in input
               ? workspace().clearHandoff(actor, { item_id })
-              : workspace().flagHandoff(actor, { ...input, item_id }),
+              : "text" in input
+                ? workspace().answerHandoff(actor, { ...input, item_id })
+                : workspace().flagHandoff(actor, { ...input, item_id }),
           );
         case "POST reopen":
           return await withJson(request, ReopenBodySchema, (input) =>

@@ -141,26 +141,28 @@ it("rolls back rejected mutations without undoing newer pending changes or broad
   expect(workspaceView(state).items.get(goal.id)?.scheduled_on).toBeNull();
 });
 
-it("filters hidden projects from both panes and preserves inherited schedules in Needs me", () => {
+it("filters hidden projects and classifies visible descendants by attention and schedule", () => {
   let state = receiveMessage(initialWorkspaceState(), snapshot);
-  const view = () => selectWorkspace(workspaceView(state), now, true);
-  for (const rows of [view().tree, view().bands.today]) {
-    expect(rows.map(({ item }) => item.id)).toEqual([goal.id]);
-    expect(rows[0].children.map(({ item }) => item.id)).toEqual([child.id]);
-  }
+  const view = () => selectWorkspace(workspaceView(state), now);
+  expect(view().tree[0].children.map(({ item }) => item.id)).toEqual([
+    child.id,
+    "tomorrow",
+  ]);
+  expect(view().groups.today.map(({ item }) => item.id)).toEqual([goal.id]);
+  expect(view().groups.needs.map(({ item }) => item.id)).toEqual([child.id]);
   state = queueMutation(state, "hide", {
     type: "UPDATE_PROJECT",
     project_id: project.id,
     input: { hidden: 1 },
   });
   expect(view().tree).toEqual([]);
-  expect(view().bands.today).toEqual([]);
-  expect(view().attentionCount).toBe(0);
+  expect(view().groups.today).toEqual([]);
+  expect(view().groups.needs).toHaveLength(0);
   state = receiveMessage(state, {
     type: "ERROR",
     seq: 2,
     requestId: "hide",
     error: { code: "invalid", message: "Edit rejected" },
   });
-  expect(view().attentionCount).toBe(1);
+  expect(view().groups.needs).toHaveLength(1);
 });

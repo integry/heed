@@ -1,18 +1,11 @@
-import type { CanvasItem, SocketMessage, SocketRequest } from "@heedwork/core";
 import type {
-  Dependency,
-  OnboardingStatus,
-  Project,
-  Settings,
+  CanvasItem,
+  SocketMessage,
+  WorkspaceMutation,
 } from "@heedwork/core";
+import type { Dependency, Project, Settings } from "@heedwork/core";
 
-type Mutation = Exclude<SocketRequest, { type: "GET_SNAPSHOT" }>;
-export type MutationInput = {
-  [Type in Mutation["type"]]: Omit<
-    Extract<Mutation, { type: Type }>,
-    "requestId"
-  >;
-}[Mutation["type"]];
+export type MutationInput = WorkspaceMutation;
 
 export interface WorkspaceData {
   settings: Settings | null;
@@ -22,7 +15,6 @@ export interface WorkspaceData {
 }
 
 export interface WorkspaceState extends WorkspaceData {
-  onboarding?: OnboardingStatus;
   seq: number;
   eventRevisions: ReadonlyMap<string, number>;
   snapshotRevision: number;
@@ -82,7 +74,7 @@ function retainHeartbeat(item: CanvasItem, previous?: CanvasItem): CanvasItem {
 
 function replaceCanvas(
   state: WorkspaceState,
-  message: Extract<SocketMessage, { type: "SNAPSHOT" | "CANVAS_REPLACE" }>,
+  message: Extract<SocketMessage, { type: "SNAPSHOT" }>,
 ) {
   return {
     projects: new Map(message.projects.map((project) => [project.id, project])),
@@ -115,7 +107,6 @@ export function receiveMessage(
       connection: "live",
       pending: new Map(),
       settings: message.settings,
-      onboarding: message.onboarding,
     };
   }
 
@@ -138,17 +129,8 @@ export function receiveMessage(
   const next = {
     ...state,
     seq: message.seq,
-    onboarding: message.onboarding ?? state.onboarding,
   };
   switch (message.type) {
-    case "CANVAS_REPLACE":
-      return {
-        ...next,
-        ...replaceCanvas(state, message),
-        judgeAgreementRevision: state.judgeAgreementRevision + 1,
-      };
-    case "ONBOARDING_UPDATE":
-      return next;
     case "ITEM_UPSERT":
       return {
         ...next,

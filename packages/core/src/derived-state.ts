@@ -25,7 +25,7 @@ export function workspaceInstant(value: string | null): number {
   return value === null ? NaN : Date.parse(value);
 }
 
-function calendar(now: number, timezone: string) {
+export function workspaceCalendar(now: number, timezone: string) {
   const formatter = new Intl.DateTimeFormat("en", {
     timeZone: timezone,
     calendar: "iso8601",
@@ -77,7 +77,7 @@ export function effectiveSchedule(
 function resolveBand(
   item: ScheduledItem,
   schedule: string | null,
-  dates: ReturnType<typeof calendar>,
+  dates: ReturnType<typeof workspaceCalendar>,
 ): Band | null {
   if (item.status === "cancelled") return null;
   if (item.status === "done") {
@@ -114,7 +114,7 @@ export function band(
   return resolveBand(
     item,
     effectiveSchedule(item, ancestors),
-    calendar(now, timezone),
+    workspaceCalendar(now, timezone),
   );
 }
 
@@ -124,7 +124,7 @@ export function bandsFor(
   now: number,
   timezone: string,
 ): Map<string, Band | null> {
-  const dates = calendar(now, timezone);
+  const dates = workspaceCalendar(now, timezone);
   return new Map(
     items.map((item) => [
       item.id,
@@ -162,7 +162,7 @@ export function radarBandsFor(
   now: number,
   timezone: string,
 ): Map<string, RadarBand> {
-  const dates = calendar(now, timezone);
+  const dates = workspaceCalendar(now, timezone);
   return new Map(
     items.map((item) => {
       if (item.status === "done") {
@@ -220,7 +220,7 @@ export function radarSubgroups(
     }));
   }
 
-  const dates = calendar(now, timezone);
+  const dates = workspaceCalendar(now, timezone);
   if (band === "today") {
     const groups: RadarSubgroup[] = [
       { id: "needs-me", label: "Needs me", itemIds: [] },
@@ -334,7 +334,7 @@ export function radarTimesToday<T extends Pick<Item, "time_at" | "time_type">>(
   now: number,
   timezone: string,
 ) {
-  const dates = calendar(now, timezone);
+  const dates = workspaceCalendar(now, timezone);
   return items.flatMap((item) => {
     if (item.time_type !== "fixed" && item.time_type !== "deadline") return [];
     const time = workspaceInstant(item.time_at);
@@ -354,7 +354,7 @@ export function carriedOverFrom(
   return item.status !== "done" &&
     item.status !== "cancelled" &&
     schedule !== null &&
-    schedule < calendar(now, timezone).today
+    schedule < workspaceCalendar(now, timezone).today
     ? schedule
     : null;
 }
@@ -552,7 +552,7 @@ export function firstDayOfBand(
   now: number,
   timezone: string,
 ): string | null {
-  const dates = calendar(now, timezone);
+  const dates = workspaceCalendar(now, timezone);
   switch (band) {
     case "today":
       return dates.today;
@@ -568,4 +568,53 @@ export function firstDayOfBand(
     case "done-today":
       return null;
   }
+}
+
+const countWords = [
+  "zero",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+];
+
+function sentenceCount(count: number) {
+  const word = countWords[count];
+  return word ? word[0].toUpperCase() + word.slice(1) : String(count);
+}
+
+export function daySentence({
+  attention,
+  agents,
+  remaining,
+  scheduled,
+}: {
+  attention: number;
+  agents: number;
+  remaining: number;
+  scheduled: boolean;
+}): { attention: string; outlook: string } {
+  const needs =
+    attention === 0
+      ? "Nothing needs you."
+      : `${sentenceCount(attention)} ${attention === 1 ? "thing needs" : "things need"} you.`;
+  if (!attention && !agents && !remaining && !scheduled)
+    return { attention: needs, outlook: "Nothing is scheduled." };
+
+  const working =
+    agents === 0
+      ? "No agents are working."
+      : `${sentenceCount(agents)} ${agents === 1 ? "agent is" : "agents are"} working.`;
+  const emptyToday =
+    scheduled || agents > 0 ? "Nothing left today." : "Nothing is scheduled.";
+  const today =
+    remaining === 0
+      ? emptyToday
+      : `${sentenceCount(remaining)} ${remaining === 1 ? "item" : "items"} left today.`;
+  return { attention: needs, outlook: `${working} ${today}` };
 }

@@ -196,10 +196,3 @@
   padding: 10px 0;
   font-size: 0.86rem;
 }
-
-.lens-pane[data-lens="dependencies"] > .inspector {
-  position: relative;
-  inset: auto;
-  width: 100%;
-  margin-top: 16px;
-}

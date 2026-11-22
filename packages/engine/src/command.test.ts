@@ -704,3 +704,32 @@ it("sends Anthropic tool results with their original tool-use IDs", async () => 
     fetchMessage.mockRestore();
   }
 });
+
+it("returns the user's handoff reply from a command and records their identity", async () => {
+  const { item_id } = await workspace.addItem(human, {
+    title: "Rollout",
+    status: "blocked",
+  });
+  await workspace.flagHandoff(human, { item_id, note: "Which environment?" });
+  run
+    .mockResolvedValueOnce({
+      tool_calls: [
+        { name: "answer_handoff", arguments: { item_id, text: "Use staging" } },
+      ],
+    })
+    .mockResolvedValueOnce({ response: "Sent your reply." });
+  const response = await command("Tell the rollout agent to use staging.");
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    changes: [{ type: "item", id: item_id }],
+  });
+  expect(await workspace.getItem({ item_id })).toMatchObject({
+    status: "active",
+    handoff: 0,
+    handoff_answer: "Use staging",
+  });
+  expect((await workspace.getItemEvents({ item_id }))[0]).toMatchObject({
+    kind: "answered",
+    actor: { email: "member@example.test" },
+  });
+});

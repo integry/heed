@@ -1,52 +1,85 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
-  type CSSProperties,
 } from "react";
-import type { CommandCapabilities } from "@heedwork/core";
 import {
-  CommandBar,
-  Microphone,
-  ModelKeyHint,
-  useCommandBar,
-} from "./CommandBar";
-import { DemoBadge, ShadowVerdictMarker } from "./item-markers";
-import { Panel } from "./workspace-controls";
-import type { StreamRow } from "@heedwork/core";
-import type { CanvasItem } from "@heedwork/core";
-import type { Dependency, Item } from "@heedwork/core";
+  COMMAND_HELP,
+  RESET_WORKSPACE_CONFIRMATION,
+  interpretCommand,
+  effectiveSchedule,
+  hasOpenHandoff,
+  progress,
+  isBlocked,
+  matchCommandName,
+  needsMe,
+  type CommandCapabilities,
+  type ConnectedApp,
+  type CreatedToken,
+  type Dependency,
+  type Event,
+  type HistoryPage,
+  type Item,
+  type RadarBand,
+  type Scope,
+  type TokenMetadata,
+} from "@heedwork/core";
+import { CommandBar, useCommandBar } from "./CommandBar";
+import { AttentionStream } from "./AttentionStream";
+import { SelectedItem } from "./SelectedItem";
 import { isDescendant } from "./dependency-graph";
-import {
-  GuideEmpty,
-  OnboardingGuide,
-  onboardingCompletion,
-  type OnboardingScreen,
-} from "./Onboarding";
-import { usePushEnabled } from "./PushSettings";
 import { Guidance } from "./Guidance";
-import { Inspector } from "./Inspector";
-import { QuickAdd } from "./QuickAdd";
-import { Settings } from "./Settings";
 import {
-  lensRegistry,
-  readLensId,
-  rememberLens,
-  resolveLens,
-  type Lens,
-} from "./lenses";
-import { useMobileSheet } from "./mobile-sheet";
-import { StreamPeek } from "./StreamPeek";
-import { HorizonStream, type LensSelection } from "./horizon-stream";
+  ConfirmCommand,
+  ShadowJudgeAgreement,
+  TokenLabel,
+  TokenSecret,
+} from "./CommandPanels";
+import { QuestionBubble } from "./QuestionBubble";
+import { ItemActivity } from "./ItemActivity";
+import { EnableNotifications, runPushCommand } from "./push-commands";
+import { lensRegistry, resolveLens, type Lens } from "./lenses";
 import { isRadarRowVisible } from "./RadarLens";
 import { StreamHistory } from "./stream-history";
 import { createWorkspaceConnection } from "./workspace-connection";
-import { useAction } from "./workspace-controls";
+import {
+  dateLabel,
+  Panel,
+  timeInputInstant,
+  useAction,
+} from "./workspace-controls";
 import { ApiContext, createApi, useApi, useResource } from "./api";
-import type { AppUser, MountAppOptions } from "./web-options";
+import type { AppUser, BuiltInScreenId, MountAppOptions } from "./web-options";
+import { connectSolv, type SolvConfig, type SolvView } from "./solv";
 import { workspaceView, type MutationInput } from "./workspace-state";
 import { selectWorkspace } from "./workspace-view";
+
+type PanelState =
+  | {
+      kind: "guidance" | "host" | "history" | "hidden" | "judge" | "push";
+    }
+  | {
+      kind: "token-label";
+      scope: Scope;
+      project?: { id: string; title: string };
+    }
+  | { kind: "token"; created: CreatedToken }
+  | {
+      kind: "list";
+      title: string;
+      rows: { id: string; title: string; detail?: string }[];
+    }
+  | {
+      kind: "confirm";
+      title: string;
+      phrase: string;
+      description: string;
+      mutation: MutationInput;
+      result: string;
+    };
 
 type Session =
   | { status: "loading" }
@@ -59,27 +92,11 @@ type Session =
       managed?: boolean;
       workspaceId: string;
       capabilities: CommandCapabilities;
+      solv?: SolvConfig;
     };
 
 function Wordmark() {
-  return (
-    <span className="wordmark">
-      <span className="brand-mark" aria-hidden="true" />
-      Heed
-    </span>
-  );
-}
-
-const desktopQuery = "(min-width: 768px)";
-
-function subscribeDesktop(listener: () => void) {
-  const media = window.matchMedia?.(desktopQuery);
-  media?.addEventListener("change", listener);
-  return () => media?.removeEventListener("change", listener);
-}
-
-function isDesktop() {
-  return window.matchMedia?.(desktopQuery).matches ?? true;
+  return <span className="wordmark">heed</span>;
 }
 
 function useMinuteClock() {
@@ -101,49 +118,6 @@ function useMinuteClock() {
     };
   }, []);
   return now;
-}
-
-function StreamItems({
-  rows,
-  selectedId,
-  select,
-  eventRevision,
-}: {
-  rows: StreamRow<CanvasItem>[];
-  selectedId: string | null;
-  select: (id: string) => void;
-  eventRevision: (id: string) => string;
-}) {
-  return (
-    <ul className="item-list">
-      {rows.map(({ item, children }) => (
-        <li key={item.id}>
-          <button
-            type="button"
-            className="item-row stream-row"
-            aria-pressed={selectedId === item.id}
-            onClick={() => select(item.id)}
-          >
-            <span className="stream-marker" aria-hidden="true" />
-            <span className="item-title">{item.title}</span>
-            {item.demo === 1 && <DemoBadge />}
-            <ShadowVerdictMarker
-              item={item}
-              revision={eventRevision(item.id)}
-            />
-          </button>
-          {children.length > 0 && (
-            <StreamItems
-              rows={children}
-              selectedId={selectedId}
-              select={select}
-              eventRevision={eventRevision}
-            />
-          )}
-        </li>
-      ))}
-    </ul>
-  );
 }
 
 const connectionLabels = {
@@ -175,33 +149,52 @@ function Workspace({
   registry,
   onSessionExpired,
   onWorkspaceChange,
+  scopeSignal,
 }: {
   session: Extract<Session, { status: "signed-in" }>;
   options?: MountAppOptions;
   registry: readonly [Lens, ...Lens[]];
   onSessionExpired: (devLoginEnabled?: boolean) => void;
   onWorkspaceChange: () => void;
+  scopeSignal?: AbortSignal;
 }) {
   const { user, workspaceId, role, managed, capabilities } = session;
-  const { getJson, postJson } = useApi();
+  const solv = options?.solv ?? session.solv;
+  const widgetUrl = solv?.widgetUrl;
+  const assistantKey = solv?.assistantKey;
+  const assistant = useRef<ReturnType<typeof connectSolv>>(null);
+  const solvView = useRef<SolvView>(null);
+  const workspaceApi = useApi();
+  const { getJson, postJson } = workspaceApi;
   const api = useMemo(
     () => ({ getJson, postJson, useResource }),
     [getJson, postJson],
   );
   const screenProps = { user, workspaceId, role, api };
   const slotProps = { ...screenProps, onWorkspaceChange };
+  const shell = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const node = shell.current;
+    if (!viewport || !node) return;
+    function resize() {
+      if (viewport && viewport.scale === 1)
+        node?.style.setProperty("--attention-height", `${viewport.height}px`);
+    }
+    resize();
+    viewport.addEventListener("resize", resize);
+    return () => viewport.removeEventListener("resize", resize);
+  }, []);
   const HeaderStart = options?.headerStart;
   const HeaderEnd = options?.headerEnd;
-  const showModelKeyHint = managed === false && !capabilities.command;
   const signOut = options?.onSignOut;
-  const [lensId, setLensId] = useState(readLensId);
+  const [lensId, setLensId] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] = useState<{
     id: string;
-    inspectorOpen: boolean;
     fromNotification?: boolean;
   } | null>(() => {
     const id = new URLSearchParams(window.location.search).get("item");
-    return id ? { id, inspectorOpen: true, fromNotification: true } : null;
+    return id ? { id, fromNotification: true } : null;
   });
   const selectedId = selectedItem?.id ?? null;
   const [connection] = useState(() => createWorkspaceConnection(selectedId));
@@ -215,63 +208,89 @@ function Workspace({
     version: number;
   }>();
   const [goalId, focusGoal] = useState<string | null>(null);
+  const [radarSelection, setRadarSelection] = useState<string | null>(null);
   // Dependency saves can outlive the graph that submitted them.
   const [dependencyEditGoal, setDependencyEditGoal] = useState<string | null>(
     null,
   );
   const dependencyEdit = useAction();
   const [showGhosts, setShowGhosts] = useState(true);
-  const [lensSelection, setLensSelection] = useState<LensSelection | null>(
-    null,
-  );
-  const [history, setHistory] = useState(false);
-  const [attentionOnly, setAttentionOnly] = useState(false);
-  const [hiddenOnly, setHiddenOnly] = useState(false);
-  const [panel, setPanel] = useState<{
-    kind: "guidance" | "settings" | "goal" | "child" | "command" | "onboarding";
-    fromGuide?: boolean;
-    screen?: OnboardingScreen;
-  } | null>(null);
+  const [activePanel, setActivePanel] = useState<PanelState | null>(null);
+  const panel = activePanel?.kind;
+  const [radarZoom, setRadarZoom] = useState<{ band: RadarBand | null }>();
+  const [replyId, setReplyId] = useState<string>();
   const clock = useMinuteClock();
-  const desktop = useSyncExternalStore(subscribeDesktop, isDesktop);
   const command = useCommandBar(
     connection.save,
     capabilities.transcription,
-    capabilities.command && (desktop || panel?.kind === "command"),
+    capabilities.command,
+    executeCommand,
   );
-  const sheet = useMobileSheet(desktop, (next) => {
-    if (next !== "full") {
-      setHistory(false);
-      setHiddenOnly(false);
-    }
+  const { line } = command;
+  useLayoutEffect(() => {
+    solvView.current = {
+      selectItem(id) {
+        if (!view.items.has(id)) return false;
+        selectStreamItem(id);
+        return true;
+      },
+      zoomBand,
+      switchLens,
+      openGuidance,
+    };
   });
-  const peek = !desktop && sheet.stop === "peek";
+  useEffect(() => {
+    if (!widgetUrl || !assistantKey || scopeSignal?.aborted) return;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    scopeSignal?.addEventListener("abort", abort);
+    assistant.current = connectSolv(
+      { widgetUrl, assistantKey },
+      {
+        workspaceId,
+        userId: user.id,
+        requestToken: (signal) =>
+          postJson("/api/assistant-token", null, signal),
+        view: {
+          selectItem: (id) => solvView.current?.selectItem(id) ?? false,
+          zoomBand: (band) => solvView.current?.zoomBand(band) ?? false,
+          switchLens: (id) => solvView.current?.switchLens(id) ?? false,
+          openGuidance: () => solvView.current?.openGuidance() ?? false,
+        },
+        signal: controller.signal,
+        focusLine: () => line.current?.focus({ preventScroll: true }),
+      },
+    );
+    return () => {
+      abort();
+      assistant.current = null;
+      scopeSignal?.removeEventListener("abort", abort);
+    };
+  }, [
+    widgetUrl,
+    assistantKey,
+    scopeSignal,
+    workspaceId,
+    user.id,
+    postJson,
+    line,
+  ]);
   const view = useMemo(() => workspaceView(state), [state]);
   const derived = useMemo(() => {
     // A broadcast can carry a heartbeat newer than the last clock tick.
     const now = Math.max(clock, Date.now());
-    return { ...selectWorkspace(view, now, attentionOnly), now };
-  }, [view, clock, attentionOnly]);
+    return { ...selectWorkspace(view, now), now };
+  }, [view, clock]);
   const { projects, tree, filtered, liveCount, timezone, now } = derived;
   const focusedGoal = goalId && filtered.has(goalId) ? goalId : null;
   const lens = resolveLens(registry, lensId);
   const LensComponent = lens.component;
-  const availableLenses = registry.filter(
-    ({ id }) => id !== "dependencies" || focusedGoal || lens.id === id,
-  );
-  const canvasLens = lens.id === "radar" || lens.id === "treemap";
   const live = state.connection === "live";
-  const autoGuide =
-    state.onboarding?.hasItems === false &&
-    !state.settings?.onboarding_dismissed;
-  const guideVisible = panel?.kind === "onboarding" || (autoGuide && !panel);
-  const notificationsEnabled = usePushEnabled(
-    guideVisible && options?.hideScreens?.includes("notifications") !== true,
-  );
   const dependencyError = dependencyEditGoal ? dependencyEdit.error : "";
   const showDependencyErrorInline =
     lens.id === "dependencies" && focusedGoal === dependencyEditGoal;
   const selection = selectedId && filtered.has(selectedId) ? selectedId : null;
+  const radarLens = registry.find(({ id }) => id === "radar");
   const dependenciesLens = registry.find(({ id }) => id === "dependencies");
   const selected = selectedId ? state.items.get(selectedId) : undefined;
   const linkedId =
@@ -303,60 +322,26 @@ function Workspace({
     linkedItem.item.id === linkedId
       ? linkedItem.item
       : undefined;
-  const inspected = selectedItem?.fromNotification
-    ? (selected ?? fallback)
-    : selected &&
-        (hiddenOnly || view.projects.get(selected.project_id)?.hidden === 0)
-      ? selected
+  const inspected = selected ?? fallback;
+  const replyTarget =
+    replyId && inspected?.id === replyId && hasOpenHandoff(inspected)
+      ? inspected
       : undefined;
-  // Desktop opens the inspector for a selection made on the mobile canvas.
-  // Carry that open state back to mobile if the viewport narrows again.
-  if (desktop && inspected && selectedItem && !selectedItem.inspectorOpen) {
-    setSelectedItem({ ...selectedItem, inspectorOpen: true });
-  }
+  const { setDraft } = command;
+  useEffect(() => {
+    if (replyId && !replyTarget) {
+      setReplyId(undefined);
+      setDraft("");
+    }
+  }, [replyId, replyTarget, setDraft]);
   const dependencies = useMemo(
     () => [...view.dependencies.values()],
     [view.dependencies],
   );
   const inspectedGoal = inspected ? dependencyGoal(inspected.id) : null;
-  const hiddenRows = hiddenOnly
-    ? [...view.items.values()]
-        .filter((item) => item.parent_id === null && item.hidden === 1)
-        .sort((a, b) => a.title.localeCompare(b.title))
-        .map((item) => ({ item, children: [] }))
-    : [];
-  // A save can finish after the same kind of panel has been reopened.
+  // A save can finish after its panel has been replaced by another.
   const closePanel = () =>
-    setPanel((current) =>
-      current === panel
-        ? panel?.fromGuide
-          ? { kind: "onboarding" }
-          : null
-        : current,
-    );
-  const openGuide = state.onboarding
-    ? () => setPanel({ kind: "onboarding" })
-    : undefined;
-  const guide = state.onboarding && state.settings && (
-    <OnboardingGuide
-      completion={onboardingCompletion(
-        state.onboarding,
-        state.settings.guidance,
-        notificationsEnabled,
-      )}
-      loaded={state.onboarding.hasDemoData}
-      live={live}
-      save={connection.save}
-      hidden={options?.hideScreens}
-      openGoal={() => setPanel({ kind: "goal", fromGuide: true })}
-      openSettings={(screen) =>
-        setPanel({ kind: "settings", screen, fromGuide: true })
-      }
-      openGuidance={() => setPanel({ kind: "guidance", fromGuide: true })}
-      onDismiss={!state.settings.onboarding_dismissed ? closePanel : undefined}
-      onDemoLoad={closePanel}
-    />
-  );
+    setActivePanel((current) => (current === activePanel ? null : current));
   const openHistoryIds = useMemo(
     () =>
       new Set(
@@ -378,25 +363,38 @@ function Workspace({
     [state.pending],
   );
 
-  const hiddenToggle = (
-    <button
-      type="button"
-      className="project-chip"
-      aria-pressed={hiddenOnly}
-      onClick={() => {
-        setAttentionOnly(false);
-        setHiddenOnly((value) => !value);
-        if (!desktop) sheet.changeStop("full");
-      }}
-    >
-      Hidden
-    </button>
-  );
-
   useEffect(
     () => connection.start(onSessionExpired),
     [connection, onSessionExpired],
   );
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        panel ||
+        event.defaultPrevented ||
+        event.repeat ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        event.isComposing ||
+        (event.target instanceof Element &&
+          event.target.closest(
+            "input, textarea, select, [contenteditable]:not([contenteditable='false'])",
+          ))
+      )
+        return;
+      if (!/^[1-4]$/.test(event.key)) return;
+      const next = registry[Number(event.key) - 1];
+      if (next) {
+        event.preventDefault();
+        setLensId(next.id);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [panel, registry]);
 
   function updateItem(
     item_id: string,
@@ -406,14 +404,6 @@ function Workspace({
     >,
   ) {
     connection.mutate({ type: "UPDATE_ITEM", input: { item_id, ...patch } });
-  }
-
-  function switchLens(id: string) {
-    setLensId(id);
-    rememberLens(id);
-    if (id === "dependencies" && !desktop && sheet.stop === "full") {
-      sheet.changeStop("peek");
-    }
   }
 
   function changeDependency(edge: Dependency, action: "add" | "remove") {
@@ -438,12 +428,10 @@ function Workspace({
     return root && filtered.has(root.id) ? root.id : null;
   }
 
-  function inspectItem(id: string) {
-    setSelectedItem({ id, inspectorOpen: true });
-  }
-
   function selectStreamItem(id: string) {
-    inspectItem(id);
+    setReplyId(undefined);
+    setSelectedItem({ id });
+    setRadarSelection(null);
     if (lens.id === "dependencies") {
       if (!focusedGoal) focusGoal(dependencyGoal(id));
       return;
@@ -477,557 +465,805 @@ function Workspace({
     });
   }
 
-  const projectToggles = (
-    <div className="project-toggles" role="group" aria-label="Visible projects">
-      {projects.map((project) => (
-        <button
-          type="button"
-          key={project.id}
-          className="project-chip"
-          aria-pressed={!project.hidden}
-          disabled={!live}
-          onClick={() => {
-            const latest = workspaceView(connection.getSnapshot()).projects.get(
-              project.id,
-            );
-            if (latest)
-              connection.mutate({
-                type: "UPDATE_PROJECT",
-                project_id: project.id,
-                input: { hidden: latest.hidden ? 0 : 1 },
-              });
-          }}
-        >
-          <span
-            className="project-dot"
-            style={{ backgroundColor: project.color ?? undefined }}
-            aria-hidden="true"
-          />
-          {project.name}
-          {project.demo === 1 && <DemoBadge />}
-        </button>
-      ))}
-    </div>
-  );
-  const settingsActions = (
-    <>
-      <button
-        type="button"
-        className="subtle"
-        disabled={!state.settings}
-        onClick={() => setPanel({ kind: "guidance" })}
-      >
-        Guidance
-      </button>
-      <button
-        type="button"
-        className="subtle"
-        onClick={() => setPanel({ kind: "settings" })}
-      >
-        Settings
-      </button>
-    </>
-  );
-  const ghostsToggle = (lens.id === "radar" ||
-    lens.id === "board" ||
-    lens.id === "treemap") &&
-    state.settings && (
-      <label>
-        <input
-          type="checkbox"
-          checked={showGhosts}
-          onChange={(event) => setShowGhosts(event.target.checked)}
-        />
-        Show completed ghosts
-      </label>
-    );
-
   function eventRevision(id: string) {
     return `${state.snapshotRevision}:${state.eventRevisions.get(id) ?? 0}`;
   }
 
-  const inspector = inspected && selectedItem?.inspectorOpen && (
-    <Inspector
-      key={inspected.id}
-      activityRevision={eventRevision(inspected.id)}
-      drawer={!desktop}
-      item={inspected}
-      projects={projects}
-      items={state.items}
-      dependencies={dependencies}
-      timezone={timezone}
-      live={live}
-      save={connection.save}
-      close={() => {
-        // A delete can finish after this inspection has been dismissed.
-        setSelectedItem((current) =>
-          current !== selectedItem
-            ? current
-            : !desktop && canvasLens
-              ? { id: inspected.id, inspectorOpen: false }
-              : null,
-        );
-      }}
-      addChild={() => setPanel({ kind: "child" })}
-      openDependencies={
-        dependenciesLens &&
-        inspectedGoal &&
-        (lens.id !== dependenciesLens.id || focusedGoal !== inspectedGoal)
-          ? () => {
-              if (!desktop) {
-                setSelectedItem({ id: inspected.id, inspectorOpen: false });
-              }
-              focusGoal(inspectedGoal);
-              switchLens(dependenciesLens.id);
-            }
-          : undefined
-      }
-      selectChild={lens.id === "board" ? selectStreamItem : undefined}
-    />
+  const activity = useResource<Event[]>(
+    inspected ? `/api/items/${encodeURIComponent(inspected.id)}/events` : null,
+    inspected &&
+      JSON.stringify([
+        eventRevision(inspected.id),
+        inspected.completed_at,
+        inspected.reopen_count,
+      ]),
   );
 
-  return (
-    <div className="workspace" data-layout={desktop ? "desktop" : "mobile"}>
-      <header className="workspace-header">
-        {HeaderStart && <HeaderStart {...slotProps} />}
-        <Wordmark />
-        {desktop ? (
-          projectToggles
-        ) : (
-          <details className="header-menu project-menu" name="workspace-menu">
-            <summary className="subtle">Projects</summary>
-            {projectToggles}
-          </details>
-        )}
-        <div className="header-tools">
-          {state.settings && (
-            <span className="live-indicator">
-              <span data-live={live && liveCount > 0} aria-hidden="true" />
-              {liveCount} {desktop && (liveCount === 1 ? "agent " : "agents ")}
-              live
-            </span>
-          )}
-          {desktop ? (
-            settingsActions
-          ) : (
-            <details
-              className="header-menu workspace-menu"
-              name="workspace-menu"
-            >
-              <summary className="subtle" aria-label="Workspace menu">
-                ⋯
-              </summary>
-              <div className="workspace-menu-actions">
-                {ghostsToggle}
-                {settingsActions}
-              </div>
-            </details>
-          )}
-          {HeaderEnd && <HeaderEnd {...slotProps} />}
-        </div>
-        <div
-          className="lens-tabs"
-          role="tablist"
-          aria-label="Lens"
-          onKeyDown={(event) => {
-            const tabs = Array.from(
-              event.currentTarget.querySelectorAll<HTMLButtonElement>(
-                '[role="tab"]',
+  const hiddenItems =
+    panel === "hidden"
+      ? [...view.items.values()]
+          .filter((item) => item.hidden === 1 && item.parent_id === null)
+          .sort((a, b) => a.title.localeCompare(b.title))
+      : [];
+  const date = new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: timezone,
+  }).format(now);
+  const openGraph =
+    dependenciesLens &&
+    inspectedGoal &&
+    (lens.id !== "dependencies" || focusedGoal !== inspectedGoal)
+      ? () => {
+          focusGoal(inspectedGoal);
+          setLensId(dependenciesLens.id);
+        }
+      : undefined;
+
+  const visibleItems = [...view.items.values()].filter(
+    (item) =>
+      derived.visibleIds.has(item.id) &&
+      item.status !== "done" &&
+      item.status !== "cancelled",
+  );
+  const questions: Item[] = visibleItems.filter(hasOpenHandoff);
+  if (
+    inspected &&
+    hasOpenHandoff(inspected) &&
+    !questions.some(({ id }) => id === inspected.id)
+  )
+    questions.push(inspected);
+
+  function allowed(screen: BuiltInScreenId) {
+    if (options?.hideScreens?.includes(screen))
+      throw new Error("This command is unavailable in this workspace.");
+  }
+
+  async function saveCommand(mutation: MutationInput, result: string) {
+    const ack = await connection.save(mutation, { callerReportsError: true });
+    if (mutation.type === "CREATE_TOKEN") {
+      if (!ack.createdToken)
+        throw new Error(
+          "The token response was missing. Check the token list.",
+        );
+      setActivePanel({ kind: "token", created: ack.createdToken });
+    }
+    if (mutation.type === "RESET_WORKSPACE") {
+      setSelectedItem(null);
+      setRadarSelection(null);
+      setReplyId(undefined);
+      focusGoal(null);
+      setLensId(null);
+      setRadarZoom(undefined);
+    }
+    return ack.ignored_fields?.length
+      ? `Skipped ${ack.ignored_fields.join(", ")}.`
+      : result;
+  }
+
+  function confirmMutation(mutation: MutationInput, result: string) {
+    const details = (() => {
+      switch (mutation.type) {
+        case "RESET_WORKSPACE":
+          return {
+            title: "Reset workspace",
+            phrase: RESET_WORKSPACE_CONFIRMATION,
+            description:
+              "Permanently delete workspace data, revoke tokens and connected apps, and remove push subscriptions. The workspace starts over with an empty Inbox.",
+          };
+        case "DELETE_ITEM":
+          return {
+            title: "Delete item",
+            phrase: "DELETE ITEM",
+            description: result
+              .replace(/^Deleted /, "Permanently delete ")
+              .replace(/\.$/, "?"),
+          };
+        case "DELETE_PROJECT":
+          return {
+            title: "Delete project",
+            phrase: "DELETE PROJECT",
+            description: result
+              .replace(/^Deleted /, "Permanently delete ")
+              .replace(/\.$/, "?"),
+          };
+        default:
+          return {
+            title: "Revoke access",
+            phrase: "REVOKE ACCESS",
+            description: result
+              .replace(/^Revoked /, "Revoke ")
+              .replace(/\.$/, "?"),
+          };
+      }
+    })();
+    setActivePanel({ kind: "confirm", ...details, mutation, result });
+  }
+
+  async function answerQuestion(id: string, text: string) {
+    const item = connection.getSnapshot().items.get(id) ?? inspected;
+    const result = await saveCommand(
+      { type: "ANSWER_HANDOFF", input: { item_id: id, text } },
+      `Answered “${item?.title ?? "question"}”.`,
+    );
+    command.setSummary(result);
+  }
+
+  function switchLens(id: string) {
+    if (!registry.some((entry) => entry.id === id)) return false;
+    if (id === "dependencies" && inspectedGoal) focusGoal(inspectedGoal);
+    setLensId(id);
+    return true;
+  }
+
+  function zoomBand(band: RadarBand | null) {
+    if (!radarLens) return false;
+    focusGoal(null);
+    setLensId(radarLens.id);
+    setRadarZoom({ band });
+    return true;
+  }
+
+  function openGuidance() {
+    if (!state.settings) return false;
+    setActivePanel({ kind: "guidance" });
+    return true;
+  }
+
+  async function executeCommand(text: string): Promise<string | undefined> {
+    if (replyId && !replyTarget) return "That question is no longer open.";
+    if (!replyTarget && assistant.current && /^open chat$/i.test(text))
+      return assistant.current.open();
+    const context = {
+      selected: inspected,
+      items:
+        inspected && !view.items.has(inspected.id)
+          ? [...view.items.values(), inspected]
+          : [...view.items.values()],
+      replyTo: replyTarget,
+      today: Date.now(),
+      timezone,
+      projects,
+      lenses: registry,
+    };
+    const intent = interpretCommand(text, context);
+    switch (intent.type) {
+      case "unknown":
+        if (assistant.current) return assistant.current.send(text);
+        if (options?.freeText)
+          return (await options.freeText(text, context)).text;
+        return capabilities.command ? undefined : COMMAND_HELP;
+      case "message":
+        return intent.text;
+      case "token-label":
+        allowed("tokens");
+        setActivePanel({
+          kind: "token-label",
+          scope: intent.scope,
+          project: intent.project,
+        });
+        return "";
+      case "select":
+        selectStreamItem(intent.id);
+        return `Selected “${context.items.find(({ id }) => id === intent.id)?.title}”.`;
+      case "details": {
+        const canvasItem = view.items.get(intent.id);
+        const item = canvasItem ?? inspected;
+        if (!item) return "That item is unavailable.";
+        const project =
+          view.projects.get(item.project_id)?.name ?? item.project_id;
+        const schedule = effectiveSchedule(item, view.items) ?? "Unscheduled";
+        const time =
+          item.time_type !== "flexible" && item.time_at
+            ? `${item.time_type === "deadline" ? "Due" : "Fixed"} ${dateLabel(item.time_at, timezone)}`
+            : undefined;
+        const tags = JSON.parse(item.tags) as string[];
+        const locks = JSON.parse(item.locked_fields) as string[];
+        const children =
+          canvasItem?.progress ?? progress(item, [...view.items.values()]);
+        return [
+          item.title,
+          item.status,
+          project,
+          schedule,
+          time,
+          `Priority ${item.priority}`,
+          tags.length ? `Tags ${tags.join(", ")}` : undefined,
+          locks.length ? `Locked ${locks.join(", ")}` : undefined,
+          children.total
+            ? `${children.done} of ${children.total} children complete`
+            : undefined,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+      }
+      case "lens":
+        switchLens(intent.id);
+        return `${registry.find(({ id }) => id === intent.id)?.label} lens.`;
+      case "zoom":
+        if (!zoomBand(intent.band)) return "Radar is unavailable.";
+        return intent.band
+          ? `Zoomed into ${intent.band.replace("-", " ")}.`
+          : "Whole radar.";
+      case "time":
+        return saveCommand(
+          {
+            type: "UPDATE_ITEM",
+            input: {
+              item_id: intent.id,
+              scheduled_on: intent.date,
+              time_type: intent.kind,
+              time_at: timeInputInstant(
+                `${intent.date}T${intent.time}`,
+                timezone,
               ),
+            },
+          },
+          `Updated the time for “${intent.title}”.`,
+        );
+      case "mutate":
+        if (intent.mutation.type === "CREATE_TOKEN") allowed("tokens");
+        if (
+          [
+            "CREATE_PROJECT",
+            "UPDATE_PROJECT",
+            "MOVE_PROJECT",
+            "DELETE_PROJECT",
+          ].includes(intent.mutation.type)
+        )
+          allowed("projects");
+        if (intent.mutation.type === "SET_TIMEZONE") allowed("account");
+        if (intent.confirm) {
+          confirmMutation(intent.mutation, intent.text);
+          return "";
+        }
+        return saveCommand(intent.mutation, intent.text);
+      case "reopen-history": {
+        const query = new URLSearchParams({
+          q: intent.name.startsWith('"')
+            ? intent.name.replace(/^"(.+)"$/, "$1")
+            : intent.name.replace(/^the /i, ""),
+          limit: "100",
+        });
+        const page = await getJson<HistoryPage>(`/api/history?${query}`);
+        const matches = matchCommandName(intent.name, page.items);
+        if (page.next_before)
+          return "Use a more specific item name or open history.";
+        if (matches.length !== 1)
+          return matches.length
+            ? `Matches ${matches.map(({ title }) => title).join(", ")}.`
+            : `No match for “${intent.name}”.`;
+        const [{ id, title }] = matches;
+        return saveCommand(
+          {
+            type: "REOPEN_ITEM",
+            input: { item_id: id, reason: intent.reason },
+          },
+          `Reopened “${title}”.`,
+        );
+      }
+      case "revoke": {
+        allowed("tokens");
+        const rows =
+          intent.kind === "token"
+            ? (await getJson<TokenMetadata[]>("/api/tokens")).map(
+                ({ id, label }) => ({ id, title: label }),
+              )
+            : (await getJson<ConnectedApp[]>("/api/connected-apps")).map(
+                ({ id, client_name, label }) => ({
+                  id,
+                  title: `${client_name} · ${label}`,
+                }),
+              );
+        const matches = matchCommandName(intent.name, rows);
+        if (matches.length !== 1)
+          return matches.length
+            ? `Matches ${matches.map(({ title }) => title).join(", ")}.`
+            : `No match for “${intent.name}”.`;
+        const [{ id, title }] = matches;
+        confirmMutation(
+          intent.kind === "token"
+            ? { type: "REVOKE_TOKEN", input: { token_id: id } }
+            : { type: "REVOKE_CONNECTED_APP", input: { grant_id: id } },
+          `Revoked “${title}”.`,
+        );
+        return "";
+      }
+      case "workspace":
+        switch (intent.command) {
+          case "what needs me":
+          case "what is blocked": {
+            const needs = intent.command === "what needs me";
+            const matches = visibleItems.filter((item) =>
+              needs
+                ? needsMe(item, now)
+                : isBlocked(item, view.items, dependencies),
             );
-            const index = tabs.indexOf(event.target as HTMLButtonElement);
-            let next: number;
-            switch (event.key) {
-              case "ArrowLeft":
-                next = (index - 1 + tabs.length) % tabs.length;
-                break;
-              case "ArrowRight":
-                next = (index + 1) % tabs.length;
-                break;
-              case "Home":
-                next = 0;
-                break;
-              case "End":
-                next = tabs.length - 1;
-                break;
-              default:
-                return;
+            if (!matches.length)
+              return needs ? "Nothing needs you." : "Nothing is blocked.";
+            return `${needs ? "Needs you" : "Blocked"} · ${matches.map(({ title }) => title).join(", ")}`;
+          }
+          case "edit guidance":
+            if (!openGuidance())
+              return "Guidance will be available when the workspace connects.";
+            return "";
+          case "history":
+          case "hidden items":
+            setActivePanel({
+              kind: intent.command === "history" ? "history" : "hidden",
+            });
+            return "";
+          case "show completed ghosts":
+          case "hide completed ghosts":
+            setShowGhosts(intent.command === "show completed ghosts");
+            return intent.command === "show completed ghosts"
+              ? "Showing completed ghosts."
+              : "Completed ghosts hidden.";
+          case "enable notifications":
+            allowed("notifications");
+            setActivePanel({ kind: "push" });
+            return "";
+          case "disable notifications":
+          case "test notification":
+            allowed("notifications");
+            return runPushCommand(workspaceApi, intent.command);
+          case "export workspace": {
+            allowed("data");
+            const link = document.createElement("a");
+            link.href = "/api/export";
+            link.download = "";
+            link.click();
+            return "Workspace export requested.";
+          }
+          case "reset workspace":
+            allowed("data");
+            confirmMutation(
+              {
+                type: "RESET_WORKSPACE",
+                input: { confirmation: RESET_WORKSPACE_CONFIRMATION },
+              },
+              "Workspace reset. Your Inbox is now empty.",
+            );
+            return "";
+          case "list projects":
+            allowed("projects");
+            setActivePanel({
+              kind: "list",
+              title: "Projects",
+              rows: projects.map(({ id, name, hidden }) => ({
+                id,
+                title: name,
+                detail: hidden ? "Hidden" : undefined,
+              })),
+            });
+            return "";
+          case "list tokens":
+          case "connected apps": {
+            allowed("tokens");
+            const tokens = intent.command === "list tokens";
+            const rows = tokens
+              ? (await getJson<TokenMetadata[]>("/api/tokens")).map(
+                  ({ id, label, scope, default_project_id, last_used_at }) => ({
+                    id,
+                    title: label,
+                    detail: `${scope} · ${projects.find(({ id }) => id === default_project_id)?.name ?? "Inbox"} · ${last_used_at ? `Last used ${new Date(last_used_at).toLocaleString()}` : "Never used"}`,
+                  }),
+                )
+              : (await getJson<ConnectedApp[]>("/api/connected-apps")).map(
+                  ({ id, label, client_name, scope, last_used_at }) => ({
+                    id,
+                    title: `${client_name} · ${label}`,
+                    detail: `${scope} · ${last_used_at ? `Last used ${new Date(last_used_at).toLocaleString()}` : "Never used"}`,
+                  }),
+                );
+            setActivePanel({
+              kind: "list",
+              title: tokens ? "API tokens" : "Connected apps",
+              rows,
+            });
+            return "";
+          }
+          case "shadow judge":
+            allowed("shadow-judge");
+            setActivePanel({ kind: "judge" });
+            return "";
+          case "model keys":
+            allowed("model-keys");
+            if (capabilities.command) return "A command model is configured.";
+            return managed === false
+              ? "Configure Workers AI or an Anthropic key to enable model-assisted commands."
+              : "Model availability is managed by your host.";
+          case "account":
+            allowed("account");
+            return `Signed in as ${user.email} · Workspace timezone ${timezone}.`;
+          case "sign out":
+            if (signOut) await signOut();
+            else {
+              const response = await fetch("/auth/logout", { method: "POST" });
+              if (!response.ok)
+                throw new Error("Couldn’t sign out. Try again.");
             }
-            event.preventDefault();
-            tabs[next].focus();
-            switchLens(availableLenses[next].id);
-          }}
-        >
-          {availableLenses.map(({ id, label }) => (
+            onSessionExpired();
+            return "";
+        }
+    }
+  }
+
+  return (
+    <div className="attention-app" ref={shell}>
+      <header className="attention-header">
+        <details className="wordmark-menu">
+          <summary aria-label="Heed workspace menu">
+            <Wordmark />
+          </summary>
+          <div
+            className="wordmark-actions"
+            onClick={(event) => {
+              if (
+                event.target instanceof Element &&
+                event.target.closest("button, a")
+              )
+                event.currentTarget.closest("details")?.removeAttribute("open");
+            }}
+          >
+            {HeaderStart && <HeaderStart {...slotProps} />}
+            {lens.id === "dependencies" && radarLens && (
+              <button
+                className="text-control"
+                type="button"
+                onClick={() => setLensId(radarLens.id)}
+              >
+                Back to Radar
+              </button>
+            )}
             <button
-              key={id}
-              id={`lens-tab-${id}`}
+              className="text-control"
               type="button"
-              role="tab"
-              aria-selected={lens.id === id}
-              aria-controls={lens.id === id ? "active-lens" : undefined}
-              tabIndex={lens.id === id ? 0 : -1}
-              onClick={() => switchLens(id)}
+              onClick={() => {
+                setReplyId(undefined);
+                command.newCommand();
+                command.setDraft("add ");
+                command.line.current?.focus({ preventScroll: true });
+              }}
+              disabled={!live || command.action.busy || Boolean(command.voice)}
             >
-              {label}
+              Add item
             </button>
-          ))}
+            <button
+              className="text-control"
+              type="button"
+              onClick={() => setActivePanel({ kind: "history" })}
+            >
+              History
+            </button>
+            <button
+              className="text-control"
+              type="button"
+              onClick={() => setActivePanel({ kind: "hidden" })}
+            >
+              Hidden items
+            </button>
+            <button
+              className="text-control"
+              type="button"
+              onClick={() => setShowGhosts(!showGhosts)}
+            >
+              {showGhosts ? "Hide completed ghosts" : "Show completed ghosts"}
+            </button>
+            <button
+              className="text-control"
+              type="button"
+              onClick={() => setActivePanel({ kind: "guidance" })}
+              disabled={!state.settings}
+            >
+              Guidance
+            </button>
+            {!!options?.extraSettingsScreens?.length && (
+              <button
+                className="text-control"
+                type="button"
+                onClick={() => setActivePanel({ kind: "host" })}
+              >
+                Settings
+              </button>
+            )}
+            {HeaderEnd && <HeaderEnd {...slotProps} />}
+          </div>
+        </details>
+        <div className="attention-meta">
+          <span>
+            <span
+              className="agent-dot"
+              data-live={live && liveCount > 0}
+              aria-hidden="true"
+            >
+              ●
+            </span>{" "}
+            {liveCount} {liveCount === 1 ? "agent" : "agents"} working
+          </span>
+          <time>{date}</time>
         </div>
       </header>
 
-      {state.connection !== "live" && (
-        <p className="connection-status" role="status">
-          {connectionLabels[state.connection]}
-        </p>
-      )}
-      {state.error && (
-        <ErrorBanner message={state.error} dismiss={connection.clearError} />
-      )}
-      {dependencyError && !showDependencyErrorInline && (
-        <ErrorBanner
-          message={dependencyError}
-          dismiss={() => setDependencyEditGoal(null)}
-        />
-      )}
-
-      <main
-        className="split-layout"
-        ref={sheet.layout}
-        data-sheet-stop={desktop ? undefined : sheet.stop}
-        data-sheet-dragging={!desktop && sheet.height !== undefined}
-        style={
-          !desktop && sheet.height !== undefined
-            ? ({ "--sheet-drag-height": `${sheet.height}px` } as CSSProperties)
-            : undefined
-        }
-      >
+      <main className="attention-stage">
         <section
-          className="lens-pane"
+          className="attention-field"
           data-lens={lens.id}
-          aria-labelledby="lens-heading"
-          inert={!desktop && sheet.stop === "full"}
+          aria-keyshortcuts="1 2 3 4"
+          aria-label={lens.id === "radar" ? "Attention field" : lens.label}
         >
-          <div className="section-heading">
-            <h1 id="lens-heading">{lens.label}</h1>
-            {desktop && ghostsToggle && (
-              <details className="lens-menu">
-                <summary className="subtle">Lens options</summary>
-                {ghostsToggle}
-              </details>
-            )}
-            {desktop && (
-              <button
-                type="button"
-                className="primary"
-                disabled={!live}
-                onClick={() => setPanel({ kind: "goal" })}
-              >
-                + Goal
-              </button>
-            )}
-          </div>
-          <div
-            className="lens-tabpanel"
-            id="active-lens"
-            role="tabpanel"
-            aria-labelledby={`lens-tab-${lens.id}`}
-          >
-            {autoGuide && panel?.kind !== "onboarding" ? (
-              <section
-                className="onboarding-welcome"
-                aria-labelledby="onboarding-heading"
-              >
-                <h2 id="onboarding-heading">Set up your workspace</h2>
-                {guide}
-              </section>
-            ) : (
-              state.settings && (
-                <LensComponent
-                  openGuide={openGuide}
-                  tree={tree}
-                  projects={projects}
-                  items={view.items}
-                  filtered={filtered}
-                  changeDependency={changeDependency}
-                  savingDependency={dependencyEdit.busy}
-                  dependencies={dependencies}
-                  selectedId={selection}
-                  now={now}
-                  timezone={timezone}
-                  live={live}
-                  showGhosts={showGhosts}
-                  goalId={focusedGoal}
-                  focusGoal={focusGoal}
-                  openDependencies={
-                    dependenciesLens && focusedGoal
-                      ? () => switchLens(dependenciesLens.id)
-                      : undefined
-                  }
-                  select={(id) => {
-                    if (lens.id === "list" && id) selectStreamItem(id);
-                    else
-                      setSelectedItem(
-                        id
-                          ? { id, inspectorOpen: desktop || !canvasLens }
-                          : null,
-                      );
-                    setLensSelection(
-                      id
-                        ? { id, scrollStreamOnly: lens.id === "treemap" }
-                        : null,
-                    );
-                    if (id) setHistory(false);
-                  }}
-                  move={connection.mutate}
-                  reschedule={(id, date) =>
-                    updateItem(id, { scheduled_on: date })
-                  }
-                  moveProject={(id, project) => updateItem(id, { project })}
-                  setPriority={(id, priority) => updateItem(id, { priority })}
-                  setPosition={(id, position) =>
-                    placeItem(id, lens.id, position)
-                  }
-                  moveRadar={(id, { position, ...patch }, key = "radar") =>
-                    placeItem(id, key, position, patch)
-                  }
-                />
-              )
-            )}
+          <h1 className="day-sentence">
+            <span data-needs={derived.groups.needs.length > 0}>
+              {derived.sentence.attention}
+            </span>{" "}
+            <span>{derived.sentence.outlook}</span>
+          </h1>
+          <div className="attention-lens">
+            <LensComponent
+              tree={tree}
+              projects={projects}
+              items={view.items}
+              filtered={filtered}
+              changeDependency={changeDependency}
+              savingDependency={dependencyEdit.busy}
+              dependencies={dependencies}
+              selectedId={selection}
+              now={now}
+              timezone={timezone}
+              live={live}
+              showGhosts={showGhosts}
+              goalId={focusedGoal}
+              focusGoal={focusGoal}
+              openDependencies={
+                dependenciesLens && focusedGoal
+                  ? () => setLensId(dependenciesLens.id)
+                  : undefined
+              }
+              select={(id) => {
+                if (lens.id === "list" && id) selectStreamItem(id);
+                else {
+                  setReplyId(undefined);
+                  setSelectedItem(id ? { id } : null);
+                  setRadarSelection(id);
+                }
+              }}
+              radarZoom={radarZoom}
+              save={connection.save}
+              move={connection.mutate}
+              reschedule={(id, date) => updateItem(id, { scheduled_on: date })}
+              moveProject={(id, project) => updateItem(id, { project })}
+              setPriority={(id, priority) => updateItem(id, { priority })}
+              setPosition={(id, position) => placeItem(id, lens.id, position)}
+              moveRadar={(id, { position, ...patch }, key = "radar") =>
+                placeItem(id, key, position, patch)
+              }
+            />
           </div>
           {dependencyError && showDependencyErrorInline && (
             <p className="action-error" role="alert">
               {dependencyError}
             </p>
           )}
-          {inspector}
-          {desktop && capabilities.command && (
-            <CommandBar command={command} live={live} />
-          )}
-          {showModelKeyHint && (
-            <div className="command-bar">
-              <ModelKeyHint />
+          {questions.length > 0 && (
+            <div className="field-questions">
+              {questions.map((item) => (
+                <QuestionBubble
+                  key={item.id}
+                  item={item}
+                  disabled={!live || command.action.busy}
+                  typeReplyDisabled={command.clarification}
+                  answer={(text) => answerQuestion(item.id, text)}
+                  typeReply={() => {
+                    if (item.id !== selectedId) selectStreamItem(item.id);
+                    setReplyId(item.id);
+                    command.setDraft("");
+                    command.setSummary(
+                      `Replying to ${item.agent_name ?? item.title}.`,
+                    );
+                    command.line.current?.focus({ preventScroll: true });
+                  }}
+                />
+              ))}
             </div>
           )}
-        </section>
-        <section
-          className="stream-pane"
-          id="mobile-stream"
-          ref={sheet.pane}
-          aria-label={peek ? "Horizon Stream" : undefined}
-          aria-labelledby={peek ? undefined : "stream-heading"}
-        >
-          {!desktop && sheet.handle}
-          {peek && (
-            <StreamPeek
-              {...derived}
-              openGuide={openGuide}
-              items={view.items}
-              ready={state.settings !== null}
-              selectedId={selectedId}
-              select={(id) => {
-                setLensSelection(null);
-                selectStreamItem(id);
+          {inspected && (
+            <SelectedItem
+              key={inspected.id}
+              item={inspected}
+              activity={activity}
+              openGraph={openGraph}
+              close={() => {
+                setSelectedItem(null);
+                setRadarSelection(null);
+                setReplyId(undefined);
               }}
             />
           )}
-          <div className="stream-panel" hidden={peek}>
-            {history && (desktop || sheet.stop === "full") ? (
-              <StreamHistory
-                key={state.resetVersion}
-                demoLoaded={state.onboarding?.hasDemoData}
-                openGuide={openGuide}
-                projects={projects}
+        </section>
+        <AttentionStream
+          groups={derived.groups}
+          timezone={timezone}
+          items={view.items}
+          now={now}
+          selectedId={selectedId}
+          radarSelection={radarSelection}
+          select={selectStreamItem}
+          activity={
+            inspected && (
+              <ItemActivity
+                key={inspected.id}
+                item={inspected}
+                activity={activity}
                 timezone={timezone}
                 live={live}
-                openIds={openHistoryIds}
-                pendingIds={pendingReopens}
-                close={() => setHistory(false)}
-                reopen={(item_id, reason) =>
-                  connection.mutate({
-                    type: "REOPEN_ITEM",
-                    input: { item_id, reason },
-                  })
-                }
+                save={connection.save}
               />
-            ) : hiddenOnly && (desktop || sheet.stop === "full") ? (
-              <>
-                <div className="section-heading stream-heading">
-                  <h2 id="stream-heading">Horizon Stream</h2>
-                  <div className="inline-actions">
-                    <button
-                      type="button"
-                      className="attention-button"
-                      aria-pressed={false}
-                      onClick={() => {
-                        setHiddenOnly(false);
-                        setAttentionOnly(true);
-                      }}
-                    >
-                      Needs me <span>{derived.attentionCount}</span>
-                    </button>
-                    {hiddenToggle}
-                  </div>
-                </div>
-                <div className="stream-content">
-                  {hiddenRows.length ? (
-                    <StreamItems
-                      eventRevision={eventRevision}
-                      rows={hiddenRows}
-                      selectedId={selectedId}
-                      select={(id) => {
-                        setLensSelection(null);
-                        inspectItem(id);
-                      }}
-                    />
-                  ) : (
-                    <GuideEmpty openGuide={openGuide}>
-                      No hidden items.
-                    </GuideEmpty>
-                  )}
-                </div>
-              </>
-            ) : (
-              <HorizonStream
-                {...derived}
-                eventRevision={eventRevision}
-                openGuide={openGuide}
-                items={view.items}
-                dependencies={view.dependencies}
-                ready={state.settings !== null}
-                live={live}
-                attentionOnly={attentionOnly}
-                condensed={lens.id === "board" && desktop}
-                todayOnly={!desktop && sheet.stop === "half"}
-                toggleAttention={() => setAttentionOnly((value) => !value)}
-                actions={hiddenToggle}
-                selectedId={selectedId}
-                lensSelection={lensSelection}
-                select={(id) => {
-                  setLensSelection(null);
-                  selectStreamItem(id);
-                }}
-                move={connection.mutate}
-                showHistory={() => {
-                  setHistory(true);
-                  if (!desktop) sheet.changeStop("full");
-                }}
-              />
-            )}
-          </div>
-        </section>
+            )
+          }
+        />
       </main>
-      {!desktop && (
-        <nav className="mobile-dock" aria-label="Workspace shortcuts">
-          <button
-            type="button"
-            className="subtle"
-            disabled={!live}
-            onClick={() => setPanel({ kind: "goal" })}
-          >
-            + Goal
-          </button>
-          {capabilities.command && (
-            <button
-              type="button"
-              className="primary command-button"
-              aria-label="Open command bar"
-              aria-haspopup="dialog"
-              disabled={!live}
-              onClick={() => setPanel({ kind: "command" })}
-            >
-              <Microphone />
-            </button>
+
+      <footer className="attention-footer">
+        {state.connection !== "live" && (
+          <p className="connection-status" role="status">
+            {connectionLabels[state.connection]}
+          </p>
+        )}
+        {state.error && (
+          <ErrorBanner message={state.error} dismiss={connection.clearError} />
+        )}
+        {dependencyError && !showDependencyErrorInline && (
+          <ErrorBanner
+            message={dependencyError}
+            dismiss={() => setDependencyEditGoal(null)}
+          />
+        )}
+        <CommandBar
+          command={command}
+          live={live}
+          replyName={replyTarget?.agent_name ?? replyTarget?.title}
+          exitReply={() => {
+            setReplyId(undefined);
+            command.setDraft("");
+            command.setSummary("");
+          }}
+        />
+      </footer>
+
+      {panel === "hidden" && (
+        <Panel title="Hidden items" close={closePanel}>
+          {hiddenItems.length === 0 ? (
+            <p className="empty">No hidden items.</p>
+          ) : (
+            <ul className="item-list">
+              {hiddenItems.map((item) => (
+                <li key={item.id}>
+                  <button
+                    className="text-control"
+                    type="button"
+                    onClick={() => {
+                      selectStreamItem(item.id);
+                      closePanel();
+                    }}
+                  >
+                    {item.title}
+                  </button>
+                </li>
+              ))}
+            </ul>
           )}
-          <button
-            type="button"
-            className="subtle"
-            aria-controls="mobile-stream"
-            onClick={sheet.toggleList}
-          >
-            {sheet.stop === "full" ? "Lens" : "List"}
-          </button>
-          {canvasLens && inspected && selection && sheet.stop !== "full" && (
-            <button
-              type="button"
-              className="subtle inspect-selection"
-              aria-label={`Inspect ${inspected.title}`}
-              aria-haspopup="dialog"
-              onClick={() => inspectItem(inspected.id)}
-            >
-              Inspect
-            </button>
-          )}
-        </nav>
-      )}
-      {!desktop && panel?.kind === "command" && capabilities.command && (
-        <Panel
-          title="Workspace command"
-          close={closePanel}
-          className="command-panel"
-        >
-          <CommandBar command={command} live={live} />
-          <button
-            type="button"
-            className="subtle command-guidance"
-            onClick={() => setPanel({ kind: "guidance" })}
-          >
-            Edit guidance
-          </button>
         </Panel>
       )}
-      {panel?.kind === "onboarding" && guide && (
-        <Panel
-          title="Set up your workspace"
-          className="onboarding-panel"
-          close={closePanel}
-        >
-          {guide}
+      {panel === "history" && (
+        <Panel title="Workspace history" close={closePanel}>
+          <StreamHistory
+            key={state.resetVersion}
+            projects={projects}
+            timezone={timezone}
+            live={live}
+            openIds={openHistoryIds}
+            pendingIds={pendingReopens}
+            close={closePanel}
+            reopen={(item_id, reason) =>
+              connection.mutate({
+                type: "REOPEN_ITEM",
+                input: { item_id, reason },
+              })
+            }
+          />
         </Panel>
       )}
-      {panel?.kind === "guidance" && state.settings && (
+      {panel === "guidance" && state.settings && (
         <Guidance
-          showExamples={panel.fromGuide}
           settings={state.settings}
           live={live}
           save={connection.save}
           close={closePanel}
         />
       )}
-      {panel?.kind === "settings" && (
-        <Settings
-          judgeAgreementRevision={state.judgeAgreementRevision}
-          focus={panel.screen}
-          openGuide={openGuide}
-          demoLoaded={state.onboarding?.hasDemoData ?? false}
-          projects={projects}
-          items={state.items}
-          timezone={timezone}
-          screenProps={screenProps}
-          options={options}
-          showModelKeyHint={showModelKeyHint}
-          resetVersion={state.resetVersion}
-          onSignOut={
-            signOut &&
-            (async () => {
-              await signOut();
-              onSessionExpired();
-            })
-          }
-          live={live}
-          save={connection.save}
+      {panel === "push" && (
+        <Panel title="Notifications" close={closePanel}>
+          <EnableNotifications
+            finish={(message) => {
+              command.setSummary(message);
+              closePanel();
+            }}
+          />
+        </Panel>
+      )}
+      {activePanel?.kind === "token-label" && (
+        <TokenLabel
           close={closePanel}
+          scope={activePanel.scope}
+          projectName={activePanel.project?.title ?? "Inbox"}
+          create={async (label) => {
+            const { scope, project } = activePanel;
+            await saveCommand(
+              {
+                type: "CREATE_TOKEN",
+                input: {
+                  label,
+                  scope,
+                  ...(project && { default_project_id: project.id }),
+                },
+              },
+              "",
+            );
+          }}
         />
       )}
-      {(panel?.kind === "goal" || panel?.kind === "child") && (
-        <QuickAdd
-          parent={panel.kind === "child" ? inspected : undefined}
-          parentMissing={panel.kind === "child" && !inspected}
-          projects={projects}
-          timezone={timezone}
-          live={live}
-          save={connection.save}
-          close={closePanel}
-        />
+      {activePanel?.kind === "token" && (
+        <Panel title="Token created" close={closePanel}>
+          <TokenSecret created={activePanel.created} />
+        </Panel>
+      )}
+      {activePanel?.kind === "confirm" && (
+        <Panel title={activePanel.title} close={closePanel}>
+          <ConfirmCommand
+            phrase={activePanel.phrase}
+            description={activePanel.description}
+            confirm={async () => {
+              command.setSummary(
+                await saveCommand(activePanel.mutation, activePanel.result),
+              );
+              closePanel();
+            }}
+          />
+        </Panel>
+      )}
+      {activePanel?.kind === "list" && (
+        <Panel title={activePanel.title} close={closePanel}>
+          {activePanel.rows.length ? (
+            <ul className="item-list">
+              {activePanel.rows.map(({ id, title, detail }) => (
+                <li key={id}>
+                  <strong>{title}</strong>
+                  {detail && <p className="muted">{detail}</p>}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">Nothing to show.</p>
+          )}
+        </Panel>
+      )}
+      {panel === "judge" && (
+        <Panel title="Shadow judge" close={closePanel}>
+          <ShadowJudgeAgreement revision={state.judgeAgreementRevision} />
+        </Panel>
+      )}
+      {panel === "host" && (
+        <Panel title="Settings" close={closePanel}>
+          {options?.extraSettingsScreens?.map(
+            ({ id, label, component: Screen }) => (
+              <section key={id} aria-label={label}>
+                <h3>{label}</h3>
+                <Screen {...screenProps} />
+              </section>
+            ),
+          )}
+        </Panel>
       )}
     </div>
   );
@@ -1088,7 +1324,7 @@ export function App({
           return;
         }
         if (!response.ok) throw new Error("Session lookup failed");
-        const { email, user, workspaceId, role, capabilities, managed } =
+        const { email, user, workspaceId, role, capabilities, managed, solv } =
           await response.json();
         const userEmail = user?.email ?? email;
         if (typeof userEmail !== "string" || typeof workspaceId !== "string")
@@ -1104,6 +1340,11 @@ export function App({
             workspaceId,
             role: typeof role === "string" ? role : "owner",
             managed: typeof managed === "boolean" ? managed : undefined,
+            solv:
+              typeof solv?.widgetUrl === "string" &&
+              typeof solv?.assistantKey === "string"
+                ? { widgetUrl: solv.widgetUrl, assistantKey: solv.assistantKey }
+                : undefined,
             capabilities: {
               command: capabilities?.command === true,
               transcription: capabilities?.transcription === true,
@@ -1126,6 +1367,7 @@ export function App({
           registry={registry}
           onSessionExpired={expireSession}
           onWorkspaceChange={onWorkspaceChange}
+          scopeSignal={scopeSignal}
         />
       </ApiContext.Provider>
     );

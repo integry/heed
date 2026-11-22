@@ -71,6 +71,16 @@ On each device, open **Settings → Notifications** and select **Enable notifica
 
 The command bar appears when a provider is configured. Heed sends the command, standing guidance, and a compact workspace view to that provider. Voice uses browser speech recognition where available, with Workers AI Whisper as a fallback when the `AI` binding is enabled. See [AI limits and costs](cost.md#optional-ai-usage).
 
+### Optional solv.chat assistant
+
+Set `SOLV_WIDGET_URL` to the full HTTPS URL of the widget script and `SOLV_ASSISTANT_KEY` to the assistant's public embed key. Put both values in the Worker's runtime variables and in the build environment. The build generates Static Assets security headers for the widget origin, so rebuild and redeploy when enabling the assistant or changing its origin. For local Wrangler development, put the values in `.dev.vars` and export the same two variables in the shell before running `npm run dev -- --local-protocol https`. Leave both unset to disable the widget.
+
+Use any [solv.chat engine](https://github.com/integry/solv.chat) that supports visitor tool credentials. You can self-host it with your own model credentials or use a hosted engine. Serve the widget script from the engine's origin and allow your Heed origin in the assistant's embed settings. In the assistant's tool settings, add your exact Heed URL ending in `/mcp` and configure that server to take the visitor's credential. Heed supplies a short-lived credential for the signed-in user's workspace. Enable the widget's side-panel layout for the full conversation, which users can open by typing `open chat`.
+
+Suggested assistant behaviour prompt
+
+> Help the user understand and update their Heed workspace. Use Heed's MCP tools to find items and read current guidance before acting. Change only what the user asks to change. Ask a short clarifying question if the item or requested change is ambiguous. Use page actions to bring the relevant item or view into focus. Keep replies brief and confirm what changed.
+
 ### Optional shadow judge
 
 The judge is off by default. Set both text variables and the secret to enable it.

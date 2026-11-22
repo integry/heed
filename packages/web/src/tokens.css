@@ -1,35 +1,63 @@
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("./fonts/bricolage-grotesque.woff2") format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Hanken Grotesk";
+  src: url("./fonts/hanken-grotesk.woff2") format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("./fonts/ibm-plex-mono.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
-  color-scheme: light dark;
-  --page: #f7f8f3;
-  --surface: #fff;
-  --rail: #f0f2eb;
-  --text: #222b22;
-  --muted: #526052;
-  --border: #d8ded3;
-  --accent: #254d37;
-  --accent-text: #fff;
-  --accent-soft: #e4eee1;
-  --focus: #397b55;
-  --live: #287346;
-  --attention: #854710;
-  --attention-soft: #faedda;
+  color-scheme: dark;
+  --page: #0d1422;
+  --surface: #141d30;
+  --ring: #26324c;
+  --ring-soft: #1a2439;
+  --text: #f1ece1;
+  --muted: #8e9ab3;
+  --faint: #79869f;
+  --attention: #ffb347;
+  --attention-soft: #382818;
+  --live: #5fd6c4;
+  --done: #79869f;
+  --border: #2a3550;
+  --display: "Bricolage Grotesque", "Trebuchet MS", sans-serif;
+  --body: "Hanken Grotesk", "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --rail: var(--surface);
+  --accent: var(--text);
+  --accent-text: var(--page);
+  --accent-soft: var(--ring);
+  --focus: var(--text);
   --radius: 10px;
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --page: #171d18;
-    --surface: #202821;
-    --rail: #1a231c;
-    --text: #edf2e8;
-    --muted: #b2c0b2;
-    --border: #3b493d;
-    --accent: #b4d9ba;
-    --accent-text: #18281e;
-    --accent-soft: #2b4233;
-    --focus: #8aca9e;
-    --live: #8bcfa0;
-    --attention: #ffd29e;
-    --attention-soft: #473322;
+    color-scheme: light;
+    --page: #f3efe6;
+    --surface: #e9e3d6;
+    --ring: #cfc7b6;
+    --ring-soft: #ddd6c7;
+    --text: #151b2b;
+    --muted: #5d6679;
+    --faint: #636b7a;
+    --attention: #a65000;
+    --attention-soft: #f0dfc9;
+    --live: #0f7f72;
+    --done: #696454;
+    --border: #cfc7b6;
   }
 }

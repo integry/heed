@@ -1,5 +1,3 @@
-import { DemoBadge } from "./item-markers";
-import { GuideEmpty } from "./Onboarding";
 import { useApi } from "./api";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -12,8 +10,6 @@ import type { Project } from "@heedwork/core";
 interface HistoryProps {
   projects: readonly Project[];
   timezone: string;
-  demoLoaded?: boolean;
-  openGuide?: () => void;
   live: boolean;
   openIds: ReadonlySet<string>;
   pendingIds: ReadonlySet<string>;
@@ -47,7 +43,6 @@ function HistoryRow({
           <p className="item-title">{item.title}</p>
           <p className="stream-meta">
             {project && <span>{project}</span>}
-            {item.demo === 1 && <DemoBadge />}
             <span>{item.status === "done" ? "Done" : "Cancelled"}</span>
             <time dateTime={item.history_at}>
               {date.toLocaleDateString(undefined, {
@@ -111,7 +106,6 @@ function HistoryResults({
   live,
   openIds,
   pendingIds,
-  openGuide,
   reopen,
 }: Omit<HistoryProps, "close"> & { query: string; project: string }) {
   const { getJson } = useApi();
@@ -212,11 +206,11 @@ function HistoryResults({
         </div>
       )}
       {!loading && !error && rows.length === 0 && !page?.next_before && (
-        <GuideEmpty className="stream-empty" openGuide={openGuide}>
+        <p className="stream-empty">
           {query || project
             ? "No history matches these filters."
             : "No completed or cancelled items yet."}
-        </GuideEmpty>
+        </p>
       )}
       {!loading && !error && page?.next_before && (
         <button
@@ -266,23 +260,28 @@ export function StreamHistory({ close, ...props }: HistoryProps) {
         <button className="subtle" type="submit">
           Search
         </button>
-        <label>
-          Project
-          <select
-            value={project}
-            onChange={(event) => setProject(event.target.value)}
-          >
-            <option value="">All projects</option>
-            {props.projects.map(({ id, name }) => (
-              <option key={id} value={id}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </label>
       </form>
+      <div
+        className="inline-actions history-projects"
+        role="group"
+        aria-label="Filter history by project"
+      >
+        {[{ id: "", name: "All projects" }, ...props.projects].map(
+          ({ id, name }) => (
+            <button
+              key={id}
+              type="button"
+              className="subtle"
+              aria-pressed={id === project}
+              onClick={() => setProject(id)}
+            >
+              {name}
+            </button>
+          ),
+        )}
+      </div>
       <HistoryResults
-        key={JSON.stringify([query, project, props.demoLoaded])}
+        key={JSON.stringify([query, project])}
         query={query}
         project={project}
         {...props}

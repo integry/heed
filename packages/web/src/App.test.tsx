@@ -10,13 +10,12 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
+  COMMAND_HELP,
   COMMAND_TEXT_LIMIT,
   RESET_WORKSPACE_CONFIRMATION,
-  WORKSPACE_RESET_CLOSE_CODE,
 } from "@heedwork/core";
 import type { Event, SocketMessage, SocketRequest } from "@heedwork/core";
 import { App } from "./App";
-import { onboardingCompletion } from "./Onboarding";
 import { mountApp, type MountedApp, type MountAppOptions } from "./index";
 import { lensRegistry, type Lens } from "./lenses";
 import {
@@ -24,7 +23,6 @@ import {
   cellPoint,
   RADAR_BANDS,
   RADAR_LABELS,
-  RADAR_RADIUS,
   radarViewport,
   type Cell,
 } from "./radar-geometry";
@@ -108,9 +106,7 @@ it.each([true, false])(
     expect(devLink?.getAttribute("href")).toBe(
       devLoginEnabled ? "/auth/dev-login" : undefined,
     );
-    expect(
-      screen.queryByRole("heading", { name: "Horizon Stream" }),
-    ).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Day stream" })).toBeNull();
   },
 );
 
@@ -195,14 +191,18 @@ it("mounts host settings and header slots and drops workspace state on switch", 
     ],
   });
   const header = await screen.findByRole("banner");
+  expect(within(header).getByText("launch").closest("details")?.open).toBe(
+    false,
+  );
+  openMenu();
   expect(within(header).getByText("Workspace user")).toBeTruthy();
   await waitFor(() => expect(TestSocket.current).not.toBe(previousSocket));
   const first = TestSocket.current;
   first.receive(snapshot);
-  const stream = screen.getByRole("region", { name: "Horizon Stream" });
+  const stream = screen.getByRole("complementary", { name: "Day stream" });
   expect(within(stream).getByRole("button", { name: goal.title })).toBeTruthy();
 
-  fireEvent.click(within(header).getByRole("button", { name: "Settings" }));
+  fireEvent.click(menuAction("Settings"));
   const settings = screen.getByRole("dialog", { name: "Settings" });
   expect(
     within(settings).getByRole("region", { name: "Workspace plan" }),
@@ -221,23 +221,26 @@ it("mounts host settings and header slots and drops workspace state on switch", 
   expect(screen.queryByText(/Configure Workers AI/)).toBeNull();
 
   fireEvent.click(within(settings).getByRole("button", { name: "Close" }));
-  fireEvent.click(within(header).getByRole("button", { name: "launch" }));
-  await screen.findByRole("button", { name: "research" });
+  fireEvent.click(menuAction("launch"));
+  await findMenuAction("research");
   expect(TestSocket.current).not.toBe(first);
   expect(first.readyState).toBe(3);
   TestSocket.current.receive({ ...snapshot, items: [] });
-  expect(screen.queryByRole("button", { name: goal.title })).toBeNull();
+  expect(
+    screen.queryAllByRole("button", { name: goal.title })[0] ?? null,
+  ).toBeNull();
 
   const second = TestSocket.current;
   act(() => app.onWorkspaceChange());
   await waitFor(() => expect(TestSocket.current).not.toBe(second));
   expect(second.readyState).toBe(3);
 
-  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  fireEvent.click(menuAction("Settings"));
   expect(
     await screen.findByText("user-1 / research / viewer / Team"),
   ).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  await sendCommand("sign out");
   expect(
     await screen.findByRole("heading", { name: "Host sign-in" }),
   ).toBeTruthy();
@@ -256,7 +259,7 @@ it.each([true, false])(
       Response.json({ email: "user@example.test", workspaceId: "default" }),
     );
     mountHost();
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    await sendHostCommand("list tokens");
     const socket = TestSocket.current;
     expect(
       (
@@ -270,7 +273,6 @@ it.each([true, false])(
     ).toBe(devLoginEnabled ? "/auth/dev-login" : undefined);
     expect(fetchSession.mock.calls.map(([path]) => path)).toEqual([
       "/api/me",
-      "/api/connected-apps",
       "/api/tokens",
       "/api/me",
     ]);
@@ -304,7 +306,7 @@ it("shows the host sign-in on a 401 from a host screen API call", async () => {
       },
     ],
   });
-  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  fireEvent.click(await findMenuAction("Settings"));
   fireEvent.click(screen.getByRole("button", { name: "Add member" }));
   expect(
     await screen.findByRole("heading", { name: "Host sign-in" }),
@@ -328,7 +330,6 @@ it("ignores an expiry lookup that finishes after a workspace switch", async () =
     .mockResolvedValueOnce(
       Response.json({ email: "user@example.test", workspaceId: "launch" }),
     )
-    .mockResolvedValueOnce(Response.json([]))
     .mockResolvedValueOnce(new Response(null, { status: 401 }))
     .mockResolvedValueOnce(expired)
     .mockResolvedValueOnce(
@@ -336,9 +337,9 @@ it("ignores an expiry lookup that finishes after a workspace switch", async () =
     );
 
   const app = mountHost({ headerStart: ({ workspaceId }) => workspaceId });
-  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  await sendHostCommand("list tokens");
   await waitFor(() => expect(readConfig).toHaveBeenCalledOnce());
-  const lookupSignal = fetchSession.mock.calls[3][1].signal as AbortSignal;
+  const lookupSignal = fetchSession.mock.calls[2][1].signal as AbortSignal;
 
   act(() => app.onWorkspaceChange());
   await screen.findByText("research");
@@ -352,87 +353,174 @@ it("ignores an expiry lookup that finishes after a workspace switch", async () =
   expect(socket.readyState).toBe(TestSocket.OPEN);
 });
 
-it.each([true, false])(
-  "applies key management to the command hint when managed is %s",
-  async (managed) => {
-    fetchSession.mockImplementation(async () =>
-      Response.json({
-        email: "user@example.test",
-        workspaceId: "default",
-        managed,
-      }),
-    );
-    mountHost({ hideScreens: ["model-keys", "tokens"] });
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    expect(screen.queryAllByText(/Configure Workers AI/)).toHaveLength(
-      managed ? 0 : 1,
-    );
-    expect(
-      within(screen.getByRole("dialog")).queryByRole("heading", {
-        name: "Model keys",
-      }),
-    ).toBeNull();
-  },
-);
+function openMenu() {
+  const summary = screen.getByLabelText("Heed workspace menu");
+  const menu = summary.closest("details")!;
+  if (!menu.open) fireEvent.click(summary);
+}
 
-it.each([
-  {
-    open: "+ Goal",
-    region: "Add a goal",
-    field: "Title",
-    submit: "Add goal",
-    type: "ADD_ITEM",
-  },
-  {
-    open: "Settings",
-    region: "Projects",
-    field: "New project name",
-    submit: "Create project",
-    type: "CREATE_PROJECT",
-  },
-  {
-    open: "Settings",
-    region: "API tokens",
-    field: "Label",
-    submit: "Create token",
-    type: "CREATE_TOKEN",
-  },
-])(
-  "shows the limit refusal inline for $submit",
-  async ({ open, region, field, submit, type }) => {
-    await openWorkspace();
-    fireEvent.click(screen.getByRole("button", { name: open }));
-    const form = within(
-      screen.getByRole(open === "Settings" ? "region" : "dialog", {
-        name: region,
-      }),
-    );
-    fireEvent.change(await form.findByLabelText(field), {
-      target: { value: "Launch" },
-    });
-    fireEvent.click(form.getByRole("button", { name: submit }));
-    const socket = TestSocket.current;
-    expect(socket.latestRequest().type).toBe(type);
-    await act(async () =>
-      socket.receive({
-        seq: 2,
-        type: "ERROR",
-        requestId: socket.latestRequest().requestId,
-        error: {
-          code: "limit_exceeded",
-          message: "Creation refused",
-          reason: "This workspace has reached its plan limit.",
-        },
-      }),
-    );
-    const alert = form.getByRole("alert");
-    expect(alert.textContent).toBe(
-      "This workspace has reached its plan limit.",
-    );
-    expect(screen.getAllByRole("alert")).toEqual([alert]);
-    expect(form.getByDisplayValue("Launch")).toBeTruthy();
-  },
-);
+function menuAction(name: string) {
+  openMenu();
+  return screen.getByRole("button", { name });
+}
+
+async function findMenuAction(name: string) {
+  await screen.findByRole("banner");
+  return menuAction(name);
+}
+
+function commandInput() {
+  return screen.getByRole<HTMLInputElement>("textbox", {
+    name: "Workspace command",
+  });
+}
+
+async function sendCommand(text: string) {
+  await act(async () => {
+    fireEvent.change(commandInput(), { target: { value: text } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  });
+}
+
+async function sendHostCommand(text: string) {
+  await screen.findByRole("banner");
+  TestSocket.current.receive(snapshot);
+  await sendCommand(text);
+}
+
+function switchLens(name: string) {
+  const key = { Radar: "1", Board: "2", Detail: "2", Treemap: "3", List: "4" }[
+    name
+  ];
+  fireEvent.keyDown(document.body, { key });
+}
+
+it("hands free text to the configured widget and exposes four view-only page actions", async () => {
+  const send = vi.fn().mockResolvedValue({ text: "Start with the release." });
+  const open = vi.fn();
+  const setToolCredential = vi.fn();
+  type RunAction = (input: Record<string, unknown>) => { ok: boolean };
+  const actions = new Map<string, RunAction>();
+  vi.stubGlobal("solv", {
+    actions: {
+      register: ({ name, run }: { name: string; run: RunAction }) =>
+        actions.set(name, run),
+      unregister: (name: string) => actions.delete(name),
+    },
+  });
+  customElements.define(
+    "solv-chat",
+    class extends HTMLElement {
+      setToolCredential = setToolCredential;
+      send = send;
+      open = open;
+    },
+  );
+  const solv = {
+    widgetUrl: "https://assistant.example.test/widget.js",
+    assistantKey: "release",
+  };
+  let workspaceId = "launch";
+  fetchSession.mockImplementation(async (path: string) => {
+    if (path === "/api/me")
+      return Response.json({ workspaceId, email: "person@example.test", solv });
+    if (path === "/api/assistant-token")
+      return Response.json({
+        access_token: workspaceId,
+        expires_in: 900,
+        workspace_id: workspaceId,
+        user_id: "person@example.test",
+      });
+    return Response.json([]);
+  });
+  const app = mountHost();
+  await screen.findByRole("banner");
+  const initialSocket = TestSocket.current;
+  initialSocket.receive(snapshot);
+  const script = document.querySelector(`script[src="${solv.widgetUrl}"]`)!;
+  await act(async () => script.dispatchEvent(new Event("load")));
+  expect(setToolCredential).toHaveBeenCalledWith(
+    new URL("/mcp", location.href).href,
+    "launch",
+  );
+  expect([...actions.keys()]).toEqual([
+    "select_item",
+    "zoom_band",
+    "switch_lens",
+    "open_guidance_editor",
+  ]);
+  const apply = (name: string, input: Record<string, unknown> = {}) => {
+    act(() => expect(actions.get(name)?.(input)).toEqual({ ok: true }));
+  };
+  const socketMessages = initialSocket.send.mock.calls.length;
+  apply("select_item", { item_id: goal.id });
+  expect(
+    within(screen.getByRole("region", { name: "Selected item" })).getByRole(
+      "heading",
+      { name: goal.title },
+    ),
+  ).toBeTruthy();
+  apply("switch_lens", { lens: "board" });
+  expect(
+    screen.getByRole("table", { name: "Projects by time band" }),
+  ).toBeTruthy();
+  apply("zoom_band", { band: "today" });
+  expect(
+    screen.getByRole("button", { name: "Today", expanded: true }),
+  ).toBeTruthy();
+  apply("open_guidance_editor");
+  expect(screen.getByRole("dialog", { name: "Guidance" })).toBeTruthy();
+  fireEvent.click(
+    within(screen.getByRole("dialog", { name: "Guidance" })).getByRole(
+      "button",
+      { name: "Close" },
+    ),
+  );
+  expect(initialSocket.send).toHaveBeenCalledTimes(socketMessages);
+
+  await sendCommand("What should I focus on?");
+  expect(screen.getByRole("status").textContent).toBe(
+    "Start with the release.",
+  );
+  expect(send).toHaveBeenCalledExactlyOnceWith("What should I focus on?");
+  expect(open).not.toHaveBeenCalled();
+  await sendCommand("open chat");
+  expect(open).toHaveBeenCalledExactlyOnceWith({ mode: "side", focus: true });
+
+  const previousWidget = document.querySelector("solv-chat");
+  workspaceId = "research";
+  act(() => app.onWorkspaceChange());
+  await waitFor(() =>
+    expect(setToolCredential).toHaveBeenLastCalledWith(
+      new URL("/mcp", location.href).href,
+      "research",
+    ),
+  );
+  expect(previousWidget?.isConnected).toBe(false);
+  expect(
+    document.querySelectorAll('script[src*="assistant.example.test"]'),
+  ).toHaveLength(1);
+  act(() => app.unmount());
+  expect(actions.size).toBe(0);
+  script.remove();
+});
+
+it("keeps the existing free-text response and never loads a widget when unconfigured", async () => {
+  await openWorkspace();
+  await sendCommand("open chat");
+  expect(screen.getByText(COMMAND_HELP)).toBeTruthy();
+  expect(document.querySelector("solv-chat")).toBeNull();
+  expect(document.querySelector("script[src]")).toBeNull();
+  expect(fetchSession.mock.calls.map(([path]) => path)).not.toContain(
+    "/api/assistant-token",
+  );
+});
+
+function openGraph() {
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  fireEvent.click(radar.getByRole("button", { name: "Dependencies" }));
+}
 
 async function openWorkspace(
   registry?: readonly [Lens, ...Lens[]],
@@ -474,8 +562,6 @@ async function openCommandBar(...results: Response[]) {
   render(<App />);
   await waitFor(() => expect(TestSocket.current).not.toBe(previousSocket));
   TestSocket.current.receive(snapshot);
-  const open = screen.queryByRole("button", { name: "Open command bar" });
-  if (open) fireEvent.click(open);
   const draft = screen.getByRole<HTMLTextAreaElement>("textbox", {
     name: "Workspace command",
   });
@@ -543,6 +629,135 @@ it("keeps each clarification reply once, including when retrying a failed submis
   ]);
 });
 
+it.each([true, false])(
+  "continues a model clarification with a built-in date (item selected: %s)",
+  async (selected) => {
+    const original = "Could you arrange the billing review?";
+    const question = "Which date should I use?";
+    const { send, submit } = await openCommandBar(
+      Response.json({
+        summary: question,
+        needsClarification: true,
+        changes: [],
+      }),
+      Response.json({
+        summary: "The review is scheduled.",
+        needsClarification: false,
+        changes: [],
+      }),
+    );
+    if (selected) {
+      const field = within(
+        screen.getByRole("region", { name: "Attention field" }),
+      );
+      fireEvent.click(field.getByRole("button", { name: goal.title }));
+    }
+    send(original);
+    await screen.findByText(question);
+    send("Friday");
+    await screen.findByText("The review is scheduled.");
+    expect(submit.mock.calls).toEqual([
+      [original],
+      [
+        `Original request: ${original}\nClarifying question: ${question}\nUser's answer: Friday`,
+      ],
+    ]);
+    expect(TestSocket.current.send).not.toHaveBeenCalled();
+  },
+);
+
+it("keeps the model question when a handoff answer is acknowledged", async () => {
+  const original = "Could you arrange the billing review?";
+  const question = "Which date should I use?";
+  const { send, submit } = await openCommandBar(
+    Response.json({ summary: question, needsClarification: true, changes: [] }),
+    Response.json({
+      summary: "Scheduled.",
+      needsClarification: false,
+      changes: [],
+    }),
+  );
+  const item = { ...goal, handoff: 1, handoff_options: '["Staging"]' } as const;
+  const socket = TestSocket.current;
+  socket.receive({ type: "ITEM_UPSERT", seq: 2, item });
+  send(original);
+  await screen.findByText(question);
+  const bubble = within(
+    screen.getByRole("region", { name: `Question about ${item.title}` }),
+  );
+  expect(
+    bubble.getByRole<HTMLButtonElement>("button", { name: "Type a reply" })
+      .disabled,
+  ).toBe(true);
+  fireEvent.click(bubble.getByRole("button", { name: "Staging" }));
+  expect(socket.latestRequest()).toMatchObject({
+    type: "ANSWER_HANDOFF",
+    input: { item_id: item.id, text: "Staging" },
+  });
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 3,
+    item: { ...item, handoff: 0 },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 4,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  expect(screen.getByText(question)).toBeTruthy();
+  send("Friday");
+  await screen.findByText("Scheduled.");
+  expect(submit.mock.lastCall).toEqual([
+    `Original request: ${original}\nClarifying question: ${question}\nUser's answer: Friday`,
+  ]);
+});
+
+it("runs a standalone built-in after New command cancels a clarification", async () => {
+  const question = "Which date should I use?";
+  const { send, submit } = await openCommandBar(
+    Response.json({ summary: question, needsClarification: true, changes: [] }),
+  );
+  send("Could you arrange the billing review?");
+  await screen.findByText(question);
+  fireEvent.click(screen.getByRole("button", { name: "New command" }));
+  send("zoom into today");
+  await screen.findByText(/^Today split/);
+  expect(submit).toHaveBeenCalledTimes(1);
+});
+
+it("starts item creation after a pending model command offers clarification", async () => {
+  const question = "Which date should I use?";
+  const { send, submit } = await openCommandBar(
+    Response.json({ summary: question, needsClarification: true, changes: [] }),
+  );
+  send("Could you arrange the billing review?");
+  const add = menuAction("Add item") as HTMLButtonElement;
+  expect(add.disabled).toBe(true);
+  await screen.findByText(question);
+
+  fireEvent.click(add);
+  expect(screen.queryByText(question)).toBeNull();
+  expect(commandInput().value).toBe("add ");
+  expect(document.activeElement).toBe(commandInput());
+  await sendCommand("add Check billing logs");
+
+  const socket = TestSocket.current;
+  expect(socket.latestRequest()).toMatchObject({
+    type: "ADD_ITEM",
+    input: { title: "Check billing logs" },
+  });
+  expect(submit).toHaveBeenCalledTimes(1);
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 2,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+});
+
 it("starts a fresh command after an ordinary result ending in a question mark", async () => {
   const summary = 'No item has the title "Ready?" — could it be archived?';
   const { draft, send, submit } = await openCommandBar(
@@ -554,12 +769,14 @@ it("starts a fresh command after an ordinary result ending in a question mark", 
     }),
   );
 
-  send("Find my Ready? item");
+  send("Where is my Ready? item?");
   await screen.findByText(summary);
   expect(draft.placeholder).toBe("Tell Heed what to change…");
-  send("Move the billing review to Today");
+  send("Could you move the billing review to Today?");
   await screen.findByText("Moved the review to Today.");
-  expect(submit.mock.lastCall).toEqual(["Move the billing review to Today"]);
+  expect(submit.mock.lastCall).toEqual([
+    "Could you move the billing review to Today?",
+  ]);
 });
 
 it("keeps an oversized spoken clarification local and lets the user restate the request", async () => {
@@ -597,7 +814,7 @@ it("keeps an oversized spoken clarification local and lets the user restate the 
   fireEvent.click(screen.getByRole("button", { name: "Hold to speak" }));
   await waitFor(() => expect(draft.value).toBe("Billing"));
   send();
-  expect(screen.getByRole("alert").textContent).toContain(
+  expect((await screen.findByRole("alert")).textContent).toContain(
     "restate the complete request",
   );
   expect(submit.mock.calls).toEqual([[original]]);
@@ -618,7 +835,7 @@ const notificationItem = {
   status: "done",
   completed_at: "2024-03-01T12:00:00Z",
 } as const;
-const inspectorRegion = { name: "Inspector" };
+const selectedRegion = { name: "Selected item" };
 
 function missingItem() {
   return Response.json(
@@ -634,6 +851,36 @@ async function openNotificationItem(lookup: () => Response) {
   );
   return TestSocket.current;
 }
+
+it.each(["blocked", "done", "cancelled"])(
+  "shows only open handoffs for off-canvas notification items (status: %s)",
+  async (status) => {
+    const item = {
+      ...notificationItem,
+      status,
+      handoff: 1,
+      handoff_note: "Which alerts should we keep?",
+      handoff_options: '["Payment failures"]',
+    };
+    await openNotificationItem(() => Response.json(item));
+    await screen.findByRole("heading", { name: item.title });
+    const bubble = screen.queryByRole("region", {
+      name: `Question about ${item.title}`,
+    });
+    if (status === "blocked") {
+      expect(within(bubble!).getByText(item.handoff_note)).toBeTruthy();
+      expect(
+        within(bubble!).getByRole("button", { name: "Payment failures" }),
+      ).toBeTruthy();
+    } else {
+      expect(bubble).toBeNull();
+      const socket = TestSocket.current;
+      await sendCommand("Please summarize last quarter");
+      expect(screen.getByText(COMMAND_HELP)).toBeTruthy();
+      expect(socket.send).not.toHaveBeenCalled();
+    }
+  },
+);
 
 it("discards the notification fallback when a reopened item enters the canvas", async () => {
   const lookup = vi
@@ -653,12 +900,12 @@ it("discards the notification fallback when a reopened item enters the canvas", 
   expect(lookup).toHaveBeenCalledTimes(1);
 
   socket.receive({ type: "ITEM_REMOVE", seq: 3, item_id: reopened.id });
-  expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+  expect(screen.queryByRole("region", selectedRegion)).toBeNull();
   await waitFor(() => expect(lookup).toHaveBeenCalledTimes(2));
-  expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+  expect(screen.queryByRole("region", selectedRegion)).toBeNull();
 });
 
-it("closes the notification inspector when an off-canvas item is removed", async () => {
+it("closes the notification summary when an off-canvas item is removed", async () => {
   const lookup = vi
     .fn(missingItem)
     .mockReturnValueOnce(Response.json(notificationItem));
@@ -666,9 +913,9 @@ it("closes the notification inspector when an off-canvas item is removed", async
   await screen.findByRole("heading", { name: notificationItem.title });
 
   socket.receive({ type: "ITEM_REMOVE", seq: 2, item_id: notificationItem.id });
-  expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+  expect(screen.queryByRole("region", selectedRegion)).toBeNull();
   await waitFor(() => expect(lookup).toHaveBeenCalledTimes(2));
-  expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+  expect(screen.queryByRole("region", selectedRegion)).toBeNull();
 });
 
 it("ignores a notification lookup still parsing its response when the item is removed", async () => {
@@ -687,7 +934,7 @@ it("ignores a notification lookup still parsing its response when the item is re
   socket.receive({ type: "ITEM_REMOVE", seq: 2, item_id: notificationItem.id });
   await waitFor(() => expect(lookup).toHaveBeenCalledTimes(2));
   await act(async () => finishBody());
-  expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+  expect(screen.queryByRole("region", selectedRegion)).toBeNull();
 });
 
 it.each([false, true])(
@@ -708,60 +955,21 @@ it.each([false, true])(
       JSON.stringify({ type: "GET_SNAPSHOT" }),
     );
     socket.receive({ ...snapshot, seq: 4 });
-    expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+    expect(screen.queryByRole("region", selectedRegion)).toBeNull();
     await waitFor(() => expect(lookup).toHaveBeenCalledTimes(2));
     if (exists)
       expect(
         await screen.findByRole("heading", { name: "Updated alerts" }),
       ).toBeTruthy();
-    else
-      expect(screen.queryByRole("complementary", inspectorRegion)).toBeNull();
+    else expect(screen.queryByRole("region", selectedRegion)).toBeNull();
   },
 );
 
-it("cross-highlights nested and banded rows, and hides them when the project is toggled", async () => {
-  localStorage.setItem("heed.lens", "list");
-  await openWorkspace();
-  const list = within(screen.getByRole("region", { name: "List" }));
-  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
-  const today = within(
-    stream.getByRole("heading", { name: "Today" }).parentElement!,
-  );
-  expect(today.getByRole("button", { name: goal.title })).toBeTruthy();
-  expect(today.queryByRole("button", { name: child.title })).toBeNull();
-  fireEvent.click(today.getByRole("button", { name: `Expand ${goal.title}` }));
-  const streamRow = today.getByRole("button", { name: child.title });
-  expect(today.getByRole("button", { name: tomorrow.title })).toBeTruthy();
-  const lensRow = list.getByRole("button", { name: new RegExp(child.title) });
-  expect(
-    stream.getByRole("heading", { name: "Tomorrow" }).parentElement
-      ?.textContent,
-  ).toContain(tomorrow.title);
-  fireEvent.click(streamRow);
-  expect(lensRow.getAttribute("aria-pressed")).toBe("true");
-  fireEvent.click(list.getByRole("button", { name: new RegExp(goal.title) }));
-  expect(
-    today
-      .getByRole("button", { name: goal.title })
-      .getAttribute("aria-pressed"),
-  ).toBe("true");
-
-  const chip = screen.getByRole("button", { name: "Inbox" });
-  fireEvent.click(chip);
-  expect(chip.getAttribute("aria-pressed")).toBe("false");
-  expect(screen.queryAllByText(child.title)).toEqual([]);
-  expect(JSON.parse(TestSocket.current.send.mock.lastCall![0])).toMatchObject({
-    type: "UPDATE_PROJECT",
-    project_id: project.id,
-    input: { hidden: 1 },
-  });
-});
-
-it("keeps fall-back completions in Completed earlier today until workspace midnight", async () => {
+it("keeps fall-back completions in Done until workspace midnight", async () => {
   const completed_at = "2026-11-01T04:05:00Z";
   vi.mocked(Date.now).mockReturnValue(Date.parse(completed_at));
-  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
+  switchLens("List");
   TestSocket.current.receive({
     ...snapshot,
     seq: 2,
@@ -780,12 +988,11 @@ it("keeps fall-back completions in Completed earlier today until workspace midni
   });
 
   const list = within(screen.getByRole("region", { name: "List" }));
-  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+  const stream = within(
+    screen.getByRole("complementary", { name: "Day stream" }),
+  );
   const doneToday = () =>
-    within(
-      stream.getByRole("heading", { name: /Completed earlier today/ })
-        .parentElement!,
-    );
+    within(stream.getByRole("heading", { name: "Done" }).parentElement!);
   const advanceTo = (time: string) => {
     vi.mocked(Date.now).mockReturnValue(Date.parse(time));
     fireEvent(document, new Event("visibilitychange"));
@@ -801,29 +1008,15 @@ it("keeps fall-back completions in Completed earlier today until workspace midni
   fireEvent.click(row);
   expect(row.getAttribute("aria-pressed")).toBe("true");
 
-  const attention = stream.getByRole("button", { name: "Needs me 1" });
-  fireEvent.click(attention);
-  expect(doneToday().getByRole("button", { name: goal.title })).toBeTruthy();
   expect(doneToday().getByRole("button", { name: child.title })).toBeTruthy();
 
-  const projectToggle = screen.getByRole("button", { name: project.name });
-  fireEvent.click(projectToggle);
-  expect(
-    stream.queryByRole("heading", { name: /Completed earlier today/ }),
-  ).toBeNull();
-  fireEvent.click(projectToggle);
-  fireEvent.click(attention);
-  expect(doneToday().getByRole("button", { name: goal.title })).toBeTruthy();
-
   advanceTo("2026-11-02T05:00:00Z");
-  expect(
-    stream.queryByRole("heading", { name: /Completed earlier today/ }),
-  ).toBeNull();
+  expect(stream.queryByRole("heading", { name: "Done" })).toBeNull();
 });
 
 it("shows a nested List item as blocked by a hidden item until it completes", async () => {
-  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
+  switchLens("List");
   const socket = TestSocket.current;
   const blocker = { ...goal, id: "blocker", hidden: 1 as const };
   const dependency = { item_id: tomorrow.id, blocked_by_id: blocker.id };
@@ -849,8 +1042,8 @@ it("shows a nested List item as blocked by a hidden item until it completes", as
 });
 
 it("updates List status when a dependency is added or removed live", async () => {
-  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
+  switchLens("List");
   const socket = TestSocket.current;
   const dependency = { item_id: goal.id, blocked_by_id: tomorrow.id };
   const list = within(screen.getByRole("region", { name: "List" }));
@@ -866,7 +1059,7 @@ it("updates List status when a dependency is added or removed live", async () =>
   expect(row.getByText("Queued")).toBeTruthy();
 });
 
-it("switches registered lenses, retains the selection and remembers the lens on reload", async () => {
+it("switches registered lenses, retains the selection and returns to radar on reload", async () => {
   const detail: Lens = {
     id: "detail",
     label: "Detail",
@@ -874,19 +1067,18 @@ it("switches registered lenses, retains the selection and remembers the lens on 
   };
   const registry = [lensRegistry[0], detail] as const;
   const view = await openWorkspace(registry);
-  fireEvent.click(screen.getByRole("button", { name: `Expand ${goal.title}` }));
   fireEvent.click(
-    within(screen.getByRole("region", { name: "Horizon Stream" })).getByRole(
+    within(screen.getByRole("complementary", { name: "Day stream" })).getByRole(
       "button",
       { name: child.title },
     ),
   );
-  fireEvent.click(screen.getByRole("tab", { name: "Detail" }));
+  switchLens("Detail");
   expect(screen.getByText("Selected item child")).toBeTruthy();
   view.unmount();
 
   await openWorkspace(registry);
-  expect(screen.getByRole("heading", { name: "Detail" })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Attention field" })).toBeTruthy();
 });
 
 it("requests one replacement snapshot on a sequence gap", async () => {
@@ -902,7 +1094,11 @@ it("requests one replacement snapshot on a sequence gap", async () => {
   );
   socket.receive({ ...snapshot, seq: 5, items: [] });
   expect(screen.queryByRole("status")).toBeNull();
-  expect(screen.getByText("No items in this view.")).toBeTruthy();
+  expect(
+    screen.getByRole("heading", {
+      name: "Nothing needs you. Nothing is scheduled.",
+    }),
+  ).toBeTruthy();
 });
 
 it("sends the browser timezone only when the workspace has none", async () => {
@@ -929,7 +1125,7 @@ it("uses fresh timestamps when a heartbeat arrives between minute ticks", async 
       last_heartbeat_at: "2024-04-03T12:00:19Z",
     },
   });
-  expect(screen.getByText("1 agent live")).toBeTruthy();
+  expect(screen.getByText(/1 agent working/)).toBeTruthy();
 });
 
 it("reconnects with backoff and accepts a fresh connection sequence", async () => {
@@ -949,7 +1145,11 @@ it("reconnects with backoff and accepts a fresh connection sequence", async () =
     await act(() => vi.advanceTimersByTimeAsync(1));
     expect(TestSocket.current).not.toBe(second);
     TestSocket.current.receive({ ...snapshot, items: [] });
-    expect(screen.getByText("No items in this view.")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", {
+        name: "Nothing needs you. Nothing is scheduled.",
+      }),
+    ).toBeTruthy();
     expect(screen.queryByRole("status")).toBeNull();
   } finally {
     vi.useRealTimers();
@@ -958,8 +1158,10 @@ it("reconnects with backoff and accepts a fresh connection sequence", async () =
 
 it("defaults to Radar, opens a goal, and cross-highlights and resizes its children", async () => {
   await openWorkspace();
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
-  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  const stream = within(
+    screen.getByRole("complementary", { name: "Day stream" }),
+  );
   const socket = TestSocket.current;
   socket.receive({
     type: "DEPENDENCY_ADD",
@@ -986,7 +1188,6 @@ it("defaults to Radar, opens a goal, and cross-highlights and resizes its childr
       .querySelector(".radar-edge"),
   ).toBeTruthy();
 
-  fireEvent.click(stream.getByRole("button", { name: `Expand ${goal.title}` }));
   fireEvent.click(stream.getByRole("button", { name: child.title }));
   expect(
     radar
@@ -1058,14 +1259,6 @@ it.each([
     expect(Number(outer.getAttribute("r")) * 2 * viewport.scale).toBeCloseTo(
       Math.min(chartWidth, chartHeight) - 50,
     );
-    const projectLabel = svg.querySelector(".radar-project-label textPath")!;
-    const arc = document.getElementById(
-      projectLabel.getAttribute("href")!.slice(1),
-    )!;
-    expect(
-      Number(arc.getAttribute("d")!.split(" A ")[1].split(" ")[0]),
-    ).toBeGreaterThan(RADAR_RADIUS);
-
     function expectLabels(zoom: number) {
       const labels = [
         ...svg.querySelectorAll(
@@ -1073,7 +1266,7 @@ it.each([
         ),
       ];
       expect(labels).toHaveLength(
-        5 + svg.querySelectorAll(".radar-bubble-title").length,
+        4 + svg.querySelectorAll(".radar-bubble-title").length,
       );
       expect(
         labels.some((label) => label.classList.contains("radar-bubble-title")),
@@ -1133,7 +1326,7 @@ it("renders packed bubbles and hides a ring label when its reservation fills the
       layout_pos: '{"radar":{"angle":0.5,"radius":0.5}}',
     })),
   });
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
   const labels = () =>
     [...container.querySelectorAll(".radar-band-label")].map(
       (label) => label.textContent,
@@ -1156,7 +1349,9 @@ it.each(RADAR_BANDS)(
   "opens and closes the %s split with mouse and keyboard",
   async (band) => {
     const { container } = await openWorkspace();
-    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
     const label = radar.getByRole("button", { name: RADAR_LABELS[band] });
     const expanded = () => label.getAttribute("aria-expanded");
     expect(expanded()).toBe("false");
@@ -1216,7 +1411,7 @@ it("keeps bubble angles through a split and marks only today's local hard times"
     items: [...tasks],
     settings: { ...snapshot.settings, timezone: "America/Los_Angeles" },
   });
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
   const coordinates = () =>
     [...container.querySelectorAll(".radar-node")].map((node) =>
       node
@@ -1266,7 +1461,7 @@ it("keeps two saved center positions separated in the Needs me split", async () 
       layout_pos: '{"radar":{"angle":0.25,"radius":0}}',
     })),
   });
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
 
   fireEvent.click(radar.getByRole("button", { name: "Today" }));
   const innerRingEdge = Number(
@@ -1319,7 +1514,7 @@ it("uses manual order and priority in Next when saved radii run in reverse", asy
       layout_pos: JSON.stringify({ radar: { angle: 0.35, radius } }),
     })),
   });
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
   const distances = () =>
     tasks.map(({ title }) => {
       const { x, y } = radarBubbleGeometry(
@@ -1366,7 +1561,7 @@ it("keeps manually ordered Next bubbles separated at their saved angles", async 
       layout_pos: JSON.stringify({ radar: positions[index] }),
     })),
   });
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
   const geometry = () =>
     titles.map((name) =>
       radarBubbleGeometry(radar.getByRole("button", { name })),
@@ -1467,7 +1662,9 @@ it.each([
       }),
     } as const;
     await openWorkspace(undefined, { ...snapshot, items: [ghost, queued] });
-    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
     function expectSeparated() {
       const ghostButton = radar.getByRole("button", { name: ghost.title });
       expect(ghostButton.getAttribute("data-ghost")).toBe("true");
@@ -1513,7 +1710,7 @@ it("keeps bubbles separated when a split shifts another band inward", async () =
       }),
     })),
   });
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
   const geometry = () =>
     titles.map((name) =>
       radarBubbleGeometry(radar.getByRole("button", { name })),
@@ -1530,9 +1727,9 @@ it("keeps bubbles separated when a split shifts another band inward", async () =
   );
 });
 
-it("keeps radar positions on status updates and filters attention and completed ghosts", async () => {
+it("keeps radar positions on status updates and toggles completed ghosts", async () => {
   await openWorkspace();
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
   const socket = TestSocket.current;
   const finished = {
     ...goal,
@@ -1569,13 +1766,9 @@ it("keeps radar positions on status updates and filters attention and completed 
   expect(marker()).toBe(before);
   const ghost = radar.getByRole("button", { name: finished.title });
   expect(ghost.getAttribute("data-ghost")).toBe("true");
-  fireEvent.click(
-    radar.getByRole("checkbox", { name: "Show completed ghosts" }),
-  );
+  fireEvent.click(menuAction("Hide completed ghosts"));
   expect(radar.queryByRole("button", { name: finished.title })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Needs me 1" }));
-  // Needs me keeps ancestors of attention items visible in the lens.
-  expect(radar.queryByRole("button", { name: tomorrow.title })).toBeNull();
+
   fireEvent.click(radar.getByRole("button", { name: goal.title }));
   expect(radar.getByRole("button", { name: child.title })).toBeTruthy();
 });
@@ -1628,7 +1821,9 @@ it.each([
       items: [task],
       settings: { ...snapshot.settings, timezone: "America/Los_Angeles" },
     });
-    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
     fireEvent.click(radar.getByRole("button", { name: "This week" }));
     const subring = container.querySelector(`[data-day="${day}"]`)!;
     expect(subring.textContent).toBe(weekday);
@@ -1669,11 +1864,10 @@ it.each(["goal", "overview", "new ancestor schedule", "no ancestor schedule"])(
       scheduled_on: initiallyUnscheduled ? goal.scheduled_on : null,
     };
     await openWorkspace(undefined, { ...snapshot, items: [parent, task] });
-    const radar = within(screen.getByRole("region", { name: "Radar" }));
-    if (overview)
-      fireEvent.click(
-        radar.getByRole("checkbox", { name: "Show completed ghosts" }),
-      );
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
+    if (overview) fireEvent.click(menuAction("Hide completed ghosts"));
     else fireEvent.click(radar.getByRole("button", { name: parent.title }));
 
     const release = startRadarRingDrop(
@@ -1726,7 +1920,9 @@ it.each(["overview", "goal"])(
       ...snapshot,
       items: overview ? tasks : [parent, ...tasks],
     });
-    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
     if (!overview)
       fireEvent.click(radar.getByRole("button", { name: parent.title }));
     const socket = TestSocket.current;
@@ -1796,7 +1992,9 @@ it.each(["overview", "goal"])(
       ...snapshot,
       items: overview ? [task, overdue] : [goal, task, overdue],
     });
-    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
     if (!overview)
       fireEvent.click(radar.getByRole("button", { name: goal.title }));
     const socket = TestSocket.current;
@@ -1856,7 +2054,7 @@ it("checks a Radar drop after a time becomes due between clock ticks", async () 
     time_at: "2024-04-04T00:00:07Z",
   } as const;
   await openWorkspace(undefined, { ...snapshot, items: [task] });
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
   const release = startRadarRingDrop(
     radar.getByRole("button", { name: task.title }),
     true,
@@ -1886,20 +2084,20 @@ it.each(["Radar", "List"])(
       ...snapshot,
       items: [goal, middle, task],
     });
-    const radar = within(screen.getByRole("region", { name: "Radar" }));
-    fireEvent.click(
-      radar.getByRole("checkbox", { name: "Show completed ghosts" }),
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
     );
+    fireEvent.click(menuAction("Hide completed ghosts"));
     if (source === "List") {
-      fireEvent.click(screen.getByRole("tab", { name: "List" }));
+      switchLens("List");
       const list = within(screen.getByRole("region", { name: "List" }));
       fireEvent.click(
         list.getByRole("button", { name: new RegExp(task.title) }),
       );
-      fireEvent.click(screen.getByRole("tab", { name: "Radar" }));
+      switchLens("Radar");
     } else {
       const stream = within(
-        screen.getByRole("region", { name: "Horizon Stream" }),
+        screen.getByRole("complementary", { name: "Day stream" }),
       );
       fireEvent.click(stream.getByRole("button", { name: task.title }));
     }
@@ -1921,11 +2119,40 @@ it("offers a registered Dependencies lens for the focused goal", async () => {
   };
   await openWorkspace([lensRegistry[0], dependencies]);
   expect(screen.queryByRole("tab", { name: "Dependencies" })).toBeNull();
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
   fireEvent.click(radar.getByRole("button", { name: goal.title }));
   fireEvent.click(radar.getByRole("button", { name: "Dependencies" }));
   expect(screen.getByText("Dependencies for goal")).toBeTruthy();
 });
+
+it.each(["Radar", "selection"])(
+  "returns to the focused radar goal with touch controls after opening Dependencies from %s",
+  async (entry) => {
+    mockViewport(false);
+    await openWorkspace();
+    if (entry === "Radar") openGraph();
+    else {
+      fireEvent.click(
+        selectItem(goal.title).getByRole("button", {
+          name: "Open dependency graph",
+        }),
+      );
+    }
+    expect(
+      screen.getByRole("region", {
+        name: `Dependency graph for ${goal.title}`,
+      }),
+    ).toBeTruthy();
+
+    fireEvent.click(menuAction("Back to Radar"));
+
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
+    expect(radar.getByRole("button", { name: child.title })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Dependencies" })).toBeNull();
+  },
+);
 
 it.each([false, true])(
   "carries Radar's completed ghost visibility (%s) into Dependencies",
@@ -1953,11 +2180,11 @@ it.each([false, true])(
         { item_id: tomorrow.id, blocked_by_id: child.id },
       ],
     });
-    const radar = within(screen.getByRole("region", { name: "Radar" }));
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
     if (!showGhosts) {
-      fireEvent.click(
-        radar.getByRole("checkbox", { name: "Show completed ghosts" }),
-      );
+      fireEvent.click(menuAction("Hide completed ghosts"));
     }
     fireEvent.click(radar.getByRole("button", { name: goal.title }));
     fireEvent.click(radar.getByRole("button", { name: "Dependencies" }));
@@ -1991,7 +2218,7 @@ it.each([false, true])(
   },
 );
 
-it("opens the goal graph from the inspector and highlights the leading blocker", async () => {
+it("opens the goal graph from the selection and highlights the leading blocker", async () => {
   const upstream = {
     ...goal,
     id: "vendor",
@@ -2008,9 +2235,9 @@ it("opens the goal graph from the inspector and highlights the leading blocker",
       { item_id: tomorrow.id, blocked_by_id: child.id },
     ],
   });
-  const inspector = inspect(goal.title);
+  const summary = selectItem(goal.title);
   fireEvent.click(
-    inspector.getByRole("button", { name: "Open dependency graph" }),
+    summary.getByRole("button", { name: "Open dependency graph" }),
   );
   const graph = within(
     screen.getByRole("region", { name: `Dependency graph for ${goal.title}` }),
@@ -2026,13 +2253,16 @@ it("opens the goal graph from the inspector and highlights the leading blocker",
   ).toBe("false");
   fireEvent.click(vendor);
   expect(vendor.getAttribute("aria-pressed")).toBe("true");
-  expect(localStorage.getItem("heed.lens")).toBe("dependencies");
+  expect(screen.getByRole("region", { name: "Dependencies" })).toBeTruthy();
 
   fireEvent.click(screen.getByRole("button", { name: "Change goal" }));
   expect(screen.getByText("Pick a goal to see its dependencies.")).toBeTruthy();
-  fireEvent.change(screen.getByRole("combobox", { name: "Goal" }), {
-    target: { value: goal.id },
-  });
+  fireEvent.click(
+    within(screen.getByRole("region", { name: "Dependencies" })).getByRole(
+      "button",
+      { name: goal.title },
+    ),
+  );
   expect(
     screen.getByRole("region", { name: `Dependency graph for ${goal.title}` }),
   ).toBeTruthy();
@@ -2040,7 +2270,7 @@ it("opens the goal graph from the inspector and highlights the leading blocker",
 
 it("saves node drags, removes selected edges, and shows server cycle errors inline", async () => {
   await openWorkspace();
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
   fireEvent.click(radar.getByRole("button", { name: goal.title }));
   fireEvent.click(radar.getByRole("button", { name: "Dependencies" }));
   const lens = within(screen.getByRole("region", { name: "Dependencies" }));
@@ -2149,11 +2379,8 @@ it.each([
 ])(
   "clears a connection drag on %s and ignores its release and click",
   async (cancel) => {
-    localStorage.setItem("heed.lens", "dependencies");
     await openWorkspace();
-    fireEvent.change(screen.getByRole("combobox", { name: "Goal" }), {
-      target: { value: goal.id },
-    });
+    openGraph();
     const graph = screen.getByRole("region", {
       name: `Dependency graph for ${goal.title}`,
     });
@@ -2228,18 +2455,20 @@ it.each([
 ])(
   "keeps an $action failure visible when $navigation (navigate before reply: $navigateFirst, connection lost: $disconnect)",
   async ({ action, navigation, navigateFirst, seq, disconnect }) => {
-    localStorage.setItem("heed.lens", "dependencies");
     const nextGoal = { ...goal, id: "next-goal", title: "Incident response" };
     await openWorkspace(undefined, {
       ...snapshot,
       items: [...snapshot.items, nextGoal],
       dependencies: [{ item_id: tomorrow.id, blocked_by_id: child.id }],
     });
+    openGraph();
     const pickGoal = (id: string) =>
-      fireEvent.change(screen.getByRole("combobox", { name: "Goal" }), {
-        target: { value: id },
-      });
-    pickGoal(goal.id);
+      fireEvent.click(
+        within(screen.getByRole("region", { name: "Dependencies" })).getByRole(
+          "button",
+          { name: id === goal.id ? goal.title : nextGoal.title },
+        ),
+      );
     const lens = within(screen.getByRole("region", { name: "Dependencies" }));
     const graph = within(
       lens.getByRole("region", { name: `Dependency graph for ${goal.title}` }),
@@ -2274,7 +2503,7 @@ it.each([
         fireEvent.click(lens.getByRole("button", { name: "Change goal" }));
         pickGoal(nextGoal.id);
       } else {
-        fireEvent.click(screen.getByRole("tab", { name: "List" }));
+        switchLens("List");
       }
     }
     if (navigateFirst) navigate();
@@ -2310,12 +2539,12 @@ it.each([
 );
 
 it("opens the selected child's goal when switching from List to Radar", async () => {
-  localStorage.setItem("heed.lens", "list");
   await openWorkspace();
+  switchLens("List");
   const list = within(screen.getByRole("region", { name: "List" }));
   fireEvent.click(list.getByRole("button", { name: new RegExp(child.title) }));
-  fireEvent.click(screen.getByRole("tab", { name: "Radar" }));
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  switchLens("Radar");
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
   expect(
     radar
       .getByRole("button", { name: child.title })
@@ -2323,147 +2552,15 @@ it("opens the selected child's goal when switching from List to Radar", async ()
   ).toBe("true");
 });
 
-function inspect(title: string) {
-  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
+function selectItem(title: string) {
+  const stream = within(
+    screen.getByRole("complementary", { name: "Day stream" }),
+  );
   fireEvent.click(stream.getByRole("button", { name: title }));
-  return within(screen.getByRole("complementary", { name: "Inspector" }));
+  return within(screen.getByRole("region", selectedRegion));
 }
 
-it("opens a read-only inspector and exposes additional field editors in one disclosure", async () => {
-  const item = {
-    ...goal,
-    note: "Confirm the rollback plan.",
-    ref_url: "https://example.test/plan",
-    locked_fields: '["priority","acceptance"]',
-  };
-  await openWorkspace(undefined, { ...snapshot, items: [item, child] });
-  const inspector = inspect(item.title);
-  const card = screen.getByRole("complementary", inspectorRegion);
-  expect(inspector.getByRole("heading", { name: item.title })).toBeTruthy();
-  expect(inspector.getByText(item.note)).toBeTruthy();
-  expect(
-    inspector.getByRole("link", { name: /Open link/ }).getAttribute("href"),
-  ).toBe(item.ref_url);
-  expect(inspector.getByRole("img", { name: "Priority locked" })).toBeTruthy();
-  expect(
-    inspector.getByRole("img", { name: "Acceptance criteria locked" }),
-  ).toBeTruthy();
-  for (const name of ["Mark done", "Flag handoff", "Hide", "Delete"])
-    expect(inspector.getByRole("button", { name })).toBeTruthy();
-  expect(card.querySelector("input, select, textarea")).toBeNull();
-  expect(await inspector.findByText("No activity yet.")).toBeTruthy();
-
-  const summary = inspector.getByText("Edit details");
-  expect(summary.closest("details")?.open).toBe(false);
-  fireEvent.click(summary);
-  expect(summary.closest("details")?.open).toBe(true);
-  for (const name of [
-    "Project",
-    "Priority",
-    "Schedule",
-    "Time type",
-    "New tag",
-    "Blocked by",
-    "Link",
-  ])
-    expect(inspector.getByLabelText(name)).toBeTruthy();
-  fireEvent.click(summary);
-  expect(card.querySelector("input, select, textarea")).toBeNull();
-});
-
-it("saves and cancels title and criterion edits in place, and adds and removes criteria", async () => {
-  const item = { ...goal, acceptance: '["Run smoke tests"]' };
-  await openWorkspace(undefined, { ...snapshot, items: [item, child] });
-  const inspector = inspect(item.title);
-  const editor = within(
-    inspector.getByRole("region", { name: "Acceptance criteria" }),
-  );
-  const socket = TestSocket.current;
-  let current = item;
-  let seq = 1;
-
-  async function confirm(
-    patch: Partial<typeof item>,
-    input: Record<string, unknown>,
-  ) {
-    expect(socket.latestRequest()).toMatchObject({
-      type: "UPDATE_ITEM",
-      input: { item_id: item.id, ...input },
-    });
-    current = { ...current, ...patch };
-    socket.receive({ type: "ITEM_UPSERT", item: current, seq: ++seq });
-    await act(async () =>
-      socket.receive({
-        type: "ACK",
-        seq: ++seq,
-        requestId: socket.latestRequest().requestId,
-      }),
-    );
-  }
-
-  const newTitle = "Payment rollout";
-  fireEvent.click(
-    inspector.getByRole("button", { name: `${item.title} — edit title` }),
-  );
-  fireEvent.change(inspector.getByRole("textbox", { name: "Title" }), {
-    target: { value: "Discard this" },
-  });
-  fireEvent.keyDown(inspector.getByRole("textbox", { name: "Title" }), {
-    key: "Escape",
-  });
-  expect(document.activeElement).toBe(
-    inspector.getByRole("button", { name: `${item.title} — edit title` }),
-  );
-  expect(socket.send).not.toHaveBeenCalled();
-  fireEvent.click(
-    inspector.getByRole("button", { name: `${item.title} — edit title` }),
-  );
-  fireEvent.change(inspector.getByRole("textbox", { name: "Title" }), {
-    target: { value: newTitle },
-  });
-  fireEvent.keyDown(inspector.getByRole("textbox", { name: "Title" }), {
-    key: "Enter",
-  });
-  await confirm({ title: newTitle }, { title: newTitle });
-  expect(inspector.getByRole("heading", { name: newTitle })).toBeTruthy();
-
-  fireEvent.click(editor.getByRole("button", { name: "Run smoke tests" }));
-  const first = editor.getByRole("textbox", { name: "Criterion 1" });
-  fireEvent.change(first, { target: { value: "Discard this too" } });
-  fireEvent.keyDown(first, { key: "Escape" });
-  expect(editor.queryByRole("textbox")).toBeNull();
-  expect(socket.send).toHaveBeenCalledTimes(1);
-  fireEvent.click(editor.getByRole("button", { name: "Run smoke tests" }));
-  const revised = editor.getByRole("textbox", { name: "Criterion 1" });
-  fireEvent.change(revised, { target: { value: "Smoke tests pass" } });
-  fireEvent.keyDown(revised, { key: "Enter" });
-  await confirm(
-    { acceptance: '["Smoke tests pass"]' },
-    { acceptance: ["Smoke tests pass"] },
-  );
-
-  fireEvent.click(editor.getByRole("button", { name: "Add criterion" }));
-  const addition = editor.getByRole("textbox", { name: "Criterion 2" });
-  fireEvent.change(addition, { target: { value: "Rollback verified" } });
-  fireEvent.keyDown(addition, { key: "Enter" });
-  await confirm(
-    { acceptance: '["Smoke tests pass","Rollback verified"]' },
-    { acceptance: ["Smoke tests pass", "Rollback verified"] },
-  );
-  expect(
-    editor.getByRole("button", { name: "Rollback verified" }),
-  ).toBeTruthy();
-
-  fireEvent.click(editor.getByRole("button", { name: "Remove criterion 1" }));
-  await confirm(
-    { acceptance: '["Rollback verified"]' },
-    { acceptance: ["Rollback verified"] },
-  );
-  expect(editor.queryByRole("button", { name: "Smoke tests pass" })).toBeNull();
-  expect(editor.queryByRole("button", { name: /^Move criterion/i })).toBeNull();
-});
-
-it("shows evidence and the latest shadow verdict in the mobile inspector and changes feedback over the socket", async () => {
+it("shows evidence and the latest shadow verdict in the mobile day stream and changes feedback over the socket", async () => {
   mockViewport(false);
   const evidence = "  Test suite\n    12 passed\n";
   const baseEvent = { item_id: goal.id, at: goal.updated_at, actor: "Runner" };
@@ -2496,40 +2593,34 @@ it("shows evidence and the latest shadow verdict in the mobile inspector and cha
     detail: verdict.detail!.replace("judge/example", "judge/older"),
   };
   const events = [verdict, completion, older];
-  const criteria = JSON.parse(verdict.detail!).criteria;
-  const judged = { ...goal, acceptance: JSON.stringify(criteria) };
+  const judged = {
+    ...goal,
+    acceptance: "[]",
+    status: "done",
+    completed_at: completion.at,
+  } as const;
   await openWorkspace(undefined, { ...snapshot, items: [judged, child] }, () =>
     Response.json(events),
   );
-  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
-  fireEvent.click(stream.getByRole("button", { name: /Payment reliability/ }));
-  const inspector = within(screen.getByRole("dialog", { name: "Inspector" }));
+  const summary = selectItem(goal.title);
+  const stream = within(
+    screen.getByRole("complementary", { name: "Day stream" }),
+  );
   const result = within(
-    await inspector.findByRole("region", { name: "Shadow verdict" }),
+    await stream.findByRole("region", { name: "Shadow verdict" }),
   );
   expect(result.getByText("judge/example · Evidence supplied")).toBeTruthy();
-  const acceptance = within(
-    inspector.getByRole("region", { name: "Acceptance criteria" }),
-  );
-  for (const [criterion, score] of [
-    ["Unit tests pass", "Likely met · 70%"],
-    ["Load test passes", "Likely not met · 30%"],
-    ["Review is complete", "Unclear · 51%"],
-    ["Docs published", "Unclear · No probability"],
+  for (const score of [
+    "Likely met · 70%",
+    "Likely not met · 30%",
+    "Unclear · 51%",
+    "Unclear · No probability",
   ]) {
-    const row = acceptance
-      .getByRole("button", { name: criterion })
-      .closest("li")!;
-    expect(within(row).getByText(score)).toBeTruthy();
+    expect(result.getByText(score)).toBeTruthy();
   }
-  expect(
-    screen
-      .getByRole("dialog", { name: "Inspector" })
-      .querySelector("input, select, textarea"),
-  ).toBeNull();
   expect(result.getByText(/Advisory only/)).toBeTruthy();
-  expect(inspector.queryByText(/judge\/older/)).toBeNull();
-  const disclosure = inspector.getByText("Evidence").closest("details")!;
+  expect(stream.queryByText(/judge\/older/)).toBeNull();
+  const disclosure = stream.getByText("Evidence").closest("details")!;
   expect(disclosure.open).toBe(false);
   expect(disclosure.querySelector("pre")?.textContent).toBe(evidence);
 
@@ -2579,84 +2670,17 @@ it("shows evidence and the latest shadow verdict in the mobile inspector and cha
   });
   expect(result.getByText("Judged against earlier criteria")).toBeTruthy();
   expect(result.getByText("Likely met · 70%")).toBeTruthy();
-  const currentDocs = acceptance
-    .getByRole("button", { name: "Docs published" })
-    .closest("li")!;
+  const currentDocs = summary.getByText("Docs published").closest("li")!;
   expect(within(currentDocs).queryByText(/%|No probability/)).toBeNull();
 });
 
-it("marks the stream row only when its latest completion has a verdict", async () => {
-  const item = {
-    ...goal,
-    status: "done" as const,
-    completed_at: "2024-04-03T11:00:00Z",
-  };
-  const base = { item_id: item.id, at: item.completed_at, actor: "Runner" };
-  const first: Event = {
-    ...base,
-    id: 1,
-    kind: "status",
-    detail: '{"new":"done"}',
-  };
-  const latest: Event = { ...first, id: 3 };
-  const verdict: Event = {
-    ...base,
-    id: 4,
-    kind: "judged",
-    detail: JSON.stringify({
-      status_event_id: first.id,
-      model: "judge/example",
-      criteria: ["Smoke tests pass"],
-      probabilities: [0.9],
-      evidence_supplied: true,
-    }),
-  };
-  const events = [verdict, latest, first];
-  const eventRequests = vi.fn(() => Response.json(events));
-  await openWorkspace(undefined, { ...snapshot, items: [item] }, eventRequests);
-  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
-  const row = within(stream.getByRole("button", { name: item.title }));
-  expect(row.queryByTitle("Shadow verdict available")).toBeNull();
-
-  const currentVerdict = {
-    ...verdict,
-    id: 5,
-    detail: verdict.detail!.replace(
-      '"status_event_id":1',
-      '"status_event_id":3',
-    ),
-  };
-  events.unshift(currentVerdict);
-  TestSocket.current.receive({
-    type: "EVENT_APPEND",
-    seq: 2,
-    event: currentVerdict,
-  });
-  expect(await row.findByTitle("Shadow verdict available")).toBeTruthy();
-
-  events.unshift({ ...latest, id: 6 });
-  TestSocket.current.receive({
-    type: "ITEM_UPSERT",
-    seq: 3,
-    item: {
-      ...item,
-      completed_at: "2024-04-03T11:30:00Z",
-      reopen_count: 1,
-    },
-  });
-  await waitFor(() =>
-    expect(eventRequests.mock.calls.length).toBeGreaterThanOrEqual(3),
-  );
-  expect(row.queryByTitle("Shadow verdict available")).toBeNull();
-});
-
-it("shows optional judging in settings and refreshes counts and agreement as verdicts arrive", async () => {
+it("shows optional judging by command and refreshes counts and agreement as verdicts arrive", async () => {
   let agreement = { verdicts: 0, reviewed: 0, agreed: 0 };
   await openWorkspace(undefined, snapshot, (path) =>
     Response.json(path === "/api/judge/agreement" ? agreement : []),
   );
-  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-  const section = within(screen.getByRole("region", { name: "Shadow judge" }));
+  await sendCommand("shadow judge");
+  const section = within(screen.getByRole("dialog", { name: "Shadow judge" }));
   expect(
     await section.findByText(/No verdicts yet.*optional.*host/),
   ).toBeTruthy();
@@ -2692,298 +2716,9 @@ it("shows optional judging in settings and refreshes counts and agreement as ver
   ).toEqual(["3", "2", "50%"]);
 });
 
-it("sends the inspector actions and displays activity from the item endpoint", async () => {
-  await openWorkspace();
-  fetchSession.mockImplementation(async () =>
-    Response.json([
-      {
-        id: 1,
-        item_id: goal.id,
-        kind: "created",
-        actor: "human",
-        at: goal.created_at,
-        detail: null,
-      },
-    ]),
-  );
-  const socket = TestSocket.current;
-  const inspector = inspect(goal.title);
-  expect(await inspector.findByText("Created item")).toBeTruthy();
-  expect(fetchSession).toHaveBeenCalledWith(
-    `/api/items/${goal.id}/events`,
-    expect.anything(),
-  );
-
-  let seq = 1;
-  async function acknowledge(
-    message?: Omit<Extract<SocketMessage, { type: "ITEM_UPSERT" }>, "seq">,
-  ) {
-    if (message) socket.receive({ ...message, seq: ++seq });
-    await act(async () =>
-      socket.receive({
-        type: "ACK",
-        requestId: socket.latestRequest().requestId,
-        seq: ++seq,
-      }),
-    );
-  }
-  fireEvent.click(inspector.getByRole("button", { name: "Mark done" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "SET_STATUS",
-    input: { item_id: goal.id, status: "done" },
-  });
-  await acknowledge({
-    type: "ITEM_UPSERT",
-    item: { ...goal, status: "done", completed_at: "2024-04-03T12:00:00Z" },
-  });
-
-  fireEvent.click(inspector.getByRole("button", { name: "Reopen" }));
-  expect(
-    (
-      inspector.getByRole("button", {
-        name: "Reopen item",
-      }) as HTMLButtonElement
-    ).disabled,
-  ).toBe(true);
-  fireEvent.change(inspector.getByLabelText("Reason for reopening"), {
-    target: { value: "Check the rollback" },
-  });
-  fireEvent.click(inspector.getByRole("button", { name: "Reopen item" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "REOPEN_ITEM",
-    input: { item_id: goal.id, reason: "Check the rollback" },
-  });
-  await acknowledge({ type: "ITEM_UPSERT", item: goal });
-
-  fireEvent.click(inspector.getByRole("button", { name: "Flag handoff" }));
-  fireEvent.change(inspector.getByLabelText("What input do you need?"), {
-    target: { value: "Approve the rollback" },
-  });
-  fireEvent.click(inspector.getByRole("button", { name: "Save handoff" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "FLAG_HANDOFF",
-    input: { item_id: goal.id, note: "Approve the rollback" },
-  });
-  await acknowledge({
-    type: "ITEM_UPSERT",
-    item: { ...goal, handoff: 1, handoff_note: "Approve the rollback" },
-  });
-  fireEvent.click(inspector.getByRole("button", { name: "Clear handoff" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "CLEAR_HANDOFF",
-    input: { item_id: goal.id },
-  });
-  await acknowledge({ type: "ITEM_UPSERT", item: goal });
-
-  fireEvent.click(inspector.getByText("Edit details"));
-  fireEvent.change(inspector.getByLabelText("Blocked by"), {
-    target: { value: tomorrow.id },
-  });
-  fireEvent.click(inspector.getByRole("button", { name: "Add dependency" }));
-  const dependency = { item_id: goal.id, blocked_by_id: tomorrow.id };
-  expect(socket.latestRequest()).toMatchObject({
-    type: "SET_DEPENDENCY",
-    input: { ...dependency, action: "add" },
-  });
-  socket.receive({ type: "DEPENDENCY_ADD", seq: ++seq, dependency });
-  await acknowledge();
-  fireEvent.click(inspector.getByRole("button", { name: "Remove" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "SET_DEPENDENCY",
-    input: { ...dependency, action: "remove" },
-  });
-  socket.receive({ type: "DEPENDENCY_REMOVE", seq: ++seq, dependency });
-  await acknowledge();
-
-  fireEvent.click(inspector.getByRole("button", { name: "Hide" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: goal.id, hidden: true },
-  });
-  await acknowledge({ type: "ITEM_UPSERT", item: { ...goal, hidden: 1 } });
-  fireEvent.click(screen.getByRole("button", { name: "Hidden" }));
-  inspect(goal.title);
-  fireEvent.click(inspector.getByRole("button", { name: "Unhide" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: goal.id, hidden: false },
-  });
-  await acknowledge({ type: "ITEM_UPSERT", item: goal });
-
-  const confirm = vi
-    .spyOn(window, "confirm")
-    .mockReturnValueOnce(false)
-    .mockReturnValueOnce(true);
-  fireEvent.click(inspector.getByRole("button", { name: "Delete" }));
-  expect(socket.latestRequest().type).toBe("UPDATE_ITEM");
-  fireEvent.click(inspector.getByRole("button", { name: "Delete" }));
-  expect(confirm).toHaveBeenCalledTimes(2);
-  expect(socket.latestRequest()).toMatchObject({
-    type: "DELETE_ITEM",
-    input: { item_id: goal.id },
-  });
-  socket.receive({ type: "ITEM_REMOVE", seq: ++seq, item_id: goal.id });
-  await acknowledge();
-  expect(screen.queryByRole("complementary", { name: "Inspector" })).toBeNull();
-});
-
-it("unlocks only the chosen field and reflects the server update", async () => {
-  await openWorkspace();
-  const socket = TestSocket.current;
-  const item = { ...goal, locked_fields: '["priority","layout_pos"]' };
-  socket.receive({ type: "ITEM_UPSERT", seq: 2, item });
-  const inspector = inspect(goal.title);
-  fireEvent.click(inspector.getByText("Edit details"));
-  fireEvent.click(inspector.getByRole("button", { name: "Unlock priority" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: goal.id, unlock: "priority" },
-  });
-  socket.receive({
-    type: "ITEM_UPSERT",
-    seq: 3,
-    item: { ...goal, locked_fields: '["layout_pos"]' },
-  });
-  await act(async () =>
-    socket.receive({
-      type: "ACK",
-      seq: 4,
-      requestId: socket.latestRequest().requestId,
-    }),
-  );
-  expect(
-    inspector.queryByRole("button", { name: "Unlock priority" }),
-  ).toBeNull();
-  expect(
-    inspector.getByRole("button", { name: "Unlock canvas position" }),
-  ).toBeTruthy();
-});
-
-it("adds a goal with workspace-local time and explains the child depth cap", async () => {
-  await openWorkspace();
-  const socket = TestSocket.current;
-  const leaf = {
-    ...tomorrow,
-    title: "Verify the backlog",
-    parent_id: child.id,
-    depth: 3 as const,
-  };
-  socket.receive({
-    ...snapshot,
-    seq: 2,
-    items: [goal, child, leaf],
-    settings: { ...snapshot.settings, timezone: "America/New_York" },
-  });
-  const inspector = inspect(leaf.title);
-  expect(
-    inspector.getByText(
-      "This item is a sub-task. Add another sub-task under its parent.",
-    ),
-  ).toBeTruthy();
-  expect(
-    inspector.queryByRole("button", { name: "Add child item" }),
-  ).toBeNull();
-
-  fireEvent.click(screen.getByRole("button", { name: "+ Goal" }));
-  const dialog = within(screen.getByRole("dialog", { name: "Add a goal" }));
-  fireEvent.change(dialog.getByLabelText("Title"), {
-    target: { value: "Plan the rollout" },
-  });
-  fireEvent.change(dialog.getByLabelText("Schedule"), {
-    target: { value: "2024-04-04" },
-  });
-  fireEvent.change(dialog.getByLabelText("Time type"), {
-    target: { value: "fixed" },
-  });
-  fireEvent.change(dialog.getByLabelText("Fixed time (America/New_York)"), {
-    target: { value: "2024-04-04T09:15" },
-  });
-  fireEvent.click(dialog.getByRole("button", { name: "Add goal" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "ADD_ITEM",
-    input: {
-      title: "Plan the rollout",
-      project: "inbox",
-      scheduled_on: "2024-04-04",
-      time_type: "fixed",
-      time_at: "2024-04-04T13:15:00.000Z",
-    },
-  });
-  await act(async () =>
-    socket.receive({
-      type: "ACK",
-      seq: 3,
-      requestId: socket.latestRequest().requestId,
-    }),
-  );
-
-  // Horizon Stream rows start collapsed, so reveal the child under its goal.
-  fireEvent.click(screen.getByRole("button", { name: `Expand ${goal.title}` }));
-  const parent = inspect(child.title);
-  fireEvent.click(parent.getByRole("button", { name: "Add child item" }));
-  const childForm = within(
-    screen.getByRole("dialog", { name: "Add child item" }),
-  );
-  fireEvent.change(childForm.getByLabelText("Title"), {
-    target: { value: "Check retry metrics" },
-  });
-  fireEvent.click(childForm.getByRole("button", { name: "Add child" }));
-  expect(socket.latestRequest()).toMatchObject({
-    type: "ADD_ITEM",
-    input: { title: "Check retry metrics", parent_id: child.id },
-  });
-  await act(async () =>
-    socket.receive({
-      type: "ACK",
-      seq: 4,
-      requestId: socket.latestRequest().requestId,
-    }),
-  );
-});
-
-it.each([
-  { dialogName: "Add a goal", openName: "+ Goal", submitName: "Add goal" },
-  {
-    dialogName: "Add child item",
-    openName: "Add child item",
-    submitName: "Add child",
-  },
-])(
-  "keeps a reopened $dialogName draft when the first save completes",
-  async ({ dialogName, openName, submitName }) => {
-    await openWorkspace();
-    if (submitName === "Add child") inspect(goal.title);
-    const open = screen.getByRole("button", { name: openName });
-    fireEvent.click(open);
-    const first = within(screen.getByRole("dialog", { name: dialogName }));
-    fireEvent.change(first.getByLabelText("Title"), {
-      target: { value: "First draft" },
-    });
-    fireEvent.click(first.getByRole("button", { name: submitName }));
-    const socket = TestSocket.current;
-    const request = socket.latestRequest();
-    expect(request).toMatchObject({
-      type: "ADD_ITEM",
-      input: { title: "First draft" },
-    });
-
-    fireEvent.click(first.getByRole("button", { name: "Close" }));
-    fireEvent.click(open);
-    const reopened = screen.getByRole("dialog", { name: dialogName });
-    fireEvent.change(within(reopened).getByLabelText("Title"), {
-      target: { value: "New draft" },
-    });
-    await act(async () =>
-      socket.receive({ type: "ACK", seq: 2, requestId: request.requestId }),
-    );
-    expect(screen.getByRole("dialog", { name: dialogName })).toBe(reopened);
-    expect(within(reopened).getByDisplayValue("New draft")).toBeTruthy();
-  },
-);
-
 it("enforces the guidance limit and applies settings broadcasts to an open editor", async () => {
   await openWorkspace();
-  fireEvent.click(screen.getByRole("button", { name: "Guidance" }));
+  await sendCommand("edit guidance");
   const editor = within(screen.getByRole("dialog", { name: "Guidance" }));
   const textarea = editor.getByLabelText("Instructions for your agents");
   const save = editor.getByRole("button", {
@@ -3036,207 +2771,7 @@ it("enforces the guidance limit and applies settings broadcasts to an open edito
   expect(editor.getByText("Guidance saved.")).toBeTruthy();
 });
 
-it("locks the timezone draft until its save is acknowledged", async () => {
-  await openWorkspace();
-  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-  const account = within(
-    screen.getByRole("region", { name: "Workspace and account" }),
-  );
-  const input = account.getByLabelText(
-    "Workspace timezone",
-  ) as HTMLInputElement;
-  fireEvent.change(input, { target: { value: "Europe/Tallinn" } });
-  fireEvent.click(account.getByRole("button", { name: "Save timezone" }));
-  const socket = TestSocket.current;
-  const request = socket.latestRequest();
-  expect(request).toMatchObject({
-    type: "SET_TIMEZONE",
-    input: { timezone: "Europe/Tallinn" },
-  });
-  expect(input.disabled).toBe(true);
-  socket.receive({
-    type: "SETTINGS_UPDATE",
-    seq: 2,
-    settings: { ...snapshot.settings, timezone: "Europe/Tallinn" },
-  });
-  expect(input.disabled).toBe(true);
-  await act(async () =>
-    socket.receive({ type: "ACK", seq: 3, requestId: request.requestId }),
-  );
-  expect(input.disabled).toBe(false);
-  expect(input.value).toBe("Europe/Tallinn");
-});
-
-it("offers export and requires the exact reset phrase before sending a socket mutation", async () => {
-  await openWorkspace();
-  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-  const data = within(screen.getByRole("region", { name: "Data" }));
-  expect(data.getByRole("link", { name: "Export" }).getAttribute("href")).toBe(
-    "/api/export",
-  );
-  fireEvent.click(data.getByRole("button", { name: "Reset workspace" }));
-  expect(
-    data
-      .getByRole("link", { name: "Export before resetting" })
-      .hasAttribute("download"),
-  ).toBe(true);
-  const input = data.getByLabelText(
-    `Type ${RESET_WORKSPACE_CONFIRMATION} to confirm`,
-  );
-  const submit = data.getByRole("button", {
-    name: "Permanently reset workspace",
-  }) as HTMLButtonElement;
-  fireEvent.change(input, { target: { value: "reset workspace" } });
-  expect(submit.disabled).toBe(true);
-  fireEvent.change(input, { target: { value: RESET_WORKSPACE_CONFIRMATION } });
-  expect(submit.disabled).toBe(false);
-  fireEvent.click(submit);
-  const socket = TestSocket.current;
-  const request = socket.latestRequest();
-  expect(request).toMatchObject({
-    type: "RESET_WORKSPACE",
-    input: { confirmation: RESET_WORKSPACE_CONFIRMATION },
-  });
-  expect(data.getByRole("button", { name: "Resetting…" })).toBeTruthy();
-  await act(async () => {
-    socket.receive({ type: "ACK", seq: 2, requestId: request.requestId });
-    socket.close(WORKSPACE_RESET_CLOSE_CODE);
-  });
-  expect(data.getByRole("status").textContent).toContain(
-    "Your Inbox is now empty.",
-  );
-  expect(screen.queryByRole("button", { name: goal.title })).toBeNull();
-});
-
-it("locks the new project name until creation succeeds or fails", async () => {
-  await openWorkspace();
-  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-  const projects = within(screen.getByRole("region", { name: "Projects" }));
-  const input = projects.getByLabelText("New project name") as HTMLInputElement;
-  const submit = projects.getByRole("button", { name: "Create project" });
-  fireEvent.change(input, { target: { value: "Release planning" } });
-  fireEvent.click(submit);
-  const socket = TestSocket.current;
-  const request = socket.latestRequest();
-  expect(request).toMatchObject({
-    type: "CREATE_PROJECT",
-    input: { name: "Release planning" },
-  });
-  expect(input.disabled).toBe(true);
-  await act(async () =>
-    socket.receive({
-      type: "ERROR",
-      seq: 2,
-      requestId: request.requestId,
-      error: { code: "invalid_input", message: "Try a different name." },
-    }),
-  );
-  expect(input.disabled).toBe(false);
-  expect(input.value).toBe("Release planning");
-
-  fireEvent.change(input, { target: { value: "Launch planning" } });
-  fireEvent.click(submit);
-  const retry = socket.latestRequest();
-  expect(input.disabled).toBe(true);
-  socket.receive({
-    type: "PROJECT_UPSERT",
-    seq: 3,
-    project: { ...project, id: "launch", name: "Launch planning", sort: 1 },
-  });
-  await act(async () =>
-    socket.receive({ type: "ACK", seq: 4, requestId: retry.requestId }),
-  );
-  expect(input.disabled).toBe(false);
-  expect(input.value).toBe("");
-});
-
-it("shows the token and MCP config once and lists only metadata afterward", async () => {
-  await openWorkspace();
-  const writeText = vi.fn().mockResolvedValue(undefined);
-  vi.stubGlobal(
-    "navigator",
-    Object.assign({}, navigator, { clipboard: { writeText } }),
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-  let settings = within(screen.getByRole("dialog", { name: "Settings" }));
-  await settings.findByText("No API tokens yet.");
-  fireEvent.change(settings.getByLabelText("Label"), {
-    target: { value: "Build reporter" },
-  });
-  fireEvent.change(settings.getByLabelText("Scope"), {
-    target: { value: "steer" },
-  });
-  fireEvent.change(settings.getByLabelText("Default project"), {
-    target: { value: project.id },
-  });
-  fireEvent.click(settings.getByRole("button", { name: "Create token" }));
-  const socket = TestSocket.current;
-  expect(socket.latestRequest()).toMatchObject({
-    type: "CREATE_TOKEN",
-    input: {
-      label: "Build reporter",
-      scope: "steer",
-      default_project_id: project.id,
-    },
-  });
-  const metadata = {
-    id: "token-id",
-    label: "Build reporter",
-    scope: "steer",
-    default_project_id: project.id,
-    last_used_at: null,
-    created_at: goal.created_at,
-  } as const;
-  const token = "example-plaintext-for-test";
-  await act(async () =>
-    socket.receive({
-      type: "ACK",
-      seq: 2,
-      requestId: socket.latestRequest().requestId,
-      createdToken: { ...metadata, token },
-    }),
-  );
-  expect(settings.getByDisplayValue(token)).toBeTruthy();
-  const config = settings.getByLabelText(
-    /Claude Code MCP config/,
-  ) as HTMLTextAreaElement;
-  expect(JSON.parse(config.value).mcpServers.heed).toMatchObject({
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  fireEvent.click(settings.getByRole("button", { name: "Copy token" }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith(token));
-  await settings.findByText("Token copied.");
-  const client = settings.getByLabelText("MCP client");
-  fireEvent.change(client, { target: { value: "cursor" } });
-  const cursor = settings.getByLabelText(
-    /Cursor MCP config/,
-  ) as HTMLTextAreaElement;
-  expect(JSON.parse(cursor.value).mcpServers.heed).toEqual({
-    url: new URL("/mcp", location.origin).href,
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  fireEvent.change(client, { target: { value: "codex" } });
-  const codex = settings.getByLabelText(
-    /Codex MCP config/,
-  ) as HTMLTextAreaElement;
-  expect(codex.value).toContain("[mcp_servers.heed]");
-  expect(codex.value).toContain(`Authorization = "Bearer ${token}"`);
-  fireEvent.click(settings.getByRole("button", { name: "Copy MCP config" }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith(codex.value));
-  fireEvent.click(settings.getByRole("button", { name: "Done" }));
-  expect(settings.queryByDisplayValue(token)).toBeNull();
-  expect(settings.getByText(metadata.label)).toBeTruthy();
-
-  fireEvent.click(settings.getByRole("button", { name: "Close" }));
-  fetchSession.mockImplementation(async () => Response.json([metadata]));
-  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-  settings = within(screen.getByRole("dialog", { name: "Settings" }));
-  expect(await settings.findByText(metadata.label)).toBeTruthy();
-  expect(settings.queryByDisplayValue(token)).toBeNull();
-  expect(settings.queryByLabelText(/Claude Code MCP config/)).toBeNull();
-});
-
-it("orders fixed, manual and priority work, and shows time and attention metadata", async () => {
+it("orders fixed, manual and priority work, and shows quiet time metadata", async () => {
   await openWorkspace();
   const titled = (title: string) => ({
     ...goal,
@@ -3277,7 +2812,7 @@ it("orders fixed, manual and priority work, and shows time and attention metadat
   expect(
     today
       .getAllByRole("button", { pressed: false })
-      .map((row) => row.getAttribute("aria-label")),
+      .map((row) => row.querySelector(".attention-title")?.textContent),
   ).toEqual([
     "First meeting",
     "Second meeting",
@@ -3285,364 +2820,9 @@ it("orders fixed, manual and priority work, and shows time and attention metadat
     "Carried over",
     "Low priority",
   ]);
-  expect(today.getByText(/DUE/)).toBeTruthy();
-  expect(today.getByText("from Tue").getAttribute("datetime")).toBe(
-    "2024-04-02",
-  );
-  expect(today.getByText("Reopened")).toBeTruthy();
-  expect(
-    screen.getByRole("heading", { name: "Tomorrow & this week" }),
-  ).toBeTruthy();
+  expect(today.getByText("16:00")).toBeTruthy();
+  expect(today.getAllByText(/fixed time/)).toHaveLength(2);
 });
-
-it("filters both panes to stale and handoff work with ancestors, including across bands", async () => {
-  localStorage.setItem("heed.lens", "list");
-  await openWorkspace();
-  const stale = {
-    ...goal,
-    id: "stale",
-    title: "Stale export",
-    status: "active" as const,
-    agent_name: "Agent A",
-    last_heartbeat_at: "2024-04-03T10:00:00Z",
-  };
-  TestSocket.current.receive({
-    ...snapshot,
-    seq: 2,
-    items: [goal, { ...child, handoff: 0 }, { ...tomorrow, handoff: 1 }, stale],
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Needs me 2" }));
-  const list = within(screen.getByRole("region", { name: "List" }));
-  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
-  for (const pane of [list, stream]) {
-    expect(
-      pane.queryByRole("button", { name: new RegExp(`^${child.title}`) }),
-    ).toBeNull();
-    expect(
-      pane.getByRole("button", { name: new RegExp(`^${goal.title}`) }),
-    ).toBeTruthy();
-    expect(
-      pane.getByRole("button", { name: new RegExp(`^${stale.title}`) }),
-    ).toBeTruthy();
-  }
-  expect(
-    within(screen.getByRole("region", { name: "Tomorrow" })).getByRole(
-      "button",
-      { name: tomorrow.title },
-    ),
-  ).toBeTruthy();
-  expect(stream.getByText(/last seen 2 hours ago/)).toBeTruthy();
-});
-
-it("reveals a collapsed selected row from the lens and scrolls it into view", async () => {
-  localStorage.setItem("heed.lens", "list");
-  await openWorkspace();
-  const scrollIntoView = vi.fn();
-  const scroll = Object.getOwnPropertyDescriptor(
-    HTMLElement.prototype,
-    "scrollIntoView",
-  );
-  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-    configurable: true,
-    value: scrollIntoView,
-  });
-  try {
-    const list = within(screen.getByRole("region", { name: "List" }));
-    const today = within(screen.getByRole("region", { name: "Today" }));
-    fireEvent.click(
-      list.getByRole("button", { name: new RegExp(child.title) }),
-    );
-    expect(
-      today
-        .getByRole("button", { name: child.title })
-        .getAttribute("aria-pressed"),
-    ).toBe("true");
-    await act(async () => {
-      await new Promise(requestAnimationFrame);
-    });
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
-  } finally {
-    if (scroll)
-      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", scroll);
-    else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
-  }
-});
-
-it("writes a fractional key on pointer drop and reschedules or clears a date with the keyboard", async () => {
-  localStorage.setItem("heed.lens", "list");
-  await openWorkspace();
-  const first = { ...goal, id: "first", title: "First", sort_key: 10 };
-  const second = { ...goal, id: "second", title: "Second", sort_key: 20 };
-  const moved = { ...goal, id: "moved", title: "Move this", sort_key: 30 };
-  const later = {
-    ...goal,
-    id: "later",
-    title: "Later item",
-    scheduled_on: "2024-04-08",
-  };
-  TestSocket.current.receive({
-    ...snapshot,
-    seq: 2,
-    items: [first, second, moved, later],
-  });
-  const handle = screen.getByRole("button", { name: "Move Move this" });
-  const target = screen.getByRole("button", {
-    name: second.title,
-  }).parentElement!;
-  Object.defineProperty(handle, "setPointerCapture", { value: vi.fn() });
-  const hitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
-  Object.defineProperty(document, "elementFromPoint", {
-    configurable: true,
-    value: () => target,
-  });
-  vi.spyOn(target, "getBoundingClientRect").mockReturnValue(
-    new DOMRect(0, 40, 100, 40),
-  );
-  const socket = TestSocket.current;
-  const pointer = {
-    pointerId: 1,
-    pointerType: "touch",
-    button: 0,
-    clientX: 50,
-  };
-  try {
-    fireEvent.pointerDown(handle, { ...pointer, clientY: 100 });
-    fireEvent.pointerMove(handle, { ...pointer, clientY: 45 });
-    fireEvent.pointerUp(handle, { ...pointer, clientY: 45 });
-    expect(socket.send).not.toHaveBeenCalled();
-
-    const press = createEvent.pointerDown(handle, { ...pointer, clientY: 100 });
-    const movement = createEvent.pointerMove(handle, {
-      ...pointer,
-      clientY: 45,
-    });
-    Object.defineProperty(movement, "timeStamp", {
-      value: press.timeStamp + 500,
-    });
-    fireEvent(handle, press);
-    fireEvent(handle, movement);
-    expect(socket.send).not.toHaveBeenCalled();
-    fireEvent.pointerUp(handle, { ...pointer, clientY: 45 });
-  } finally {
-    if (hitTest) Object.defineProperty(document, "elementFromPoint", hitTest);
-    else Reflect.deleteProperty(document, "elementFromPoint");
-  }
-  const sent = () => JSON.parse(socket.send.mock.lastCall![0]);
-  expect(sent()).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: moved.id, sort_key: 15 },
-  });
-  fireEvent.keyDown(handle, { key: "ArrowRight" });
-  expect(sent()).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: moved.id, scheduled_on: "2024-04-04" },
-  });
-  fireEvent.keyDown(screen.getByRole("button", { name: "Move Later item" }), {
-    key: "ArrowRight",
-  });
-  expect(sent()).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: later.id, scheduled_on: null },
-  });
-  expect(screen.getByRole("button", { name: later.title })).toBeTruthy();
-});
-
-it("filters collapsible backlog project groups by tag", async () => {
-  await openWorkspace();
-  const unplanned = { ...goal, scheduled_on: null, tags: '["platform"]' };
-  const other = {
-    ...unplanned,
-    id: "other",
-    title: "Other backlog work",
-    tags: '["quick-win"]',
-  };
-  TestSocket.current.receive({
-    ...snapshot,
-    seq: 2,
-    items: [unplanned, other],
-  });
-  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
-  const inbox = stream.getByRole("button", { name: "Inbox 2" });
-  expect(inbox.getAttribute("aria-expanded")).toBe("false");
-  fireEvent.click(inbox);
-  expect(stream.getByRole("button", { name: other.title })).toBeTruthy();
-  fireEvent.change(
-    stream.getByRole("combobox", { name: "Filter backlog by tag" }),
-    { target: { value: "platform" } },
-  );
-  expect(stream.queryByRole("button", { name: other.title })).toBeNull();
-  expect(stream.getByRole("button", { name: unplanned.title })).toBeTruthy();
-});
-
-it("preserves existing tag values and backlog membership when adding a tag", async () => {
-  await openWorkspace();
-  const existing = ["research, development", "  platform  ", "", "two\nlines"];
-  const item = {
-    ...goal,
-    scheduled_on: null,
-    tags: JSON.stringify(existing),
-  };
-  const socket = TestSocket.current;
-  socket.receive({ ...snapshot, seq: 2, items: [item] });
-  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
-  fireEvent.click(stream.getByRole("button", { name: "Inbox 1" }));
-  const filter = stream.getByRole<HTMLSelectElement>("combobox", {
-    name: "Filter backlog by tag",
-  });
-  fireEvent.change(filter, { target: { value: existing[0] } });
-
-  const inspector = inspect(item.title);
-  fireEvent.click(inspector.getByText("Edit details"));
-  fireEvent.change(inspector.getByRole("textbox", { name: "New tag" }), {
-    target: { value: "urgent" },
-  });
-  fireEvent.click(inspector.getByRole("button", { name: "Add tag" }));
-  fireEvent.click(inspector.getByRole("button", { name: "Save details" }));
-
-  const tags = [...existing, "urgent"];
-  const request = socket.latestRequest();
-  expect(request).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: item.id, tags },
-  });
-  expect(
-    inspector.getByRole("textbox", { name: "New tag" }).matches(":disabled"),
-  ).toBe(true);
-  socket.receive({
-    type: "ITEM_UPSERT",
-    seq: 3,
-    item: { ...item, tags: JSON.stringify(tags) },
-  });
-  await act(async () =>
-    socket.receive({ type: "ACK", requestId: request.requestId, seq: 4 }),
-  );
-  expect(filter.value).toBe(existing[0]);
-  expect(stream.getByRole("button", { name: item.title })).toBeTruthy();
-  expect(inspector.getByText("urgent")).toBeTruthy();
-  expect(inspector.queryByRole("button", { name: "Save details" })).toBeNull();
-});
-
-it("prevents an outdated tag draft from replacing newer tags", async () => {
-  await openWorkspace();
-  const originalTag = "research, development";
-  const item = { ...goal, tags: JSON.stringify([originalTag, "retired"]) };
-  const socket = TestSocket.current;
-  socket.receive({ ...snapshot, seq: 2, items: [item] });
-  const inspector = inspect(item.title);
-  fireEvent.click(inspector.getByText("Edit details"));
-  fireEvent.click(
-    inspector.getByRole("button", { name: "Remove tag retired" }),
-  );
-  socket.receive({
-    type: "ITEM_UPSERT",
-    seq: 3,
-    item: { ...item, tags: JSON.stringify([originalTag, "retired", "remote"]) },
-  });
-  fireEvent.click(inspector.getByRole("button", { name: "Save details" }));
-  expect(socket.send).not.toHaveBeenCalled();
-
-  fireEvent.click(inspector.getByRole("button", { name: "Reload tags" }));
-  fireEvent.click(
-    inspector.getByRole("button", { name: "Remove tag retired" }),
-  );
-  fireEvent.click(inspector.getByRole("button", { name: "Save details" }));
-  const request = socket.latestRequest();
-  expect(request).toMatchObject({
-    type: "UPDATE_ITEM",
-    input: { item_id: item.id, tags: [originalTag, "remote"] },
-  });
-  await act(async () =>
-    socket.receive({
-      type: "ERROR",
-      requestId: request.requestId,
-      seq: 4,
-      error: { code: "invalid_input", message: "Couldn’t save tags." },
-    }),
-  );
-  expect(
-    inspector.queryByRole("button", { name: "Remove tag retired" }),
-  ).toBeNull();
-  expect(
-    inspector.getByRole<HTMLButtonElement>("button", { name: "Save details" })
-      .disabled,
-  ).toBe(false);
-});
-
-const taggedProject = { ...project, id: "engineering", name: "Engineering" };
-const taggedBacklogItem = {
-  ...goal,
-  project_id: taggedProject.id,
-  scheduled_on: null,
-  tags: '["platform"]',
-};
-const untaggedBacklogItem = {
-  ...goal,
-  id: "untagged",
-  title: "Triage feedback",
-  scheduled_on: null,
-};
-
-async function openFilteredBacklog() {
-  await openWorkspace();
-  TestSocket.current.receive({
-    ...snapshot,
-    seq: 2,
-    projects: [project, taggedProject],
-    items: [taggedBacklogItem, untaggedBacklogItem],
-  });
-  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
-  fireEvent.click(stream.getByRole("button", { name: "Inbox 1" }));
-  const filter = () =>
-    stream.getByRole<HTMLSelectElement>("combobox", {
-      name: "Filter backlog by tag",
-    });
-  fireEvent.change(filter(), { target: { value: "platform" } });
-  expect(
-    stream.queryByRole("button", { name: untaggedBacklogItem.title }),
-  ).toBeNull();
-  return { stream, filter };
-}
-
-it("can clear the last backlog tag while a keyboard move is saving", async () => {
-  const { stream, filter } = await openFilteredBacklog();
-  fireEvent.keyDown(
-    stream.getByRole("button", { name: `Move ${taggedBacklogItem.title}` }),
-    { key: "ArrowLeft" },
-  );
-  const later = stream.getByRole("region", { name: "Later" });
-  expect(
-    within(later).getByRole("button", { name: taggedBacklogItem.title }),
-  ).toBeTruthy();
-  expect(filter().value).toBe("platform");
-  fireEvent.change(filter(), { target: { value: "" } });
-  expect(
-    stream.getByRole("button", { name: untaggedBacklogItem.title }),
-  ).toBeTruthy();
-});
-
-it.each([
-  ["removes the tagged item", { type: "ITEM_REMOVE", item_id: goal.id }],
-  [
-    "replaces the selected tag",
-    { type: "ITEM_UPSERT", item: { ...taggedBacklogItem, tags: '["urgent"]' } },
-  ],
-  [
-    "hides the tagged project",
-    { type: "PROJECT_UPSERT", project: { ...taggedProject, hidden: 1 } },
-  ],
-] as const)(
-  "can clear the backlog filter when a live update %s",
-  async (_, update) => {
-    const { stream, filter } = await openFilteredBacklog();
-    TestSocket.current.receive({ ...update, seq: 3 });
-    expect(filter().value).toBe("platform");
-    expect(stream.getByText("No backlog items match this tag.")).toBeTruthy();
-    fireEvent.change(filter(), { target: { value: "" } });
-    expect(
-      stream.getByRole("button", { name: untaggedBacklogItem.title }),
-    ).toBeTruthy();
-  },
-);
 
 it("searches and pages through history, then reopens an item with a reason", async () => {
   await openWorkspace();
@@ -3666,15 +2846,13 @@ it("searches and pages through history, then reopens an item with a reason", asy
         : { items: [old], next_before: cursor },
     );
   });
-  fireEvent.click(screen.getByRole("link", { name: "View history" }));
+  fireEvent.click(menuAction("History"));
   await screen.findByText(old.title);
   fireEvent.change(screen.getByRole("searchbox", { name: "Search history" }), {
     target: { value: "incident" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Search" }));
-  fireEvent.change(screen.getByRole("combobox", { name: "Project" }), {
-    target: { value: project.id },
-  });
+  fireEvent.click(screen.getByRole("button", { name: project.name }));
   fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
   await screen.findByText(older.title);
   expect(Object.fromEntries(requests.at(-1)!.searchParams)).toEqual({
@@ -3700,7 +2878,9 @@ it("searches and pages through history, then reopens an item with a reason", asy
     seq: 2,
     item: { ...goal, id: older.id, title: older.title, reopen_count: 1 },
   });
-  const history = within(screen.getByRole("region", { name: "History" }));
+  const history = within(
+    screen.getByRole("dialog", { name: "Workspace history" }),
+  );
   expect(history.queryByText(older.title)).toBeNull();
   fireEvent.click(history.getByRole("button", { name: "Back to stream" }));
   expect(
@@ -3723,7 +2903,7 @@ it("selects Treemap tiles, zooms into parents and returns through their breadcru
     ...snapshot,
     items: [parent, child, tomorrow, finished],
   });
-  fireEvent.click(screen.getByRole("tab", { name: "Treemap" }));
+  switchLens("Treemap");
 
   const lens = within(screen.getByRole("region", { name: "Treemap" }));
   const overview = lens.getByRole("button", { name: goal.title });
@@ -3768,9 +2948,7 @@ it("selects Treemap tiles, zooms into parents and returns through their breadcru
 
   const ghost = lens.getByRole("button", { name: finished.title });
   expect(ghost.parentElement?.getAttribute("data-ghost")).toBe("true");
-  fireEvent.click(
-    lens.getByRole("checkbox", { name: "Show completed ghosts" }),
-  );
+  fireEvent.click(menuAction("Hide completed ghosts"));
   expect(lens.queryByRole("button", { name: finished.title })).toBeNull();
   fireEvent.click(breadcrumb.getByRole("button", { name: "All projects" }));
   expect(lens.getByRole("button", { name: project.name })).toBeTruthy();
@@ -3788,7 +2966,6 @@ it("selects Treemap tiles, zooms into parents and returns through their breadcru
 });
 
 it("places top-level Board cards by project and Radar band with Stream ordering and markers", async () => {
-  localStorage.setItem("heed.lens", "board");
   const product = { ...project, id: "product", name: "Product", sort: 1 };
   const hidden = {
     ...project,
@@ -3840,6 +3017,7 @@ it("places top-level Board cards by project and Radar band with Stream ordering 
     projects: [project, product, hidden],
     items: [marked, child, tomorrow, fixed, upcoming, ghost, backlog],
   });
+  switchLens("Board");
 
   const board = within(
     screen.getByRole("table", { name: "Projects by time band" }),
@@ -3888,19 +3066,13 @@ it("places top-level Board cards by project and Radar band with Stream ordering 
       .getByRole("button", { name: goal.title })
       .getAttribute("aria-pressed"),
   ).toBe("true");
-  const inspector = within(
-    screen.getByRole("complementary", { name: "Inspector" }),
-  );
-  fireEvent.click(inspector.getByRole("button", { name: tomorrow.title }));
+  selectItem(tomorrow.title);
   expect(screen.getByRole("heading", { name: tomorrow.title })).toBeTruthy();
-  fireEvent.click(
-    screen.getByRole("checkbox", { name: "Show completed ghosts" }),
-  );
+  fireEvent.click(menuAction("Hide completed ghosts"));
   expect(board.queryByRole("button", { name: ghost.title })).toBeNull();
 });
 
 it("commits Board pointer drops through the workspace socket", async () => {
-  localStorage.setItem("heed.lens", "board");
   const product = { ...project, id: "product", name: "Product", sort: 1 };
   const first = { ...goal, id: "first", title: "First", sort_key: 10 };
   const second = { ...goal, id: "second", title: "Second", sort_key: 20 };
@@ -3916,6 +3088,7 @@ it("commits Board pointer drops through the workspace socket", async () => {
     projects: [project, product],
     items: [first, second, moved, active],
   });
+  switchLens("Board");
   const board = screen.getByRole("table", { name: "Projects by time band" });
   const cell = (projectId: string, band: string) =>
     board.querySelector(
@@ -3996,7 +3169,9 @@ it("commits Board pointer drops through the workspace socket", async () => {
 function mockViewport(desktop: boolean) {
   const media = Object.assign(new EventTarget(), { matches: desktop });
   vi.stubGlobal("matchMedia", (query: string) => {
-    expect(query).toBe("(min-width: 768px)");
+    if (query === "(prefers-reduced-motion: reduce)")
+      return Object.assign(new EventTarget(), { matches: false });
+    expect(query).toBe("(min-width: 761px)");
     return media;
   });
   return (desktop: boolean) => {
@@ -4005,117 +3180,16 @@ function mockViewport(desktop: boolean) {
   };
 }
 
-it.each(["desktop", "mobile"])(
-  "switches and focuses lens tabs with the keyboard on %s",
-  async (layout) => {
-    if (layout === "mobile") mockViewport(false);
-    await openWorkspace();
-    const tabs = within(screen.getByRole("tablist", { name: "Lens" }));
-    expect(tabs.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "Radar",
-      "Board",
-      "Treemap",
-      "List",
-    ]);
-    const radar = tabs.getByRole("tab", { name: "Radar", selected: true });
-    const list = tabs.getByRole("tab", { name: "List", selected: false });
-    expect(radar.tabIndex).toBe(0);
-    expect(list.tabIndex).toBe(-1);
-    radar.focus();
-    fireEvent.keyDown(radar, { key: "ArrowLeft" });
-    expect(document.activeElement).toBe(list);
-    expect(list.tabIndex).toBe(0);
-    expect(radar.tabIndex).toBe(-1);
-    expect(screen.getByRole("tabpanel", { name: "List" })).toBeTruthy();
-    fireEvent.keyDown(list, { key: "ArrowRight" });
-    expect(document.activeElement).toBe(radar);
-    expect(tabs.getByRole("tab", { name: "Radar", selected: true })).toBe(
-      radar,
-    );
-  },
-);
-
-it.each([
-  ["Half", "ArrowUp", "Half"],
-  ["Full", "End", "Peek"],
-])(
-  "reveals an interactive graph from the mobile inspector at %s",
-  async (start, key, end) => {
-    mockViewport(false);
-    await openWorkspace();
-    const stream = within(
-      screen.getByRole("region", { name: "Horizon Stream" }),
-    );
-    const handle = stream.getByRole("button", { name: /size: Peek/ });
-    fireEvent.keyDown(handle, { key });
-    expect(
-      stream.getByRole("button", { name: new RegExp(`size: ${start}`) }),
-    ).toBe(handle);
-    const today = within(screen.getByRole("region", { name: "Today" }));
-    fireEvent.click(
-      today.getByRole("button", { name: `Expand ${goal.title}` }),
-    );
-    fireEvent.click(today.getByRole("button", { name: child.title }));
-    const drawer = within(screen.getByRole("dialog", { name: "Inspector" }));
-
-    fireEvent.click(
-      drawer.getByRole("button", { name: "Open dependency graph" }),
-    );
-
-    expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
-    expect(
-      stream.getByRole("button", { name: new RegExp(`size: ${end}`) }),
-    ).toBe(handle);
-    const lens = screen.getByRole("region", { name: "Dependencies" });
-    expect(lens.hasAttribute("inert")).toBe(false);
-    const graph = within(
-      within(lens).getByRole("region", {
-        name: `Dependency graph for ${goal.title}`,
-      }),
-    );
-    expect(
-      graph.getByRole("button", {
-        name: /^Review retry policy/,
-        pressed: true,
-      }),
-    ).toBeTruthy();
-    fireEvent.click(graph.getByRole("button", { name: /^Run failover drill/ }));
-    expect(
-      within(screen.getByRole("dialog", { name: "Inspector" })).getByRole(
-        "heading",
-        { name: tomorrow.title },
-      ),
-    ).toBeTruthy();
-  },
-);
-
-it("reveals Dependencies when chosen from the mobile lens tabs with the Full stream open", async () => {
+it("keeps the mobile Radar priority handle usable while the summary is visible", async () => {
   mockViewport(false);
   await openWorkspace();
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
   fireEvent.click(radar.getByRole("button", { name: goal.title }));
-  const handle = screen.getByRole("button", { name: /size: Peek/ });
-  fireEvent.keyDown(handle, { key: "End" });
-
-  fireEvent.click(screen.getByRole("tab", { name: "Dependencies" }));
-
-  expect(screen.getByRole("button", { name: /size: Peek/ })).toBe(handle);
-  const graph = screen.getByRole("region", {
-    name: `Dependency graph for ${goal.title}`,
-  });
-  expect(graph.closest("[inert]")).toBeNull();
-});
-
-it("keeps the mobile Radar priority handle usable before and after inspecting", async () => {
-  mockViewport(false);
-  await openWorkspace();
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
-  fireEvent.click(radar.getByRole("button", { name: goal.title }));
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
   const bubble = radar.getByRole("button", { name: tomorrow.title });
   fireEvent.click(bubble);
   expect(bubble.getAttribute("aria-pressed")).toBe("true");
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
 
   const priorityHandle = () =>
     radar.getByRole("slider", { name: `Priority for ${tomorrow.title}` });
@@ -4151,21 +3225,19 @@ it("keeps the mobile Radar priority handle usable before and after inspecting", 
     input: { item_id: tomorrow.id, priority: 10 },
   });
 
-  fireEvent.click(
-    screen.getByRole("button", { name: `Inspect ${tomorrow.title}` }),
-  );
-  const drawer = within(screen.getByRole("dialog", { name: "Inspector" }));
-  expect(drawer.getByRole("heading", { name: tomorrow.title })).toBeTruthy();
-  fireEvent.click(drawer.getByRole("button", { name: "Close" }));
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  expect(
+    within(screen.getByRole("region", selectedRegion)).getByRole("heading", {
+      name: tomorrow.title,
+    }),
+  ).toBeTruthy();
   expect(bubble.getAttribute("aria-pressed")).toBe("true");
   expect(priorityHandle()).toBeTruthy();
 });
 
 it("lets a second mobile Treemap tap zoom into the selected parent", async () => {
   mockViewport(false);
-  localStorage.setItem("heed.lens", "treemap");
   await openWorkspace();
+  switchLens("Treemap");
   const treemap = within(screen.getByRole("region", { name: "Treemap" }));
   const tile = treemap.getByRole("button", { name: goal.title });
   const breadcrumb = treemap.getByRole("navigation", {
@@ -4187,397 +3259,526 @@ it("lets a second mobile Treemap tap zoom into the selected parent", async () =>
   expect(breadcrumb.querySelector("[aria-current]")?.textContent).toBe(
     "All projects",
   );
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
 
   tap(250);
   expect(breadcrumb.querySelector("[aria-current]")?.textContent).toBe(
     goal.title,
   );
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
-  fireEvent.click(
-    screen.getByRole("button", { name: `Inspect ${goal.title}` }),
-  );
-  const drawer = screen.getByRole("dialog", { name: "Inspector" });
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(
-    within(drawer).getByRole("heading", { name: goal.title }),
-  ).toBeTruthy();
-  fireEvent(drawer, new Event("cancel", { cancelable: true }));
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
-  expect(
-    screen.getByRole("button", { name: `Inspect ${goal.title}` }),
+    within(screen.getByRole("region", selectedRegion)).getByRole("heading", {
+      name: goal.title,
+    }),
   ).toBeTruthy();
 });
 
-it("switches the Board stream between desktop and mobile sheet stops at 768px", async () => {
-  const resize = mockViewport(true);
+it("opens the empty attention field directly after sign-in", async () => {
   localStorage.setItem("heed.lens", "board");
-  const completed = {
+  await openWorkspace(undefined, { ...snapshot, items: [] });
+  const field = screen.getByRole("region", { name: "Attention field" });
+  expect(
+    within(field).getByRole("heading", {
+      name: "Nothing needs you. Nothing is scheduled.",
+    }),
+  ).toBeTruthy();
+  expect(field.querySelectorAll(".radar-band")).toHaveLength(4);
+  expect(
+    screen.getByRole("complementary", { name: "Day stream" }),
+  ).toBeTruthy();
+  expect(
+    screen.getByRole("textbox", { name: "Workspace command" }),
+  ).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByRole("tablist")).toBeNull();
+  expect(document.querySelector("select, .board-card")).toBeNull();
+});
+
+it("groups the day and shows a read-only summary that follows selection in both directions", async () => {
+  const review = {
+    ...child,
+    note: "Check the backoff settings.",
+    agent_name: "Build agent",
+    acceptance: '["Retry test passes"]',
+    ref_url: "https://example.test/retry",
+  };
+  const running = {
     ...goal,
-    id: "completed",
-    title: "Close out review",
-    status: "done",
-    completed_at: "2024-04-03T11:00:00Z",
-  } as const;
+    id: "running",
+    title: "Running tests",
+    agent_name: "QA agent",
+    status: "active" as const,
+    last_heartbeat_at: "2024-04-03T11:59:00Z",
+  };
+  const done = {
+    ...goal,
+    id: "done",
+    title: "Shipped parser",
+    status: "done" as const,
+    completed_at: "2024-04-03T11:15:00Z",
+  };
   await openWorkspace(undefined, {
     ...snapshot,
-    items: [...snapshot.items, completed],
+    items: [goal, review, tomorrow, running, done],
   });
-
-  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
-  expect(stream.getByRole("heading", { name: "Needs me" })).toBeTruthy();
-  expect(stream.getByRole("button", { name: child.title })).toBeTruthy();
-  expect(stream.getByRole("button", { name: completed.title })).toBeTruthy();
-  for (const name of ["Today", "Tomorrow", "This week", "Later", "Backlog"])
-    expect(stream.queryByRole("heading", { name })).toBeNull();
-
-  resize(false);
-  const dock = within(
-    screen.getByRole("navigation", { name: "Workspace shortcuts" }),
+  const stream = within(
+    screen.getByRole("complementary", { name: "Day stream" }),
   );
-  expect(stream.queryByRole("heading", { name: "Today" })).toBeNull();
-  expect(stream.getAllByRole("button")).toHaveLength(3);
-  const handle = stream.getByRole("button", { name: /size: Peek/ });
-  fireEvent.keyDown(handle, { key: "ArrowUp" });
-  expect(stream.getByRole("heading", { name: "Today" })).toBeTruthy();
-  expect(stream.queryByRole("heading", { name: "Tomorrow" })).toBeNull();
-  fireEvent.click(dock.getByRole("button", { name: "List" }));
-  expect(stream.getByRole("heading", { name: "Tomorrow" })).toBeTruthy();
-  expect(stream.getByRole("heading", { name: "Backlog" })).toBeTruthy();
-  fireEvent.click(dock.getByRole("button", { name: "Lens" }));
-  expect(stream.queryByRole("heading", { name: "Tomorrow" })).toBeNull();
-
-  expect(dock.queryByRole("button", { name: "Open command bar" })).toBeNull();
-  fireEvent.click(dock.getByRole("button", { name: "+ Goal" }));
-  const quickAdd = screen.getByRole("dialog", { name: "Add a goal" });
-  fireEvent.click(within(quickAdd).getByRole("button", { name: "Close" }));
-
-  fireEvent.click(stream.getByRole("button", { name: goal.title }));
-  const drawer = screen.getByRole("dialog", { name: "Inspector" });
   expect(
-    within(drawer).getByRole("button", { name: "Mark done" }),
+    stream.getAllByRole("heading").map((heading) => heading.textContent),
+  ).toEqual(["Needs you", "Working now", "Today", "Done", "This week"]);
+  expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
+    "One thing needs you. One agent is working. Two items left today.",
+  );
+  const row = stream.getByRole("button", { name: review.title });
+  row.focus();
+  expect(document.activeElement).toBe(row);
+  fireEvent.click(row);
+  const summary = within(screen.getByRole("region", selectedRegion));
+  expect(summary.getByRole("heading", { name: review.title })).toBeTruthy();
+  expect(summary.getByText("Build agent")).toBeTruthy();
+  expect(summary.getByText(review.note)).toBeTruthy();
+  expect(summary.getByText("Retry test passes")).toBeTruthy();
+  expect(summary.getByRole("link").getAttribute("href")).toBe(review.ref_url);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  const field = within(screen.getByRole("region", { name: "Attention field" }));
+  expect(
+    field.getByRole("button", { name: review.title, pressed: true }),
   ).toBeTruthy();
-  fireEvent.click(within(drawer).getByRole("button", { name: "Close" }));
-
-  resize(true);
-  fireEvent.click(screen.getByRole("tab", { name: "List" }));
-  expect(stream.getByRole("heading", { name: "Today" })).toBeTruthy();
-  expect(stream.queryByRole("heading", { name: "Needs me" })).toBeNull();
+  fireEvent.click(field.getByRole("button", { name: tomorrow.title }));
+  expect(
+    stream.getByRole("button", { name: tomorrow.title, pressed: true }),
+  ).toBeTruthy();
 });
 
-it("keeps stream inspector drafts and pending saves across both breakpoint directions", async () => {
-  const resize = mockViewport(false);
-  await openWorkspace();
-  fireEvent.keyDown(screen.getByRole("button", { name: /size: Peek/ }), {
-    key: "End",
-  });
-  const stream = within(screen.getByRole("region", { name: "Horizon Stream" }));
-  fireEvent.click(stream.getByRole("button", { name: goal.title }));
-
-  let inspector = within(screen.getByRole("dialog", { name: "Inspector" }));
-  const title = "Draft payment reliability plan";
-  const note = "Confirm the retry budget with the team.";
-  fireEvent.click(
-    inspector.getByRole("button", { name: `${goal.title} — edit title` }),
-  );
-  fireEvent.click(inspector.getByRole("button", { name: "Add note" }));
-  fireEvent.click(inspector.getByText("Edit details"));
-  fireEvent.change(inspector.getByLabelText("Title"), {
-    target: { value: title },
-  });
-  fireEvent.change(inspector.getByLabelText("Note"), {
-    target: { value: note },
-  });
-  fireEvent.change(inspector.getByLabelText("Priority"), {
-    target: { value: "8" },
-  });
-  fireEvent.change(inspector.getByLabelText("New tag"), {
-    target: { value: "payments" },
-  });
-  fireEvent.click(inspector.getByRole("button", { name: "Add tag" }));
-  fireEvent.change(inspector.getByLabelText("New tag"), {
-    target: { value: "review" },
-  });
-
-  function expectDrafts(expectedNote: string) {
-    expect(inspector.getByLabelText<HTMLInputElement>("Title").value).toBe(
-      title,
-    );
-    expect(inspector.getByLabelText<HTMLTextAreaElement>("Note").value).toBe(
-      expectedNote,
-    );
-    expect(inspector.getByLabelText<HTMLSelectElement>("Priority").value).toBe(
-      "8",
-    );
-    expect(
-      inspector.getByRole("button", { name: "Remove tag payments" }),
-    ).toBeTruthy();
-    expect(inspector.getByLabelText<HTMLInputElement>("New tag").value).toBe(
-      "review",
-    );
-  }
-
-  resize(true);
-  inspector = within(screen.getByRole("complementary", { name: "Inspector" }));
-  expectDrafts(note);
-
-  const revisedNote = `${note} Review the alert thresholds.`;
-  fireEvent.change(inspector.getByLabelText("Note"), {
-    target: { value: revisedNote },
-  });
-  resize(false);
-  inspector = within(screen.getByRole("dialog", { name: "Inspector" }));
-  expectDrafts(revisedNote);
-
-  const socket = TestSocket.current;
-  expect(socket.send).not.toHaveBeenCalled();
-  fireEvent.click(inspector.getByRole("button", { name: "Save note" }));
-  const request = socket.latestRequest();
-  expect(request).toMatchObject({
-    type: "SET_NOTE",
-    input: { item_id: goal.id, note: revisedNote },
-  });
-  resize(true);
-  inspector = within(screen.getByRole("complementary", { name: "Inspector" }));
-  expect(
-    inspector.getByRole<HTMLButtonElement>("button", { name: "Save note" })
-      .disabled,
-  ).toBe(true);
-  await act(async () =>
-    socket.receive({
-      type: "ERROR",
-      requestId: request.requestId,
-      seq: 2,
-      error: { code: "invalid_input", message: "Couldn’t save the note." },
+it("shows only the selected completion's verdict as item updates and verdicts arrive", async () => {
+  const criteria = ["Retry test passes"];
+  const item = {
+    ...goal,
+    acceptance: JSON.stringify(criteria),
+    status: "done" as const,
+    completed_at: "2024-04-03T11:15:00.000Z",
+  };
+  const base = { item_id: item.id, actor: "Build agent" };
+  const firstCompletion: Event = {
+    ...base,
+    id: 1,
+    at: item.completed_at,
+    kind: "status",
+    detail: JSON.stringify({ new: "done" }),
+  };
+  const firstVerdict: Event = {
+    ...base,
+    id: 2,
+    at: "2024-04-03T11:16:00.000Z",
+    kind: "judged",
+    detail: JSON.stringify({
+      status_event_id: firstCompletion.id,
+      model: "test/judge",
+      criteria,
+      probabilities: [0.8],
+      evidence_supplied: true,
     }),
+  };
+  let activity: Response | Promise<Response> = Response.json([
+    firstVerdict,
+    firstCompletion,
+  ]);
+  const readActivity = vi.fn(() => activity);
+  await openWorkspace(undefined, { ...snapshot, items: [item] }, readActivity);
+  const stream = within(
+    screen.getByRole("complementary", { name: "Day stream" }),
   );
-  expect(inspector.getByRole("alert").textContent).toBe(
-    "Couldn’t save the note.",
-  );
-  expect(
-    inspector.getByRole<HTMLButtonElement>("button", { name: "Save note" })
-      .disabled,
-  ).toBe(false);
-  expectDrafts(revisedNote);
-});
+  const select = () =>
+    fireEvent.click(stream.getByRole("button", { name: item.title }));
+  select();
+  const summary = () => within(screen.getByRole("region", selectedRegion));
+  expect(await summary().findByText(/Likely met/)).toBeTruthy();
 
-it("keeps a canvas inspector open with its draft after resizing to mobile", async () => {
-  const resize = mockViewport(false);
-  await openWorkspace();
-  const radar = within(screen.getByRole("region", { name: "Radar" }));
-  fireEvent.click(radar.getByRole("button", { name: goal.title }));
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
-
-  resize(true);
-  const inspector = within(
-    screen.getByRole("complementary", { name: "Inspector" }),
-  );
-  fireEvent.click(
-    inspector.getByRole("button", { name: `${goal.title} — edit title` }),
-  );
-  fireEvent.change(inspector.getByLabelText("Title"), {
-    target: { value: "Draft payment reliability plan" },
-  });
-
-  resize(false);
-  const drawer = within(screen.getByRole("dialog", { name: "Inspector" }));
-  expect(
-    drawer.getByDisplayValue("Draft payment reliability plan"),
-  ).toBeTruthy();
-  fireEvent.click(drawer.getByRole("button", { name: "Close" }));
-  expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull();
-
-  fireEvent.click(
-    screen.getByRole("button", { name: `Inspect ${goal.title}` }),
-  );
-  expect(
-    within(screen.getByRole("dialog", { name: "Inspector" })).getByRole(
-      "heading",
-      { name: goal.title },
-    ),
-  ).toBeTruthy();
-});
-
-const emptyOnboarding = {
-  hasItems: false,
-  hasGoalOrProject: false,
-  hasDemoData: false,
-  hasToken: false,
-};
-
-it("computes the four steps from real work, tokens, saved guidance and this device", () => {
-  expect(
-    onboardingCompletion(
-      { ...emptyOnboarding, hasItems: true, hasDemoData: true },
-      "  ",
-      false,
-    ),
-  ).toEqual({
-    work: false,
-    agent: false,
-    guidance: false,
-    notifications: false,
-  });
-  expect(
-    onboardingCompletion(
-      { ...emptyOnboarding, hasGoalOrProject: true, hasToken: true },
-      "Focus on today.",
-      true,
-    ),
-  ).toEqual({ work: true, agent: true, guidance: true, notifications: true });
-});
-
-it("mounts the first-run guide for hosts and reopens the dismissed guide from Settings", async () => {
-  const previous = TestSocket.current;
-  fetchSession.mockImplementation(async (path: string) =>
-    Response.json(
-      path === "/api/me"
-        ? { workspaceId: "host", email: "demo@example.test" }
-        : [],
-    ),
-  );
-  mountHost();
-  await waitFor(() => expect(TestSocket.current).not.toBe(previous));
   const socket = TestSocket.current;
-  socket.receive({ ...snapshot, items: [], onboarding: emptyOnboarding });
-  const guide = within(
-    screen.getByRole("region", { name: "Set up your workspace" }),
-  );
-  expect(guide.getByRole("progressbar").getAttribute("value")).toBe("0");
+  const reopened = {
+    ...item,
+    status: "queued" as const,
+    completed_at: null,
+    reopen_count: 1,
+  };
+  socket.receive({ type: "ITEM_UPSERT", seq: 2, item: reopened });
+  expect(summary().queryByText(/Likely met/)).toBeNull();
 
-  fireEvent.click(guide.getByRole("button", { name: "Open guidance" }));
-  const guidance = within(screen.getByRole("dialog", { name: "Guidance" }));
-  const examples = guidance.getAllByRole("button", { name: /Use example:/ });
-  expect(examples).toHaveLength(3);
-  fireEvent.click(examples[0]);
-  fireEvent.click(guidance.getByRole("button", { name: "Save guidance" }));
-  const request = socket.latestRequest();
-  if (request.type !== "SET_GUIDANCE")
-    throw new Error("Expected a guidance save");
-  expect(request.input.text).toContain("customer-facing incidents");
-  const settings = { ...snapshot.settings, guidance: request.input.text };
-  socket.receive({ type: "SETTINGS_UPDATE", seq: 2, settings });
-  await act(async () =>
-    socket.receive({ type: "ACK", seq: 3, requestId: request.requestId }),
-  );
-  fireEvent.click(guidance.getByRole("button", { name: "Close" }));
-
-  const opened = within(
-    screen.getByRole("dialog", { name: "Set up your workspace" }),
-  );
-  expect(opened.getByRole("progressbar").getAttribute("value")).toBe("1");
-  socket.receive({
-    type: "ONBOARDING_UPDATE",
-    seq: 4,
-    onboarding: { ...emptyOnboarding, hasToken: true },
+  const secondCompletion = {
+    ...firstCompletion,
+    id: 5,
+    at: "2024-04-03T11:30:00.000Z",
+  };
+  const completedAgain = {
+    ...reopened,
+    status: "done" as const,
+    completed_at: secondCompletion.at,
+  };
+  const history = [secondCompletion, firstVerdict, firstCompletion];
+  let releaseRefresh!: () => void;
+  activity = new Promise((resolve) => {
+    releaseRefresh = () => resolve(Response.json(history));
   });
-  expect(opened.getByRole("progressbar").getAttribute("value")).toBe("2");
-  fireEvent.click(opened.getByRole("button", { name: "Dismiss guide" }));
-  const dismiss = socket.latestRequest();
-  expect(dismiss.type).toBe("DISMISS_ONBOARDING");
+  socket.receive({ type: "ITEM_UPSERT", seq: 3, item: completedAgain });
+  expect(readActivity).toHaveBeenCalledTimes(3);
+  expect(summary().queryByText(/Likely met/)).toBeNull();
+
+  await act(async () => releaseRefresh());
+  expect(summary().queryByText(/Likely met/)).toBeNull();
+
+  await act(async () => {
+    fireEvent.click(summary().getByRole("button", { name: "Clear selection" }));
+  });
+  activity = Response.json(history);
+  await act(async () => select());
+  expect(readActivity).toHaveBeenCalledTimes(4);
+  expect(summary().getByText(criteria[0])).toBeTruthy();
+  expect(summary().queryByText(/Likely met/)).toBeNull();
+
+  const secondVerdict = {
+    ...firstVerdict,
+    id: 6,
+    at: "2024-04-03T11:31:00.000Z",
+    detail: JSON.stringify({
+      ...JSON.parse(firstVerdict.detail!),
+      status_event_id: secondCompletion.id,
+      probabilities: [0.2],
+    }),
+  };
+  const lateFirstVerdict = {
+    ...firstVerdict,
+    id: 7,
+    at: "2024-04-03T11:32:00.000Z",
+  };
+  activity = Response.json([lateFirstVerdict, secondVerdict, ...history]);
+  socket.receive({ type: "EVENT_APPEND", seq: 4, event: lateFirstVerdict });
+  expect(await summary().findByText(/Likely not met/)).toBeTruthy();
+
   socket.receive({
-    type: "SETTINGS_UPDATE",
+    type: "ITEM_UPSERT",
     seq: 5,
-    settings: { ...settings, onboarding_dismissed: true },
+    item: { ...completedAgain, acceptance: '["Check the rollout"]' },
   });
-  await act(async () =>
-    socket.receive({ type: "ACK", seq: 6, requestId: dismiss.requestId }),
-  );
-  expect(
-    screen.queryByRole("heading", { name: "Set up your workspace" }),
-  ).toBeNull();
+  expect(summary().getByText("Check the rollout")).toBeTruthy();
+  expect(summary().queryByText(/Likely not met/)).toBeNull();
+});
 
-  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-  fireEvent.click(
-    within(screen.getByRole("dialog", { name: "Settings" })).getByRole(
-      "button",
-      { name: "Open setup guide" },
-    ),
+it("reveals a collapsed descendant in the day list when its bubble is selected", async () => {
+  const followup = { ...child, handoff: 0 as const };
+  await openWorkspace(undefined, { ...snapshot, items: [goal, followup] });
+  const stream = within(
+    screen.getByRole("complementary", { name: "Day stream" }),
   );
+  fireEvent.click(
+    stream.getByRole("button", { name: `Collapse ${goal.title}` }),
+  );
+  expect(stream.queryByRole("button", { name: followup.title })).toBeNull();
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  fireEvent.click(radar.getByRole("button", { name: followup.title }));
   expect(
-    screen.getByRole("dialog", { name: "Set up your workspace" }),
+    stream.getByRole("button", { name: followup.title, pressed: true }),
   ).toBeTruthy();
 });
 
 it.each([
-  ["radar", "Radar"],
-  ["board", "Board"],
-  ["treemap", "Treemap"],
-  ["list", "List"],
-  ["dependencies", "Dependencies"],
-])(
-  "links the empty %s lens and Horizon Stream back to the guide",
-  async (id, label) => {
-    localStorage.setItem("heed.lens", id);
+  ["visible", "suggestion"],
+  ["visible", "typed reply"],
+  ["hidden", "suggestion"],
+  ["hidden", "typed reply"],
+])("answers a %s item's handoff with a %s", async (visibility, method) => {
+  const item = {
+    ...goal,
+    status: "blocked",
+    handoff: 1,
+    handoff_note: "Which rollout should we use?",
+    handoff_options: '["Staging","Production"]',
+    agent_name: "Release agent",
+    hidden: visibility === "hidden" ? (1 as const) : (0 as const),
+  } as const;
+  await openWorkspace(undefined, { ...snapshot, items: [item] });
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  if (visibility === "hidden") {
+    expect(
+      radar.queryByRole("region", { name: `Question about ${item.title}` }),
+    ).toBeNull();
+    await sendCommand("hidden items");
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Hidden items" })).getByRole(
+        "button",
+        { name: item.title },
+      ),
+    );
+  }
+  const question = within(
+    radar.getByRole("region", { name: `Question about ${item.title}` }),
+  );
+  expect(question.getByText(/Release agent asks/)).toBeTruthy();
+  expect(question.getByText(item.handoff_note)).toBeTruthy();
+  const text = method === "suggestion" ? "Staging" : "Use a canary first";
+  if (method === "suggestion") {
+    fireEvent.click(question.getByRole("button", { name: text }));
+  } else {
+    fireEvent.click(question.getByRole("button", { name: "Type a reply" }));
+    expect(commandInput().placeholder).toBe("Reply to Release agent…");
+    expect(document.activeElement).toBe(commandInput());
+    await sendCommand(text);
+  }
+  const socket = TestSocket.current;
+  expect(socket.latestRequest()).toMatchObject({
+    type: "ANSWER_HANDOFF",
+    input: { item_id: item.id, text },
+  });
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 2,
+    item: { ...item, status: "active", handoff: 0, handoff_answer: text },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 3,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  expect(
+    radar.queryByRole("region", { name: `Question about ${item.title}` }),
+  ).toBeNull();
+});
+
+it("keeps one selected question as visibility changes and removes it when terminal", async () => {
+  const item = {
+    ...goal,
+    hidden: 1,
+    handoff: 1,
+    handoff_note: "Which rollout should we use?",
+  } as const;
+  await openWorkspace(undefined, { ...snapshot, items: [item] });
+  await sendCommand("hidden items");
+  fireEvent.click(
+    within(screen.getByRole("dialog", { name: "Hidden items" })).getByRole(
+      "button",
+      { name: item.title },
+    ),
+  );
+  const question = { name: `Question about ${item.title}` };
+  const socket = TestSocket.current;
+  socket.receive({ type: "ITEM_UPSERT", seq: 2, item: { ...item, hidden: 0 } });
+  expect(screen.getAllByRole("region", question)).toHaveLength(1);
+  fireEvent.click(
+    within(screen.getByRole("region", question)).getByRole("button", {
+      name: "Type a reply",
+    }),
+  );
+  fireEvent.change(commandInput(), { target: { value: "Friday" } });
+  socket.receive({
+    type: "ITEM_UPSERT",
+    seq: 3,
+    item: { ...item, status: "cancelled" },
+  });
+  expect(screen.queryByRole("region", question)).toBeNull();
+  expect(commandInput().value).toBe("");
+  expect(socket.send).not.toHaveBeenCalled();
+});
+
+it("starts item creation without answering the open handoff in reply mode", async () => {
+  const item = { ...goal, handoff: 1, agent_name: "Release agent" } as const;
+  await openWorkspace(undefined, { ...snapshot, items: [item] });
+  const question = screen.getByRole("region", {
+    name: `Question about ${item.title}`,
+  });
+  fireEvent.click(
+    within(question).getByRole("button", { name: "Type a reply" }),
+  );
+  expect(commandInput().placeholder).toBe("Reply to Release agent…");
+
+  fireEvent.click(menuAction("Add item"));
+  expect(screen.queryByRole("button", { name: "Exit reply" })).toBeNull();
+  expect(commandInput().value).toBe("add ");
+  expect(document.activeElement).toBe(commandInput());
+  await sendCommand("add Check billing logs");
+
+  const socket = TestSocket.current;
+  expect(socket.latestRequest()).toMatchObject({
+    type: "ADD_ITEM",
+    input: { title: "Check billing logs" },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 2,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  expect(question.isConnected).toBe(true);
+});
+
+it("applies built-in commands before handing unknown input to the host", async () => {
+  const freeText = vi.fn(async () => ({ text: "Host reply" }));
+  fetchSession.mockImplementation(async (path: string) =>
+    path === "/api/me"
+      ? Response.json({
+          workspaceId: "default",
+          email: "person@example.test",
+          capabilities: { command: true },
+        })
+      : Response.json([]),
+  );
+  mountHost({ freeText });
+  await screen.findByRole("banner");
+  const socket = TestSocket.current;
+  socket.receive(snapshot);
+  await sendCommand("zoom into today");
+  expect(screen.getByText(/^Today split/)).toBeTruthy();
+  expect(freeText).not.toHaveBeenCalled();
+  await sendCommand("fit");
+  expect(screen.getAllByText("Whole radar.")).toHaveLength(2);
+  await sendCommand("add Check billing logs");
+  expect(socket.latestRequest()).toMatchObject({
+    type: "ADD_ITEM",
+    input: {
+      title: "Check billing logs",
+      project: "inbox",
+      scheduled_on: "2024-04-03",
+    },
+  });
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 2,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  await sendCommand("Please summarize last quarter");
+  expect(freeText).toHaveBeenCalledWith(
+    "Please summarize last quarter",
+    expect.objectContaining({
+      timezone: "UTC",
+      items: expect.arrayContaining([goal]),
+    }),
+  );
+  expect(screen.getByText("Host reply")).toBeTruthy();
+  expect(fetchSession.mock.calls.map(([path]) => path)).not.toContain(
+    "/api/command",
+  );
+});
+
+it("creates a report token with one field and discards its secret when closed", async () => {
+  await openWorkspace();
+  await sendCommand("new token");
+  const label = within(screen.getByRole("dialog", { name: "New API token" }));
+  fireEvent.change(label.getByRole("textbox", { name: "Token label" }), {
+    target: { value: "Build agent" },
+  });
+  fireEvent.click(label.getByRole("button", { name: "Create token" }));
+  const socket = TestSocket.current;
+  expect(socket.latestRequest()).toMatchObject({
+    type: "CREATE_TOKEN",
+    input: { label: "Build agent", scope: "report" },
+  });
+  const createdToken = {
+    id: "token",
+    label: "Build agent",
+    scope: "report",
+    default_project_id: null,
+    created_at: goal.created_at,
+    last_used_at: null,
+    token: "example-once-only-secret",
+  } as const;
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 2,
+      requestId: socket.latestRequest().requestId,
+      createdToken,
+    }),
+  );
+  const secret = within(screen.getByRole("dialog", { name: "Token created" }));
+  expect(secret.getByDisplayValue(createdToken.token)).toBeTruthy();
+  expect(secret.getByRole("button", { name: "Copy token" })).toBeTruthy();
+  fireEvent.click(secret.getByRole("button", { name: "Close" }));
+  expect(screen.queryByDisplayValue(createdToken.token)).toBeNull();
+  expect(document.querySelector("select")).toBeNull();
+});
+
+it.each([true, false])(
+  "creates a steering token for a named project (label in command: %s)",
+  async (inlineLabel) => {
+    const release = { ...project, id: "release", name: "Release Operations" };
+    const label = "Release agent";
     await openWorkspace(undefined, {
       ...snapshot,
-      items: [],
-      settings: { ...snapshot.settings, onboarding_dismissed: true },
-      onboarding: emptyOnboarding,
+      projects: [project, release],
     });
-    const lens = within(screen.getByRole("region", { name: label }));
-    const stream = within(
-      screen.getByRole("region", { name: "Horizon Stream" }),
+    await sendCommand(
+      `new steer token in Release Operations${inlineLabel ? ` for ${label}` : ""}`,
     );
-    expect(lens.getByRole("button", { name: "Open setup guide" })).toBeTruthy();
-    fireEvent.click(stream.getByRole("button", { name: "Open setup guide" }));
-    expect(
-      screen.getByRole("dialog", { name: "Set up your workspace" }),
-    ).toBeTruthy();
+    if (!inlineLabel) {
+      const dialog = within(
+        screen.getByRole("dialog", { name: "New API token" }),
+      );
+      expect(
+        dialog.getByText("Scope steer · Default project Release Operations"),
+      ).toBeTruthy();
+      fireEvent.change(dialog.getByRole("textbox", { name: "Token label" }), {
+        target: { value: label },
+      });
+      fireEvent.click(dialog.getByRole("button", { name: "Create token" }));
+    }
+    const socket = TestSocket.current;
+    expect(socket.latestRequest()).toMatchObject({
+      type: "CREATE_TOKEN",
+      input: { label, scope: "steer", default_project_id: release.id },
+    });
+    await act(async () =>
+      socket.receive({
+        type: "ACK",
+        seq: 2,
+        requestId: socket.latestRequest().requestId,
+        createdToken: {
+          id: "token",
+          label,
+          scope: "steer",
+          default_project_id: release.id,
+          created_at: goal.created_at,
+          last_used_at: null,
+          token: "example-once-only-secret",
+        },
+      }),
+    );
+    expect(screen.getByRole("dialog", { name: "Token created" })).toBeTruthy();
   },
 );
 
-it("replaces the canvas with labeled demo rows and exposes demo removal in Settings", async () => {
-  await openWorkspace(undefined, {
-    ...snapshot,
-    items: [],
-    onboarding: emptyOnboarding,
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Load demo data" }));
+it("requires a separate typed confirmation for workspace reset", async () => {
+  await openWorkspace();
   const socket = TestSocket.current;
-  const load = socket.latestRequest();
-  expect(load.type).toBe("LOAD_DEMO_DATA");
-  socket.receive({
-    type: "CANVAS_REPLACE",
-    seq: 2,
-    projects: [
-      project,
-      { ...project, id: "research", name: "Research", demo: 1 },
-    ],
-    items: [{ ...goal, project_id: "research", demo: 1 }],
-    dependencies: [],
-    onboarding: { ...emptyOnboarding, hasItems: true, hasDemoData: true },
+  await sendCommand(RESET_WORKSPACE_CONFIRMATION);
+  const confirm = within(
+    screen.getByRole("dialog", { name: "Reset workspace" }),
+  );
+  const input = confirm.getByRole("textbox", {
+    name: `Type ${RESET_WORKSPACE_CONFIRMATION} to confirm`,
+  });
+  const button = confirm.getByRole<HTMLButtonElement>("button", {
+    name: "Confirm",
+  });
+  expect(socket.send).not.toHaveBeenCalled();
+  fireEvent.change(input, { target: { value: "reset workspace" } });
+  expect(button.disabled).toBe(true);
+  fireEvent.change(input, { target: { value: RESET_WORKSPACE_CONFIRMATION } });
+  fireEvent.click(button);
+  expect(socket.latestRequest()).toMatchObject({
+    type: "RESET_WORKSPACE",
+    input: { confirmation: RESET_WORKSPACE_CONFIRMATION },
   });
   await act(async () =>
-    socket.receive({ type: "ACK", seq: 3, requestId: load.requestId }),
+    socket.receive({
+      type: "ACK",
+      seq: 2,
+      requestId: socket.latestRequest().requestId,
+    }),
   );
-  expect(
-    screen.queryByRole("heading", { name: "Set up your workspace" }),
-  ).toBeNull();
-  const projects = within(
-    screen.getByRole("group", { name: "Visible projects" }),
-  );
-  expect(projects.getByRole("button", { name: /Research.*Demo/ })).toBeTruthy();
-  expect(
-    within(screen.getByRole("region", { name: "Radar" }))
-      .getByRole("button", { name: goal.title })
-      .getAttribute("aria-description"),
-  ).toContain("Demo");
-
-  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-  const settings = within(screen.getByRole("dialog", { name: "Settings" }));
-  fireEvent.click(settings.getByRole("button", { name: "Remove demo data" }));
-  const remove = socket.latestRequest();
-  expect(remove.type).toBe("REMOVE_DEMO_DATA");
-  socket.receive({
-    type: "CANVAS_REPLACE",
-    seq: 4,
-    projects: [project],
-    items: [],
-    dependencies: [],
-    onboarding: emptyOnboarding,
-  });
-  await act(async () =>
-    socket.receive({ type: "ACK", seq: 5, requestId: remove.requestId }),
-  );
-  expect(projects.queryByRole("button", { name: /Research/ })).toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
 });

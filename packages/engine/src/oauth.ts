@@ -10,6 +10,7 @@ import type {
 } from "./oauth-storage.js";
 import { checkLimit } from "./seams.js";
 import { hasAppOrigin } from "./session.js";
+import type { HumanActor } from "./session.js";
 import {
   hashSecret,
   isTokenSecret,
@@ -435,7 +436,7 @@ async function tokens(request: Request, url: URL, app: AppContext) {
     clientSecretHash:
       credentials.secret === null ? null : await hashSecret(credentials.secret),
   });
-  if (result.error)
+  if ("error" in result)
     return oauthError(
       result.error,
       result.error === "invalid_client" && request.headers.has("Authorization")
@@ -447,6 +448,22 @@ async function tokens(request: Request, url: URL, app: AppContext) {
 
 function methodNotAllowed(allow: string) {
   return new Response(null, { status: 405, headers: { Allow: allow } });
+}
+
+export async function issueAssistantToken(
+  url: URL,
+  { workspaceId, user }: HumanActor,
+  app: AppContext,
+) {
+  await checkLimit(app.limits, workspaceId, "token.create");
+  const access = await app
+    .workspace(workspaceId)
+    .issueAssistantAccessToken(new URL("/mcp", url).href, user);
+  return Response.json({
+    ...access,
+    workspace_id: workspaceId,
+    user_id: user.id,
+  });
 }
 
 export function handleOAuth(request: Request, url: URL, app: AppContext) {
