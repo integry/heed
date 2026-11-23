@@ -1171,6 +1171,11 @@ it("connects a registered MCP client to the active hosted workspace and revokes 
       input: { grant_id: grants[0].id },
     }),
   );
+  // Revoking changes the connected-agent count shown in the header.
+  expect(await socket.next()).toMatchObject({
+    type: "SETTINGS_UPDATE",
+    settings: { agents_connected: 0 },
+  });
   expect(await socket.next()).toMatchObject({
     type: "ACK",
     requestId: "revoke",
