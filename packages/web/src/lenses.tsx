@@ -36,6 +36,8 @@ export interface LensProps {
   setPriority: (id: string, priority: number) => void;
   setPosition: (id: string, position: Record<string, number>) => void;
   moveRadar: (id: string, drop: RadarPlacement, layoutKey?: string) => void;
+  /** Moves an item under another item, or to the top level with null. */
+  reparent?: (id: string, parentId: string | null) => void;
 }
 
 export interface Lens {

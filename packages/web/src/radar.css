@@ -449,3 +449,31 @@
     min-height: 32px;
   }
 }
+
+/* Drag one bubble onto another to nest it. */
+.radar-nest-target {
+  fill: none;
+  stroke: var(--live);
+  stroke-width: 2;
+  stroke-dasharray: 4 4;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.radar-nest-target[data-blocked="true"] {
+  stroke: var(--muted);
+}
+
+/* Inside an item, dropping outside its circle lifts the item one level. */
+.radar-goal-field[data-lift="true"] {
+  stroke: var(--live);
+  stroke-width: 2;
+}
+
+/* Breadcrumbs accept a dragged item as a drop target. */
+.radar-breadcrumb [data-drop-target="true"] {
+  color: var(--text);
+  outline: 2px dashed var(--live);
+  outline-offset: 3px;
+  border-radius: 4px;
+}

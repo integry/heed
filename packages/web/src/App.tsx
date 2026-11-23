@@ -1047,6 +1047,7 @@ function Workspace({
               moveRadar={(id, { position, ...patch }, key = "radar") =>
                 placeItem(id, key, position, patch)
               }
+              reparent={(id, parent_id) => updateItem(id, { parent_id })}
             />
           </div>
           {dependencyError && showDependencyErrorInline && (
