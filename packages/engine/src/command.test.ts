@@ -758,3 +758,44 @@ it("returns the user's handoff reply from a command and records their identity",
     actor: { email: "member@example.test" },
   });
 });
+
+it("gives the model the selected item and the previous exchange", async () => {
+  const { item_id } = await workspace.addItem(human, {
+    title: "Checkout redesign",
+  });
+  const fetchMessage = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(
+      Response.json({ content: [{ type: "text", text: "Moved it." }] }),
+    );
+  try {
+    const response = await post(
+      "/api/command",
+      JSON.stringify({
+        text: "no, under Goforex",
+        selected_item_id: item_id,
+        previous: {
+          text: "goforex: fix the menu",
+          summary: "Added fix the menu to a new Gofx project.",
+          changes: [{ type: "project", id: "p1", created: true }],
+        },
+      }),
+      {
+        ...bindings,
+        ANTHROPIC_API_KEY: "fixture-key",
+        ANTHROPIC_COMMAND_MODEL: "fixture-model",
+      } as typeof bindings,
+    );
+    expect(response.status).toBe(200);
+    const body = JSON.parse(String(fetchMessage.mock.calls[0][1]?.body));
+    expect(body.system).toContain(`"selected_item":{"id":"${item_id}"`);
+    const [message] = body.messages;
+    expect(message.content).toContain(
+      "Previous request: goforex: fix the menu",
+    );
+    expect(message.content).toContain('"created":true');
+    expect(message.content).toMatch(/New message: no, under Goforex$/);
+  } finally {
+    fetchMessage.mockRestore();
+  }
+});
