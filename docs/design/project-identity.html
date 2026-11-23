@@ -1,0 +1,592 @@
+<title>Heed Project Identity</title>
+<meta name="claude:viewport-fit-sides" content="cover" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link
+  rel="stylesheet"
+  href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@400;600&display=swap"
+/>
+<style>
+  /* Layout: Heed's own field on the left, the three rules on the right. Dark-first, Heed tokens. */
+  :root {
+    --page: #0d1422;
+    --surface: #141d30;
+    --ring: #26324c;
+    --text: #f1ece1;
+    --muted: #8e9ab3;
+    --attention: #ffb347;
+    --live: #5fd6c4;
+    --p-violet: #a594ff;
+    --p-sky: #6fb6ff;
+    --p-rose: #f38bb8;
+    --p-lime: #b7dc72;
+    --p-indigo: #8792ff;
+    --p-clay: #d79a86;
+    --badge-text: #0d1422;
+    --display: "Bricolage Grotesque", "Trebuchet MS", sans-serif;
+    --body: "Hanken Grotesk", "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --page: #f3efe6;
+      --surface: #e9e3d6;
+      --ring: #cfc7b6;
+      --text: #151b2b;
+      --muted: #5d6679;
+      --attention: #a65000;
+      --live: #0f7f72;
+      --p-violet: #6a52d9;
+      --p-sky: #2a73c2;
+      --p-rose: #b8457a;
+      --p-lime: #5b7f1c;
+      --p-indigo: #4652c8;
+      --p-clay: #9b5a45;
+      --badge-text: #f3efe6;
+      color-scheme: light;
+    }
+  }
+  :root[data-theme="light"] {
+    --page: #f3efe6;
+    --surface: #e9e3d6;
+    --ring: #cfc7b6;
+    --text: #151b2b;
+    --muted: #5d6679;
+    --attention: #a65000;
+    --live: #0f7f72;
+    --p-violet: #6a52d9;
+    --p-sky: #2a73c2;
+    --p-rose: #b8457a;
+    --p-lime: #5b7f1c;
+    --p-indigo: #4652c8;
+    --p-clay: #9b5a45;
+    --badge-text: #f3efe6;
+    color-scheme: light;
+  }
+
+  body {
+    background: var(--page);
+    color: var(--text);
+    font: 15px/1.5 var(--body);
+  }
+  .wrap {
+    max-width: 1160px;
+    margin: 0 auto;
+    padding-block: 28px 48px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px 24px;
+  }
+  .wordmark {
+    font: 700 20px var(--display);
+    letter-spacing: -0.02em;
+  }
+  .meta {
+    font: 12px var(--mono);
+    color: var(--muted);
+  }
+  h1 {
+    font: 700 clamp(28px, 4vw, 40px)/1.05 var(--display);
+    letter-spacing: -0.025em;
+    margin: 18px 0 6px;
+    text-wrap: balance;
+    max-width: 22ch;
+  }
+  .lede {
+    color: var(--muted);
+    max-width: 62ch;
+    margin: 0 0 24px;
+  }
+  .stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    gap: 28px;
+    align-items: start;
+  }
+  @media (max-width: 860px) {
+    .stage {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .field {
+    min-width: 0;
+  }
+  .field svg {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .band {
+    fill: var(--surface);
+    stroke: var(--ring);
+  }
+  .band.alt {
+    fill: var(--page);
+  }
+  .band-label {
+    font: 10px var(--mono);
+    letter-spacing: 0.14em;
+    fill: var(--muted);
+    text-transform: uppercase;
+  }
+  .shape {
+    stroke: var(--ring);
+    stroke-width: 1.2;
+  }
+  .status-live {
+    fill: none;
+    stroke: var(--live);
+    stroke-width: 2.4;
+  }
+  .status-needs {
+    fill: none;
+    stroke: var(--attention);
+    stroke-width: 2.4;
+  }
+  .title {
+    font: 600 10.5px var(--body);
+    fill: var(--text);
+  }
+  .stamp {
+    font: 9px var(--mono);
+    fill: var(--muted);
+  }
+  .badge-text {
+    font: 600 8.5px var(--mono);
+    letter-spacing: 0.06em;
+    fill: var(--badge-text);
+  }
+  .rules {
+    display: grid;
+    gap: 22px;
+    min-width: 0;
+  }
+  .rule h2 {
+    font: 600 11px var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 8px;
+  }
+  .rule p {
+    margin: 0 0 10px;
+    max-width: 58ch;
+  }
+  .line {
+    font: 13px var(--mono);
+    border: 1px solid var(--ring);
+    border-radius: 10px;
+    padding: 9px 12px;
+    display: grid;
+    gap: 4px;
+    background: var(--surface);
+  }
+  .line span::before {
+    content: "› ";
+    color: var(--muted);
+  }
+  .swatches {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .sw {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 12px var(--mono);
+    color: var(--muted);
+  }
+  .sw i {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    display: inline-block;
+  }
+  .shapes {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .shapes figure {
+    margin: 0;
+    text-align: center;
+    font: 12px var(--body);
+    color: var(--muted);
+  }
+  .shapes svg {
+    width: 46px;
+    height: 46px;
+    display: block;
+    margin: 0 auto 4px;
+  }
+  .keep {
+    font-size: 13px;
+    color: var(--muted);
+    border-top: 1px solid var(--ring);
+    padding-top: 12px;
+  }
+  .keep b {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .dot-live {
+    color: var(--live);
+  }
+  .dot-needs {
+    color: var(--attention);
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="wordmark">heed</div>
+    <div class="meta">
+      Mock-up · project colours, badges and shapes · not built yet
+    </div>
+  </header>
+  <h1>Every bubble says which project it belongs to.</h1>
+  <p class="lede">
+    Each project gets a colour and a short code. The code sits in a small badge
+    on top of the bubble, and the colour tints its fill. Activity types can
+    change the bubble's shape. The status rings still mean the same thing on
+    every shape.
+  </p>
+
+  <div class="stage">
+    <div
+      class="field"
+      role="img"
+      aria-label="Radar with project badges, tinted bubbles and shaped items"
+    >
+      <svg viewBox="0 0 600 600">
+        <defs>
+          <symbol id="hex" viewBox="-1 -1 2 2">
+            <polygon
+              points="0,-1 0.866,-0.5 0.866,0.5 0,1 -0.866,0.5 -0.866,-0.5"
+            />
+          </symbol>
+        </defs>
+        <circle class="band" cx="300" cy="300" r="285" />
+        <circle class="band alt" cx="300" cy="300" r="222" />
+        <circle class="band" cx="300" cy="300" r="160" />
+        <circle class="band alt" cx="300" cy="300" r="92" />
+        <text class="band-label" x="300" y="34" text-anchor="middle">
+          Backlog
+        </text>
+        <text class="band-label" x="300" y="96" text-anchor="middle">
+          Later
+        </text>
+        <text class="band-label" x="300" y="158" text-anchor="middle">
+          This week
+        </text>
+        <text class="band-label" x="300" y="304" text-anchor="middle">
+          Today · You
+        </text>
+
+        <!-- Goforex · GO · violet · live -->
+        <g transform="translate(252,250)">
+          <circle
+            class="shape"
+            r="30"
+            style="
+              fill: color-mix(in srgb, var(--p-violet) 24%, var(--surface));
+            "
+          />
+          <circle class="status-live" r="34" />
+          <rect
+            x="-13"
+            y="-41"
+            width="26"
+            height="14"
+            rx="7"
+            style="fill: var(--p-violet)"
+          />
+          <text class="badge-text" y="-31" text-anchor="middle">GO</text>
+          <text class="title" y="-2" text-anchor="middle">Russian</text>
+          <text class="title" y="11" text-anchor="middle">translation</text>
+        </g>
+        <!-- Zupaflow call · ZF · sky · square (meeting) · needs you -->
+        <g transform="translate(350,262)">
+          <rect
+            class="shape"
+            x="-27"
+            y="-27"
+            width="54"
+            height="54"
+            rx="9"
+            style="fill: color-mix(in srgb, var(--p-sky) 24%, var(--surface))"
+          />
+          <rect
+            class="status-needs"
+            x="-31"
+            y="-31"
+            width="62"
+            height="62"
+            rx="12"
+          />
+          <rect
+            x="-12"
+            y="-38"
+            width="24"
+            height="14"
+            rx="7"
+            style="fill: var(--p-sky)"
+          />
+          <text class="badge-text" y="-28" text-anchor="middle">ZF</text>
+          <text class="title" y="-2" text-anchor="middle">Client call</text>
+          <text class="stamp" y="11" text-anchor="middle">14:00</text>
+        </g>
+        <!-- Inbox · no badge -->
+        <g transform="translate(298,350)">
+          <circle
+            class="shape"
+            r="20"
+            style="fill: color-mix(in srgb, var(--text) 9%, var(--surface))"
+          />
+          <text class="title" y="4" text-anchor="middle">Buy milk</text>
+        </g>
+        <!-- Zupaflow · this week -->
+        <g transform="translate(170,330)">
+          <circle
+            class="shape"
+            r="34"
+            style="fill: color-mix(in srgb, var(--p-sky) 24%, var(--surface))"
+          />
+          <rect
+            x="-12"
+            y="-41"
+            width="24"
+            height="14"
+            rx="7"
+            style="fill: var(--p-sky)"
+          />
+          <text class="badge-text" y="-31" text-anchor="middle">ZF</text>
+          <text class="title" y="-3" text-anchor="middle">Trading game</text>
+          <text class="title" y="10" text-anchor="middle">integration</text>
+          <text class="stamp" y="23" text-anchor="middle">1 of 3</text>
+        </g>
+        <!-- Propr · diamond (review) -->
+        <g transform="translate(430,350)">
+          <rect
+            class="shape"
+            x="-24"
+            y="-24"
+            width="48"
+            height="48"
+            rx="5"
+            transform="rotate(45)"
+            style="fill: color-mix(in srgb, var(--p-rose) 24%, var(--surface))"
+          />
+          <rect
+            x="-12"
+            y="-44"
+            width="24"
+            height="14"
+            rx="7"
+            style="fill: var(--p-rose)"
+          />
+          <text class="badge-text" y="-34" text-anchor="middle">PR</text>
+          <text class="title" y="0" text-anchor="middle">Review</text>
+          <text class="title" y="12" text-anchor="middle">checkout</text>
+        </g>
+        <!-- Propr · later -->
+        <g transform="translate(470,170)">
+          <circle
+            class="shape"
+            r="26"
+            style="fill: color-mix(in srgb, var(--p-rose) 24%, var(--surface))"
+          />
+          <rect
+            x="-12"
+            y="-33"
+            width="24"
+            height="14"
+            rx="7"
+            style="fill: var(--p-rose)"
+          />
+          <text class="badge-text" y="-23" text-anchor="middle">PR</text>
+          <text class="title" y="-1" text-anchor="middle">Reddit</text>
+          <text class="title" y="11" text-anchor="middle">launch</text>
+        </g>
+        <!-- Goforex · hexagon (research) · later -->
+        <g transform="translate(130,150)">
+          <use
+            href="#hex"
+            x="-28"
+            y="-28"
+            width="56"
+            height="56"
+            class="shape"
+            style="
+              fill: color-mix(in srgb, var(--p-violet) 24%, var(--surface));
+            "
+          />
+          <rect
+            x="-13"
+            y="-38"
+            width="26"
+            height="14"
+            rx="7"
+            style="fill: var(--p-violet)"
+          />
+          <text class="badge-text" y="-28" text-anchor="middle">GO</text>
+          <text class="title" y="-1" text-anchor="middle">Broker</text>
+          <text class="title" y="11" text-anchor="middle">research</text>
+        </g>
+        <!-- Mcptest · backlog -->
+        <g transform="translate(470,500)">
+          <circle
+            class="shape"
+            r="24"
+            style="fill: color-mix(in srgb, var(--p-lime) 24%, var(--surface))"
+          />
+          <rect
+            x="-12"
+            y="-31"
+            width="24"
+            height="14"
+            rx="7"
+            style="fill: var(--p-lime)"
+          />
+          <text class="badge-text" y="-21" text-anchor="middle">MT</text>
+          <text class="title" y="0" text-anchor="middle">Article</text>
+          <text class="title" y="12" text-anchor="middle">visuals</text>
+        </g>
+        <!-- Clients · backlog -->
+        <g transform="translate(120,480)">
+          <circle
+            class="shape"
+            r="22"
+            style="fill: color-mix(in srgb, var(--p-clay) 24%, var(--surface))"
+          />
+          <rect
+            x="-12"
+            y="-29"
+            width="24"
+            height="14"
+            rx="7"
+            style="fill: var(--p-clay)"
+          />
+          <text class="badge-text" y="-19" text-anchor="middle">CL</text>
+          <text class="title" y="4" text-anchor="middle">Katja</text>
+        </g>
+      </svg>
+    </div>
+
+    <div class="rules">
+      <section class="rule">
+        <h2>1 · Project colour</h2>
+        <p>
+          Every new project picks the next colour from a set of six. Amber and
+          teal are kept for status, so they are never used for projects. Inbox
+          stays neutral.
+        </p>
+        <div class="swatches">
+          <span class="sw"
+            ><i style="background: var(--p-violet)"></i>violet</span
+          >
+          <span class="sw"><i style="background: var(--p-sky)"></i>sky</span>
+          <span class="sw"><i style="background: var(--p-rose)"></i>rose</span>
+          <span class="sw"><i style="background: var(--p-lime)"></i>lime</span>
+          <span class="sw"
+            ><i style="background: var(--p-indigo)"></i>indigo</span
+          >
+          <span class="sw"><i style="background: var(--p-clay)"></i>clay</span>
+        </div>
+        <div class="line">
+          <span>make Goforex violet</span><span>colour Propr rose</span>
+        </div>
+      </section>
+
+      <section class="rule">
+        <h2>2 · Badge</h2>
+        <p>
+          A two- or three-letter code, made from the project name (Goforex → GO,
+          Zupaflow → ZF), sits on the top edge of each bubble in the project's
+          colour. Inbox items get no badge.
+        </p>
+        <div class="line"><span>call Goforex GFX</span></div>
+      </section>
+
+      <section class="rule">
+        <h2>3 · Shape by activity</h2>
+        <p>
+          Items are circles by default. You can give a type of work its own
+          shape, and it applies to items tagged with that type. Shapes keep the
+          same area, so priority still reads from size.
+        </p>
+        <div class="shapes" aria-hidden="true">
+          <figure>
+            <svg viewBox="-30 -30 60 60">
+              <circle
+                r="22"
+                class="shape"
+                style="fill: color-mix(in srgb, var(--text) 9%, var(--surface))"
+              /></svg
+            >default
+          </figure>
+          <figure>
+            <svg viewBox="-30 -30 60 60">
+              <rect
+                x="-20"
+                y="-20"
+                width="40"
+                height="40"
+                rx="7"
+                class="shape"
+                style="fill: color-mix(in srgb, var(--text) 9%, var(--surface))"
+              /></svg
+            >square
+          </figure>
+          <figure>
+            <svg viewBox="-30 -30 60 60">
+              <rect
+                x="-17"
+                y="-17"
+                width="34"
+                height="34"
+                rx="4"
+                transform="rotate(45)"
+                class="shape"
+                style="fill: color-mix(in srgb, var(--text) 9%, var(--surface))"
+              /></svg
+            >diamond
+          </figure>
+          <figure>
+            <svg viewBox="-30 -30 60 60">
+              <use
+                href="#hex"
+                x="-23"
+                y="-23"
+                width="46"
+                height="46"
+                class="shape"
+                style="fill: color-mix(in srgb, var(--text) 9%, var(--surface))"
+              /></svg
+            >hexagon
+          </figure>
+        </div>
+        <div class="line">
+          <span>show calls as squares</span><span>show reviews as diamonds</span
+          ><span>research is a hexagon</span>
+        </div>
+      </section>
+
+      <p class="keep">
+        <b>Unchanged:</b> <span class="dot-needs">amber</span> ring means it
+        needs you, <span class="dot-live">teal</span> ring means an agent is on
+        it, size is priority, and the ring position is time. Agents can set
+        tags; you set colours and shapes by typing.
+      </p>
+    </div>
+  </div>
+</div>

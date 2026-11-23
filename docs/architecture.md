@@ -96,6 +96,7 @@ Heed is agent-first. Agents and the user's own words change things; the screen i
   * **Backlog** has no time and splits by project.
   * The split is derived in the browser from the same fields as the bands (section 5); nothing new is stored.
 * **Nesting by drag (radar lens).** Dropping a bubble onto the middle of another bubble makes it a child of that item; a glancing overlap still moves the item in time. Inside an item, dropping a bubble outside the item's circle moves it one level up, and dropping it on a breadcrumb moves it under that level ("All projects" is the top level). The drop target is outlined while dragging, and a drop that would create a cycle or a fourth level is refused with a short message.
+* **Project identity (radar lens).** Every project other than Inbox has a colour from a palette of six (violet, sky, rose, lime, indigo, clay; amber and teal stay reserved for status) and a badge code of one to four characters, two letters from the name by default. A new project takes the least-used colour. Bubbles are tinted with their project's colour and carry the badge on their top edge. Item tags can map to a shape (square, diamond, hexagon; circle by default), stored as `tag_shapes` in workspace settings; shapes keep the circle's area so size still reads as priority. All of this is set by typing ("make Goforex violet", "call Goforex GFX", "show calls as squares") or by MCP (`update_project`, `set_tag_shape`). See [the mock-up](design/project-identity.html).
 * **Read first.** Heed is mostly looked at, so every surface shows information before controls. The inspector opens as a read-only card: title, status, who is on it, latest note, link, acceptance criteria with their shadow verdicts, child progress and the timeline. Editing happens by direct manipulation (drag to schedule, reorder and move; resize for priority), by clicking a title or criterion to edit it in place, or through the command bar. Fields that still need a form (time type and time, tags, dependencies, project, unlocking) sit behind one "Edit details" disclosure that is closed by default. The four primary actions stay visible: mark done or reopen, flag or clear handoff, hide, delete. No dropdown is used where a small set of tabs or chips fits; the lens switcher is a row of tabs.
 * **Cross-highlighting.** Selecting a bubble highlights its row in the Horizon Stream, and vice versa.
 * **Progress arcs.** A parent bubble shows `done children / all non-cancelled children`. The count includes children that have left the ghost layer, so progress never goes backwards.
@@ -388,12 +389,13 @@ Served at `/mcp` (Streamable HTTP). The same operations back `/api/command` and 
 | `set_guidance` | `text` | Steer-only. Replaces the guidance text (used by the command bar: "from now on…"). |
 | `list_projects` | none | Lists projects with ID, name, colour and visibility, in display order. |
 | `create_project` | `name`, `color?` | Creates a project, or returns the existing one with that name. Counts against the hosted project limit. |
-| `update_project` | `project`, `name?`, `color?`, `hidden?` | Steer-only. Renames, recolours, hides or shows a project. |
+| `update_project` | `project`, `name?`, `color?`, `code?`, `hidden?` | Steer-only. Renames, recolours, hides or shows a project. |
 | `move_project` | `project`, `direction: "up"｜"down"` | Steer-only. Moves a project one place in the display order. |
 | `delete_project` | `project` | Steer-only. Deletes an empty project. |
 | `delete_item` | `item_id` | Steer-only. Permanently deletes an item and its children. |
 | `clear_handoff` | `item_id` | Steer-only. Withdraws an open question without answering it. |
 | `set_timezone` | `timezone` | Steer-only. Sets the workspace timezone (IANA name). |
+| `set_tag_shape` | `tag`, `shape` | Steer-only. Draws items with that tag as a circle, square, diamond or hexagon. |
 | `get_item` | `item_id` | Returns one item in full with its 20 most recent events; long text is shortened. |
 
 **Everything about the work is reachable by tool.** MCP and the text line expose one shared list, and a `steer` caller can do through it whatever the human can do to items, projects, dependencies, handoffs, guidance and the timezone. `project` parameters take a name or an ID. `tools/list` omits steer-only tools for a `report` token. Credentials and the workspace itself stay with the signed-in human: API tokens, connected apps, push subscriptions, export and reset are not tools.

@@ -25,7 +25,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
   const stub = newWorkspace();
   const settings = await stub.getSettings();
   expect(SettingsSchema.parse(settings)).toEqual({
-    schema_version: 11,
+    schema_version: 12,
     timezone: "UTC",
     guidance: "",
     guidance_updated_at: null,
@@ -35,6 +35,7 @@ it("migrates a fresh object and seeds Inbox", async () => {
       id: INBOX_PROJECT_ID,
       name: "Inbox",
       color: null,
+      code: null,
       sort: 0,
       hidden: 0,
       demo: 0,
@@ -179,7 +180,7 @@ it.each([
     await evictDurableObject(stub);
 
     expect(await stub.getSettings()).toEqual({
-      schema_version: 11,
+      schema_version: 12,
       timezone: "Europe/Tallinn",
       ...guidance,
     });
@@ -211,6 +212,7 @@ it("creates, lists, updates and deletes projects", async () => {
     id: expect.any(String),
     name: "Dev",
     color: "#0033ff",
+    code: null,
     sort: 0,
     hidden: 0,
     demo: 0,

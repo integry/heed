@@ -610,3 +610,45 @@ it("counts API tokens and connected apps, but not the text line's assistant", as
   await workspace.revokeToken(id);
   expect(await connected()).toBe(before);
 });
+
+it("assigns distinct project colours and sets badges and tag shapes", async () => {
+  const { token } = await workspace.createToken("Designer", "steer");
+  const data = async (name: string, args: object = {}) => {
+    const result = await call(token, name, args);
+    return {
+      ...result.structuredContent,
+      isError: result.isError ?? false,
+    } as Record<string, unknown>;
+  };
+  const colours = new Set<unknown>();
+  for (const name of ["Alpha one", "Beta", "Gamma"]) {
+    const { project } = await data("create_project", { name });
+    colours.add((project as { color: unknown }).color);
+  }
+  expect(colours.size).toBe(3);
+
+  expect(
+    await data("update_project", {
+      project: "Beta",
+      color: "rose",
+      code: "bx",
+    }),
+  ).toMatchObject({ project: { color: "rose", code: "BX" } });
+  expect(
+    await data("update_project", { project: "Beta", color: "amber" }),
+  ).toMatchObject({ isError: true });
+  const { projects } = (await data("list_projects")) as {
+    projects: { name: string; code: string }[];
+  };
+  expect(projects.find(({ name }) => name === "Alpha one")?.code).toBe("AO");
+  expect(projects.find(({ name }) => name === "Beta")?.code).toBe("BX");
+
+  expect(
+    await data("set_tag_shape", { tag: "Call", shape: "square" }),
+  ).toMatchObject({ tag_shapes: { call: "square" } });
+  expect((await workspace.getSettings()).tag_shapes).toEqual({
+    call: "square",
+  });
+  await data("set_tag_shape", { tag: "call", shape: "circle" });
+  expect((await workspace.getSettings()).tag_shapes).toEqual({});
+});

@@ -226,6 +226,13 @@ const migrations = [
   (sql: SqlStorage) => {
     sql.exec("ALTER TABLE oauth_grants ADD COLUMN assistant_user TEXT");
   },
+  (sql: SqlStorage) => {
+    // Badge codes; null derives one from the project name.
+    const hasCode = sql
+      .exec("SELECT 1 FROM pragma_table_info('projects') WHERE name = 'code'")
+      .toArray().length;
+    if (!hasCode) sql.exec("ALTER TABLE projects ADD COLUMN code TEXT");
+  },
 ];
 
 export function migrateWorkspace(storage: DurableObjectStorage): void {

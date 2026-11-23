@@ -396,6 +396,7 @@ it("requires exact confirmation and resets storage, sockets and agent access", a
       id: INBOX_PROJECT_ID,
       name: "Inbox",
       color: null,
+      code: null,
       hidden: 0,
       sort: 0,
       demo: 0,

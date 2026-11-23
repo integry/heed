@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ProjectCodeSchema, TagShapesSchema } from "./project-identity.js";
 
 export const StatusSchema = z.enum([
   "queued",
@@ -64,6 +65,8 @@ export const SettingsSchema = GuidanceSchema.extend({
   timezone: TimezoneSchema,
   /** API tokens and connected apps that can currently reach the workspace. */
   agents_connected: z.int().nonnegative().optional(),
+  /** Bubble shapes by lower-case item tag. */
+  tag_shapes: TagShapesSchema.optional(),
 });
 
 export const SettingSchema = z.object({
@@ -79,12 +82,15 @@ export const ProjectSchema = z.object({
   id: z.string(),
   name: z.string(),
   color: nullableText,
+  /** Badge code; null derives one from the name. */
+  code: nullableText.optional(),
   sort: z.int(),
   hidden: sqliteFlag,
   demo: sqliteFlag.optional(),
 });
 
 export const UpdateProjectSchema = ProjectSchema.omit({ id: true, demo: true })
+  .extend({ code: ProjectCodeSchema.nullable() })
   .partial()
   .strict();
 export const CreateProjectSchema = UpdateProjectSchema.required({ name: true });

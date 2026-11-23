@@ -439,6 +439,68 @@
   stroke: var(--live);
 }
 
+/* A project's items are tinted with its colour; status shows in the ring. */
+.radar-disc[data-project] {
+  fill: color-mix(in srgb, var(--project) 24%, var(--surface));
+}
+
+.radar-bubble:hover .radar-disc[data-project],
+.radar-bubble[aria-pressed="true"] .radar-disc[data-project] {
+  fill: color-mix(in srgb, var(--project) 36%, var(--surface));
+}
+
+.radar-bubble:has(.radar-state[data-ring="handoff"]:not(.radar-rollup))
+  .radar-disc[data-project] {
+  fill: color-mix(in srgb, var(--project) 24%, var(--surface));
+}
+
+.radar-bubble:has(.radar-state[data-ring="live"]:not(.radar-rollup))
+  .radar-disc[data-project] {
+  fill: color-mix(in srgb, var(--project) 24%, var(--surface));
+}
+
+.radar-bubble[data-ghost="true"] .radar-disc[data-project] {
+  fill: transparent;
+}
+
+[data-project="violet"] {
+  --project: var(--project-violet);
+}
+[data-project="sky"] {
+  --project: var(--project-sky);
+}
+[data-project="rose"] {
+  --project: var(--project-rose);
+}
+[data-project="lime"] {
+  --project: var(--project-lime);
+}
+[data-project="indigo"] {
+  --project: var(--project-indigo);
+}
+[data-project="clay"] {
+  --project: var(--project-clay);
+}
+
+.radar-project-badge {
+  pointer-events: none;
+}
+
+.radar-project-badge rect {
+  fill: var(--project);
+}
+
+.radar-project-badge text {
+  fill: var(--project-ink);
+  font-family: var(--mono);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.radar-bubble[data-ghost="true"] .radar-project-badge {
+  opacity: 0.6;
+}
+
 .radar-bubble,
 .radar-resize {
   touch-action: none;

@@ -4,5 +4,6 @@ export * from "./human-api.js";
 export * from "./item-operations.js";
 export * from "./interpret-command.js";
 export * from "./judge.js";
+export * from "./project-identity.js";
 export * from "./workspace-socket.js";
 export * from "./workspace.js";

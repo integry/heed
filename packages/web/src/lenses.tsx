@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import type { TagShapes } from "@heedwork/core";
 import type { StreamRow } from "@heedwork/core";
 import type { CanvasItem, RadarBand } from "@heedwork/core";
 import type { Dependency, Project } from "@heedwork/core";
@@ -36,6 +37,8 @@ export interface LensProps {
   setPriority: (id: string, priority: number) => void;
   setPosition: (id: string, position: Record<string, number>) => void;
   moveRadar: (id: string, drop: RadarPlacement, layoutKey?: string) => void;
+  /** Bubble shapes by item tag. */
+  tagShapes?: TagShapes;
   /** Moves an item under another item, or to the top level with null. */
   reparent?: (id: string, parentId: string | null) => void;
 }
