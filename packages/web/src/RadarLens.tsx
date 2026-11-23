@@ -1,4 +1,12 @@
 import { nestProblem, nestTarget } from "./radar-nesting";
+import { shapeTop } from "./radar-shapes";
+import {
+  INBOX_PROJECT_ID,
+  itemShape,
+  projectCode,
+  projectColor,
+  readTags,
+} from "@heedwork/core";
 import {
   useCallback,
   useId,
@@ -289,7 +297,21 @@ export function RadarLens({
   reschedule,
   setPriority,
   reparent,
+  tagShapes,
 }: LensProps) {
+  // Projects other than Inbox carry a colour and a badge on their bubbles.
+  const identities = useMemo(
+    () =>
+      new Map(
+        allProjects
+          .filter(({ id }) => id !== INBOX_PROJECT_ID)
+          .map((project) => [
+            project.id,
+            { color: projectColor(project), code: projectCode(project) },
+          ]),
+      ),
+    [allProjects],
+  );
   const [preview, setPreview] = useState<Preview | null>(null);
   const clearPreview = useCallback(() => setPreview(null), []);
   const drag = useCanvasDrag<Gesture>(clearPreview);
@@ -559,6 +581,18 @@ export function RadarLens({
   const callouts = useMemo(() => {
     if (goal || labelScale < MIN_FIELD_SCALE) return;
     const reserved: LabelBox[] = [];
+    // Keep callouts off the project badges on top of bubbles.
+    for (const { item, point, radius } of bubbles) {
+      const identity = identities.get(item.project_id);
+      if (!identity) continue;
+      const top = shapeTop(itemShape(readTags(item.tags), tagShapes), radius);
+      reserved.push({
+        x: point.x,
+        y: point.y - top - 3 / labelScale,
+        halfWidth: (identity.code.length * 4 + 8) / labelScale,
+        halfHeight: 8 / labelScale,
+      });
+    }
     if (split) {
       const font = RADAR_LABEL_FONT / labelScale;
       for (const { point, text } of [
@@ -599,6 +633,8 @@ export function RadarLens({
     edges,
     subrings,
     rim,
+    identities,
+    tagShapes,
   ]);
   const drawOrder = useMemo(
     () =>
@@ -1118,6 +1154,8 @@ export function RadarLens({
               <RadarBubble
                 key={bubble.item.id}
                 bubble={bubble}
+                project={identities.get(bubble.item.project_id)}
+                shape={itemShape(readTags(bubble.item.tags), tagShapes)}
                 selected={selectedId === bubble.item.id}
                 live={live}
                 now={now}

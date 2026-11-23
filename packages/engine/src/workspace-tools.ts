@@ -1,5 +1,13 @@
 import { z } from "zod";
-import { ItemIdSchema, TimezoneSchema } from "@heedwork/core";
+import {
+  ItemIdSchema,
+  ItemShapeSchema,
+  PROJECT_COLORS,
+  ProjectCodeSchema,
+  ProjectColorSchema,
+  projectIdentity,
+  TimezoneSchema,
+} from "@heedwork/core";
 import type { Actor } from "@heedwork/core";
 import type { LimitAction } from "./seams.js";
 import type { Workspace } from "./workspace.js";
@@ -15,7 +23,7 @@ const projectRef = z
   .max(120)
   .describe("Project name or ID");
 const projectName = z.string().trim().min(1).max(120);
-const color = z.string().trim().min(1).max(32).nullable();
+const color = ProjectColorSchema;
 
 interface WorkspaceTool<T> {
   name: string;
@@ -65,14 +73,13 @@ export const workspaceTools = [
     run: (workspace) => {
       const projects = workspace.listProjects();
       return {
-        projects: projects
-          .slice(0, MAX_PROJECTS)
-          .map(({ id, name, color, hidden }) => ({
-            id,
-            name: name.slice(0, 120),
-            color,
-            hidden: Boolean(hidden),
-          })),
+        projects: projects.slice(0, MAX_PROJECTS).map((project) => ({
+          id: project.id,
+          name: project.name.slice(0, 120),
+          color: projectIdentity(project)?.color ?? null,
+          code: projectIdentity(project)?.code ?? null,
+          hidden: Boolean(project.hidden),
+        })),
         may_have_more: projects.length > MAX_PROJECTS,
       };
     },
@@ -81,9 +88,13 @@ export const workspaceTools = [
     name: "create_project",
     description:
       "Create a project so items can be placed in it. Returns the existing project when one already has this name. Then pass its name or ID as project to add_item.",
-    schema: z.strictObject({ name: projectName, color: color.optional() }),
+    schema: z.strictObject({
+      name: projectName,
+      color: color.optional(),
+      code: ProjectCodeSchema.optional(),
+    }),
     limit: "project.create",
-    run: (workspace, { name, color }) => {
+    run: (workspace, { name, color, code }) => {
       const existing = workspace.findProject(name, false);
       return {
         project:
@@ -91,6 +102,7 @@ export const workspaceTools = [
           workspace.createProject({
             name,
             ...(color !== undefined && { color }),
+            ...(code !== undefined && { code }),
           }),
         created: !existing,
       };
@@ -98,12 +110,12 @@ export const workspaceTools = [
   }),
   tool({
     name: "update_project",
-    description:
-      "Rename, recolour, hide or show a project. Pass only the fields to change.",
+    description: `Rename, recolour, re-badge, hide or show a project. Pass only the fields to change. Colours: ${PROJECT_COLORS.join(", ")}. code is the badge shown on its items: one to four letters or digits; null restores the default from the name.`,
     schema: z.strictObject({
       project: projectRef,
       name: projectName.optional(),
       color: color.optional(),
+      code: ProjectCodeSchema.nullable().optional(),
       hidden: z.boolean().optional(),
     }),
     steer: "change a project",
@@ -113,6 +125,18 @@ export const workspaceTools = [
         ...(hidden !== undefined && { hidden: hidden ? 1 : 0 }),
       }),
     }),
+  }),
+  tool({
+    name: "set_tag_shape",
+    description:
+      "Draw items that carry a tag (a type of work such as call, review or research) as a square, diamond or hexagon on the radar. circle removes the shape. Tag the items with add_item or update_item.",
+    schema: z.strictObject({
+      tag: z.string().trim().min(1).max(40),
+      shape: ItemShapeSchema,
+    }),
+    steer: "change item shapes",
+    run: (workspace, { tag, shape }, actor) =>
+      workspace.setTagShape(actor, tag, shape),
   }),
   tool({
     name: "move_project",

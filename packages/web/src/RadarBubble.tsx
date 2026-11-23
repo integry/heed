@@ -1,4 +1,7 @@
 import { memo, type PointerEvent } from "react";
+import type { SVGProps } from "react";
+import type { ItemShape, ProjectColor } from "@heedwork/core";
+import { shapePath, shapeTop } from "./radar-shapes";
 import { workspaceInstant, type Ring } from "@heedwork/core";
 import type { CanvasItem } from "@heedwork/core";
 import { RADAR_LABEL_FONT, type Point } from "./radar-geometry";
@@ -102,12 +105,30 @@ function BubbleCallout({
   );
 }
 
+/** Circles stay circle elements; other shapes are outlines of equal area. */
+function Outline({
+  shape,
+  r,
+  ...rest
+}: { shape: ItemShape; r: number } & Omit<
+  SVGProps<SVGCircleElement>,
+  "r" | "ref"
+>) {
+  return shape === "circle" ? (
+    <circle r={r} {...rest} />
+  ) : (
+    <path d={shapePath(shape, r)} {...(rest as SVGProps<SVGPathElement>)} />
+  );
+}
+
 export const RadarBubble = memo(function RadarBubble({
   bubble,
   selected,
   live,
   now,
   labelScale,
+  project,
+  shape = "circle",
   outsideLabel,
   timeFormatter,
   onActivate,
@@ -120,6 +141,9 @@ export const RadarBubble = memo(function RadarBubble({
   live: boolean;
   now: number;
   labelScale: number;
+  /** The item's project, unless it is in Inbox. */
+  project?: { color: ProjectColor; code: string };
+  shape?: ItemShape;
   outsideLabel?: OutsideLabel;
   timeFormatter: Intl.DateTimeFormat;
   onActivate: (bubble: Bubble) => void;
@@ -144,8 +168,13 @@ export const RadarBubble = memo(function RadarBubble({
     labelScale,
   );
   const progressRadius = radius + (ring ? 5 : 2);
-  const circumference = 2 * Math.PI * progressRadius;
   const handle = (radius + 6) / Math.SQRT2;
+  const badgeFont = (RADAR_LABEL_FONT - 2.5) / labelScale;
+  const badgeHeight = 14 / labelScale;
+  const badgeWidth = project
+    ? project.code.length * badgeFont * 0.68 + 10 / labelScale
+    : 0;
+  const badgeTop = shapeTop(shape, radius) + (ring ? 3 : 0);
 
   return (
     <g
@@ -184,33 +213,76 @@ export const RadarBubble = memo(function RadarBubble({
         onBlur={() => onTooltip(null)}
       >
         <title>{detail}</title>
-        {ring === "live" && <circle className="radar-pulse" r={radius + 3} />}
+        {ring === "live" && (
+          <Outline shape={shape} className="radar-pulse" r={radius + 3} />
+        )}
         {rollup && (
-          <circle
+          <Outline
+            shape={shape}
             className="radar-state radar-rollup"
             data-ring={rollup}
             r={radius + (ring ? 9 : 6)}
           />
         )}
         {ring && (
-          <circle className="radar-state" data-ring={ring} r={radius + 3} />
+          <Outline
+            shape={shape}
+            className="radar-state"
+            data-ring={ring}
+            r={radius + 3}
+          />
         )}
-        <circle r={radius} className="radar-disc" />
+        <Outline
+          shape={shape}
+          r={radius}
+          className="radar-disc"
+          data-project={project?.color}
+        />
         {selected && (
-          <circle r={radius + (rollup ? 13 : 8)} className="radar-selection" />
+          <Outline
+            shape={shape}
+            r={radius + (rollup ? 13 : 8)}
+            className="radar-selection"
+          />
         )}
         {total > 0 && (
           <>
-            <circle r={progressRadius} className="radar-progress-track" />
+            <Outline
+              shape={shape}
+              r={progressRadius}
+              className="radar-progress-track"
+            />
             {done > 0 && (
-              <circle
+              <Outline
+                shape={shape}
                 r={progressRadius}
                 className="radar-progress"
-                strokeDasharray={`${(circumference * done) / total} ${circumference}`}
-                transform="rotate(-90)"
+                pathLength={1}
+                strokeDasharray={`${done / total} 1`}
+                // A circle starts at three o'clock; turn it to twelve.
+                transform={shape === "circle" ? "rotate(-90)" : undefined}
               />
             )}
           </>
+        )}
+        {project && (
+          <g
+            className="radar-project-badge"
+            data-project={project.color}
+            aria-hidden="true"
+            transform={`translate(0,${-badgeTop})`}
+          >
+            <rect
+              x={-badgeWidth / 2}
+              y={-badgeHeight / 2}
+              width={badgeWidth}
+              height={badgeHeight}
+              rx={badgeHeight / 2}
+            />
+            <text textAnchor="middle" dy="0.35em" fontSize={badgeFont}>
+              {project.code}
+            </text>
+          </g>
         )}
         {!outsideLabel?.lines.length && lines.length > 0 && (
           <text

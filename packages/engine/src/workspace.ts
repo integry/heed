@@ -8,6 +8,13 @@ import { workspaceTools } from "./workspace-tools.js";
 import { HistoryQuerySchema } from "@heedwork/core";
 import type { HistoryItem, HistoryPage, HistoryQuery } from "@heedwork/core";
 import { JudgedDetailSchema } from "@heedwork/core";
+import {
+  MAX_TAG_SHAPES,
+  nextProjectColor,
+  projectIdentity,
+  TagShapesSchema,
+} from "@heedwork/core";
+import type { ItemShape } from "@heedwork/core";
 import type {
   JudgeAgreement,
   JudgedDetail,
@@ -649,9 +656,11 @@ export class Workspace<
           .exec<Item>("SELECT * FROM items WHERE id = ?", selectedItemId)
           .toArray()[0]
       : undefined;
+    const { tag_shapes } = this.getSettings();
     return {
       today: today({ now: new Date(), timezone }),
       timezone,
+      ...(tag_shapes && { tag_shapes }),
       ...(selected && {
         selected_item: {
           id: selected.id,
@@ -664,10 +673,12 @@ export class Workspace<
           handoff_note: selected.handoff_note?.slice(0, 300) ?? null,
         },
       }),
-      projects: projects.slice(0, 100).map(({ id, name, hidden }) => ({
-        id,
-        name: name.slice(0, 120),
-        hidden,
+      projects: projects.slice(0, 100).map((project) => ({
+        id: project.id,
+        name: project.name.slice(0, 120),
+        hidden: project.hidden,
+        color: projectIdentity(project)?.color ?? null,
+        code: projectIdentity(project)?.code ?? null,
       })),
       projects_may_have_more: projects.length > 100,
       ...compactCanvas(this.getCanvas({ limit: 41 })),
@@ -958,6 +969,11 @@ export class Workspace<
         timezone: values.timezone ?? "UTC",
         guidance: values.guidance,
         guidance_updated_at: values.guidance_updated_at ?? null,
+        ...(values.tag_shapes && {
+          tag_shapes: TagShapesSchema.catch({}).parse(
+            JSON.parse(values.tag_shapes),
+          ),
+        }),
       },
     };
   }
@@ -1433,6 +1449,26 @@ export class Workspace<
     };
   }
 
+  /** Gives items with this tag a bubble shape; null or "circle" removes it. */
+  setTagShape(actor: Actor, tag: string, shape: ItemShape | null) {
+    requireSteering(actor, "change item shapes");
+    const key = tag.trim().toLowerCase();
+    if (!key || key.length > 40)
+      throw new Error("Use a tag of 1 to 40 characters");
+    const shapes = { ...this.getSettings().tag_shapes };
+    if (shape === null || shape === "circle") delete shapes[key];
+    else shapes[key] = shape;
+    if (Object.keys(shapes).length > MAX_TAG_SHAPES)
+      throw new Error(`At most ${MAX_TAG_SHAPES} tags can have a shape`);
+    this.#sql.exec(
+      `INSERT INTO settings (key, value) VALUES ('tag_shapes', ?)
+       ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+      JSON.stringify(shapes),
+    );
+    this.#broadcastSettings();
+    return { tag_shapes: shapes };
+  }
+
   #broadcastSettings(): void {
     const sockets = this.ctx.getWebSockets();
     if (sockets.length > 0) {
@@ -1480,17 +1516,31 @@ export class Workspace<
 
   #insertProject({
     name,
-    color = null,
+    color,
+    code = null,
     sort = 0,
     hidden = 0,
   }: z.output<typeof CreateProjectSchema>): Project {
+    // New projects take the least-used colour so neighbours stay distinct.
+    const assigned =
+      color ??
+      nextProjectColor(
+        this.#sql
+          .exec<{ color: string | null }>(
+            "SELECT color FROM projects WHERE id <> ?",
+            INBOX_PROJECT_ID,
+          )
+          .toArray()
+          .map(({ color }) => color),
+      );
     return this.#sql
       .exec<Project>(
-        `INSERT INTO projects (id, name, color, sort, hidden)
-         VALUES (?, ?, ?, ?, ?) RETURNING *`,
+        `INSERT INTO projects (id, name, color, code, sort, hidden)
+         VALUES (?, ?, ?, ?, ?, ?) RETURNING *`,
         crypto.randomUUID(),
         name,
-        color,
+        assigned,
+        code,
         sort,
         hidden,
       )
@@ -1507,6 +1557,7 @@ export class Workspace<
     const {
       name = current.name,
       color = current.color,
+      code = current.code ?? null,
       sort = current.sort,
       hidden = current.hidden,
     } = patch;
@@ -1516,6 +1567,7 @@ export class Workspace<
     if (
       name === current.name &&
       color === current.color &&
+      code === (current.code ?? null) &&
       sort === current.sort &&
       hidden === current.hidden
     ) {
@@ -1523,9 +1575,10 @@ export class Workspace<
     }
     const project = this.#sql
       .exec<Project>(
-        "UPDATE projects SET name = ?, color = ?, sort = ?, hidden = ? WHERE id = ? RETURNING *",
+        "UPDATE projects SET name = ?, color = ?, code = ?, sort = ?, hidden = ? WHERE id = ? RETURNING *",
         name,
         color,
+        code,
         sort,
         hidden,
         id,
@@ -1535,6 +1588,7 @@ export class Workspace<
     const visibilityOnly =
       project.name === current.name &&
       project.color === current.color &&
+      project.code === current.code &&
       project.sort === current.sort;
     this.#commandEffects?.push({
       changes: [{ type: "project", id }],

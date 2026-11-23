@@ -31,6 +31,14 @@
   --attention: #ffb347;
   --attention-soft: #382818;
   --live: #5fd6c4;
+  /* Project colours. Amber and teal stay reserved for status. */
+  --project-violet: #a594ff;
+  --project-sky: #6fb6ff;
+  --project-rose: #f38bb8;
+  --project-lime: #b7dc72;
+  --project-indigo: #8792ff;
+  --project-clay: #d79a86;
+  --project-ink: #0d1422;
   --done: #79869f;
   --border: #2a3550;
   --display: "Bricolage Grotesque", "Trebuchet MS", sans-serif;
@@ -58,6 +66,13 @@
     --attention-soft: #f0dfc9;
     --live: #0f7f72;
     --done: #696454;
+    --project-violet: #6a52d9;
+    --project-sky: #2a73c2;
+    --project-rose: #b8457a;
+    --project-lime: #5b7f1c;
+    --project-indigo: #4652c8;
+    --project-clay: #9b5a45;
+    --project-ink: #f3efe6;
     --border: #cfc7b6;
   }
 }

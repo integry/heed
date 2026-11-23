@@ -18,7 +18,7 @@ export function readEvent({ actor_user, ...event }: EventRow): Event {
 
 // The version 1 field lists are explicit so new storage columns stay private.
 const sections = [
-  { name: "projects", columns: "id, name, color, sort, hidden" },
+  { name: "projects", columns: "id, name, color, code, sort, hidden" },
   {
     name: "items",
     columns: `id, project_id, parent_id, external_key, title, tags, acceptance, depth,

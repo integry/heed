@@ -1048,6 +1048,7 @@ function Workspace({
                 placeItem(id, key, position, patch)
               }
               reparent={(id, parent_id) => updateItem(id, { parent_id })}
+              tagShapes={state.settings?.tag_shapes}
             />
           </div>
           {dependencyError && showDependencyErrorInline && (
