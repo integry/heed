@@ -584,7 +584,7 @@ export function RadarLens({
     // Keep callouts off the project badges on top of bubbles.
     for (const { item, point, radius } of bubbles) {
       const identity = identities.get(item.project_id);
-      if (!identity) continue;
+      if (!identity || radius * labelScale < 14) continue;
       const top = shapeTop(itemShape(readTags(item.tags), tagShapes), radius);
       reserved.push({
         x: point.x,
