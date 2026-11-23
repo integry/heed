@@ -4,6 +4,7 @@ import { z, type ZodType } from "zod";
 import { bandsFor, completionBand, isGhost } from "@heedwork/core";
 import type { CommandChange } from "@heedwork/core";
 import { commandTools, compactCanvas } from "./command-tools.js";
+import { workspaceTools } from "./workspace-tools.js";
 import { HistoryQuerySchema } from "@heedwork/core";
 import type { HistoryItem, HistoryPage, HistoryQuery } from "@heedwork/core";
 import { JudgedDetailSchema } from "@heedwork/core";
@@ -652,6 +653,26 @@ export class Workspace<
       })),
       projects_may_have_more: projects.length > 100,
       ...compactCanvas(this.getCanvas({ limit: 41 })),
+    };
+  }
+
+  /** Runs a tool from the shared workspace list for MCP or the text line. */
+  async runWorkspaceTool(
+    actor: Actor,
+    name: string,
+    input: unknown,
+  ): Promise<Record<string, unknown>> {
+    const tool = workspaceTools.find((candidate) => candidate.name === name);
+    if (!tool) throw new Error("Unknown tool");
+    if (tool.steer) requireSteering(actor, tool.steer);
+    const parsed = tool.schema.safeParse(input ?? {});
+    if (!parsed.success) {
+      const { path, message } = parsed.error.issues[0];
+      throw new Error([path.join("."), message].filter(Boolean).join(": "));
+    }
+    return {
+      ...(await tool.run(this, parsed.data, actor)),
+      guidance_updated_at: this.getGuidance().guidance_updated_at,
     };
   }
 
@@ -1380,10 +1401,31 @@ export class Workspace<
       .toArray();
   }
 
+  /** Finds a project by ID, or by name ignoring case. */
+  findProject(reference: string): Project;
+  findProject(reference: string, required: false): Project | undefined;
+  findProject(reference: string, required = true): Project | undefined {
+    const project = this.#sql
+      .exec<Project>(
+        `SELECT * FROM projects WHERE id = ?1 OR name = ?1 COLLATE NOCASE
+          ORDER BY id = ?1 DESC, sort, name LIMIT 1`,
+        reference.trim(),
+      )
+      .toArray()[0];
+    if (!project && required)
+      throw new Error(
+        "Project not found. Call list_projects, or create_project to add it.",
+      );
+    return project;
+  }
+
   createProject(
     input: Pick<Project, "name"> & Partial<Omit<Project, "id" | "name">>,
   ): Project {
     const project = this.#insertProject(parseInput(CreateProjectSchema, input));
+    this.#commandEffects?.push({
+      changes: [{ type: "project", id: project.id }],
+    });
     this.#broadcast({ type: "PROJECT_UPSERT", project });
     return project;
   }
@@ -1441,14 +1483,21 @@ export class Workspace<
         id,
       )
       .one();
+    // Undo restores visibility only, so offer it only for a visibility change.
+    const visibilityOnly =
+      project.name === current.name &&
+      project.color === current.color &&
+      project.sort === current.sort;
     this.#commandEffects?.push({
       changes: [{ type: "project", id }],
-      undo: {
-        type: "project",
-        id,
-        before: current.hidden,
-        after: project.hidden,
-      },
+      ...(visibilityOnly && {
+        undo: {
+          type: "project",
+          id,
+          before: current.hidden,
+          after: project.hidden,
+        },
+      }),
     });
     this.#broadcast({ type: "PROJECT_UPSERT", project });
     return project;
@@ -1871,11 +1920,7 @@ export class Workspace<
   deleteItem(actor: Actor, input: ItemIdInput): ItemOperationResult {
     const data = parseInput(ItemIdSchema, input);
     return this.#mutateItems(actor, (mutation) => {
-      if (mutation.actor.kind !== "human") {
-        throw new Error(
-          "Only a human can hard-delete items. Agents can cancel them.",
-        );
-      }
+      requireSteering(mutation.actor, "delete an item. Cancel it instead");
       const item = this.#requireItem(data);
       const removed = [item, ...this.#descendants(item.id)];
       mutation.changes.push(...removed.map((before) => ({ before })));
@@ -2231,9 +2276,12 @@ export class Workspace<
       mutation.actor.kind === "agent"
         ? mutation.actor.default_project_id
         : null;
+    // A project may be given by name as well as by ID.
     const project_id =
       parent?.project_id ??
-      input.project ??
+      (input.project === undefined
+        ? undefined
+        : this.findProject(input.project).id) ??
       current?.project_id ??
       defaultProject ??
       INBOX_PROJECT_ID;

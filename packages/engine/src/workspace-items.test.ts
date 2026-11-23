@@ -993,7 +993,7 @@ it("reopens old history, records the reason and increments the count across canc
   expect(JSON.parse(log[2].detail!)).toEqual({ reason: "Regression found" });
 });
 
-it("hard-deletes only for a human and returns all removed items after cascading", async () => {
+it("refuses report scope a hard delete and returns all removed items after cascading", async () => {
   const stub = newWorkspace();
   const { item_id: parent } = await stub.addItem(human, { title: "Goal" });
   const { item_id: child } = await stub.addItem(human, {
@@ -1013,11 +1013,8 @@ it("hard-deletes only for a human and returns all removed items after cascading"
   });
   expect(await stub.listDependencies()).toHaveLength(2);
   await runInDurableObject(stub, (workspace) => {
-    expect(() => workspace.deleteItem(steer, { item_id: parent })).toThrow(
-      "Only a human",
-    );
     expect(() => workspace.deleteItem(reporter, { item_id: parent })).toThrow(
-      "Only a human",
+      "Report scope cannot delete an item",
     );
   });
   expect(
