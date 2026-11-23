@@ -1,6 +1,6 @@
 # HEED (`heed.work`) — Product & Technical Specification
 
-**Version:** 2.0 (MVP Blueprint, revised after architecture review)
+**Version:** 2.1 (MVP Blueprint, revised after architecture review)
 
 **Model:** Open source (MIT, self-hostable). The hosted service (`heed.work`) is a separate private layer; see section 8.
 
@@ -229,7 +229,7 @@ Design notes:
 * **Self-hosted:** the deployer supplies their own Google OAuth client ID/secret and an `ALLOWED_EMAILS` list. Anyone else is rejected.
 * **Hosted:** any Google account can sign in; a registry (D1) maps accounts to workspaces.
 * **API tokens** are created and revoked in Settings, stored hashed in the workspace DO, and carry a label and a scope:
-  * `report` (default, for autonomous agents): add items, report progress, set dependencies, raise handoffs, reopen items, and set priority and schedule following the user's guidance — but never on a field the human has set by hand. Cannot change visibility, projects, guidance or clear a handoff.
+  * `report` (default, for autonomous agents): add items, report progress, set dependencies, raise handoffs, reopen items, and set priority and schedule following the user's guidance — but never on a field the human has set by hand. May create a project. Cannot rename, hide, reorder or delete projects, change visibility or guidance, change the timezone, clear a handoff or delete an item.
   * `steer` (for the user's own interactive sessions and the in-UI command bar): everything. Changes made with a `steer` token count as made by the human.
 * A token's label is the default `agent_name` for everything it reports, so one token per agent or machine gives stable names. A token can also carry a default project for new items.
 * The token's workspace ID lets the Worker route to the right DO without a lookup; the DO verifies the secret.
@@ -357,14 +357,14 @@ All dates are evaluated in the workspace timezone (`settings.timezone`, set from
 Rules enforced on write:
 
 * A sub-item inherits `project_id` from its parent. Its `depth` is the parent's plus one; a write that would exceed depth 3 is rejected with an error telling the agent to attach to the parent instead.
-* A new item with no parent and no project goes to the token's default project, or to Inbox. Agents cannot create projects.
+* A new item with no parent and no project goes to the token's default project, or to Inbox. A project is named by its ID or its name; any caller may create one, and creating a name that exists returns the existing project.
 * When the human (UI, voice, or a `steer` token) sets `priority`, `scheduled_on`, `sort_key`, `acceptance` or position, that field is added to `locked_fields`. A `report` token's write to a locked field is ignored and the response says so. The human can unlock a field from the inspector.
 * Parents never complete automatically; when the last open child finishes, the parent shows a full progress arc and waits.
 * Every status change, note, handoff, reopen, move and push is appended to `events`.
 * When an item first becomes `active` with no `scheduled_on`, `scheduled_on` is set to today.
 * `set_dependency` rejects edges that would create a cycle.
 * Reopening sets `status = 'queued'`, clears `completed_at`, increments `reopen_count` and sets `scheduled_on` to today.
-* Agents cancel; only the human hard-deletes (UI only).
+* `report` agents cancel. Hard deletion is for the human and `steer` callers (the text line and the assistant included), and removes the item's children with it.
 
 Out of scope for the MVP: calendar sync (fixed-time items such as meetings are entered by hand or by voice; a read-only calendar feed import is a later candidate) and recurring items.
 
@@ -385,6 +385,17 @@ Served at `/mcp` (Streamable HTTP). The same operations back `/api/command` and 
 | `answer_handoff` | `item_id`, `text` | Human or steer only. Records a reply to an open handoff and clears the flag. |
 | `reopen_item` | `item_id` or `external_key`, `reason` | Brings a done item back (boomerang), at any age. |
 | `set_guidance` | `text` | Steer-only. Replaces the guidance text (used by the command bar: "from now on…"). |
+| `list_projects` | none | Lists projects with ID, name, colour and visibility, in display order. |
+| `create_project` | `name`, `color?` | Creates a project, or returns the existing one with that name. Counts against the hosted project limit. |
+| `update_project` | `project`, `name?`, `color?`, `hidden?` | Steer-only. Renames, recolours, hides or shows a project. |
+| `move_project` | `project`, `direction: "up"｜"down"` | Steer-only. Moves a project one place in the display order. |
+| `delete_project` | `project` | Steer-only. Deletes an empty project. |
+| `delete_item` | `item_id` | Steer-only. Permanently deletes an item and its children. |
+| `clear_handoff` | `item_id` | Steer-only. Withdraws an open question without answering it. |
+| `set_timezone` | `timezone` | Steer-only. Sets the workspace timezone (IANA name). |
+| `get_item` | `item_id` | Returns one item in full with its 20 most recent events; long text is shortened. |
+
+**Everything about the work is reachable by tool.** MCP and the text line expose one shared list, and a `steer` caller can do through it whatever the human can do to items, projects, dependencies, handoffs, guidance and the timezone. `project` parameters take a name or an ID. `tools/list` omits steer-only tools for a `report` token. Credentials and the workspace itself stay with the signed-in human: API tokens, connected apps, push subscriptions, export and reset are not tools.
 
 Every tool response includes `guidance_updated_at`, so a long-running agent can tell the guidance has changed and re-read it with `get_canvas`.
 

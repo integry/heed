@@ -17,6 +17,8 @@ export HEED_TOKEN='your-issued-token'
 
 Heed uses Streamable HTTP at `/mcp`. The server sends current workspace guidance on initialization. If `guidance_updated_at` changes during a run, use `get_canvas` to read the latest guidance.
 
+A `report` connection can add and report on items, raise handoffs and create projects. A `steer` connection can also rename, hide, reorder and delete projects, delete items, withdraw a handoff, and change guidance and the timezone. `project` parameters take a project name or ID.
+
 After connecting, ask the client to call `get_canvas` for an item you already work on. Use the returned ID to report progress, or create an item with `add_item` if you need one. A stable `external_key`, such as a pull request URL, lets repeated adds update the same item.
 
 ## Wait for a handoff answer

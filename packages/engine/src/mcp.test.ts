@@ -54,7 +54,7 @@ function call(token: string, name: string, args: object = {}) {
   }>(token, "tools/call", { name, arguments: args });
 }
 
-it("initializes with current guidance and lists exactly the eight behavioural tools", async () => {
+it("initializes with current guidance and lists the report-scope tools", async () => {
   const { token } = await workspace.createToken("Reader");
   const initialize = () =>
     rpc<{ instructions: string; protocolVersion: string }>(
@@ -82,8 +82,11 @@ it("initializes with current guidance and lists exactly the eight behavioural to
   }>(token, "tools/list");
   expect(tools.map(({ name }) => name).sort()).toEqual([
     "add_item",
+    "create_project",
     "flag_handoff",
     "get_canvas",
+    "get_item",
+    "list_projects",
     "reopen_item",
     "report_progress",
     "set_dependency",
@@ -99,7 +102,7 @@ it("initializes with current guidance and lists exactly the eight behavioural to
   }
   expect(tools.find(({ name }) => name === "add_item")).toMatchObject({
     description:
-      'Add work to the user\'s view. Use it when you start something that has no item yet, when you split a task into parts (pass parent_id), or when you discover follow-up work that should not be forgotten (leave it in the backlog). Call get_canvas first to avoid duplicates, and pass external_key (PR URL or repo#branch) so retries update the same item. When the work has a clear finish line, pass acceptance: up to eight short, checkable "done when" statements.',
+      'Add work to the user\'s view. Use it when you start something that has no item yet, when you split a task into parts (pass parent_id), or when you discover follow-up work that should not be forgotten (leave it in the backlog). Call get_canvas first to avoid duplicates, and pass external_key (PR URL or repo#branch) so retries update the same item. project takes a project name or ID; call create_project first if it does not exist. When the work has a clear finish line, pass acceptance: up to eight short, checkable "done when" statements.',
     inputSchema: {
       properties: {
         acceptance: {
@@ -509,4 +512,87 @@ it("exposes answering to steer and returns the reply through every agent read pa
       items: [expect.not.objectContaining({ handoff_answer: answer.text })],
     });
   }
+});
+
+it("manages projects and deletes items with a steer token, and refuses report scope", async () => {
+  const { token } = await workspace.createToken("Operator", "steer");
+  const { token: reporter } = await workspace.createToken("Reporter");
+  const data = async (caller: string, name: string, args: object = {}) => {
+    const result = await call(caller, name, args);
+    return {
+      ...result.structuredContent,
+      isError: result.isError ?? false,
+    } as Record<string, unknown>;
+  };
+
+  const listed = await rpc<{ tools: { name: string }[] }>(token, "tools/list");
+  expect(listed.tools.map(({ name }) => name)).toEqual(
+    expect.arrayContaining([
+      "update_project",
+      "move_project",
+      "delete_project",
+      "delete_item",
+      "clear_handoff",
+      "set_timezone",
+    ]),
+  );
+
+  // Report scope may add a project, and creating it again returns the same one.
+  const created = await data(reporter, "create_project", { name: "Launch" });
+  expect(created).toMatchObject({ created: true, isError: false });
+  const project = created.project as { id: string };
+  expect(await data(token, "create_project", { name: "launch" })).toMatchObject(
+    { created: false, project: { id: project.id } },
+  );
+
+  // Items accept the project by name.
+  const { item_id } = await data(token, "add_item", {
+    title: "Write the announcement",
+    project: "Launch",
+  });
+  expect(
+    (await workspace.getItem({ item_id: String(item_id) })).project_id,
+  ).toBe(project.id);
+  expect(
+    await data(token, "add_item", { title: "Lost", project: "Nowhere" }),
+  ).toMatchObject({
+    isError: true,
+    error: expect.stringContaining("create_project"),
+  });
+
+  expect(
+    await data(token, "update_project", { project: "Launch", hidden: true }),
+  ).toMatchObject({ project: { id: project.id, hidden: 1 } });
+  expect(await data(reporter, "list_projects")).toMatchObject({
+    projects: expect.arrayContaining([
+      expect.objectContaining({ id: project.id, hidden: true }),
+    ]),
+  });
+  expect(await data(token, "get_item", { item_id })).toMatchObject({
+    item: { title: "Write the announcement" },
+    events: expect.any(Array),
+  });
+  await data(token, "set_timezone", { timezone: "Europe/Riga" });
+  expect((await workspace.getSettings()).timezone).toBe("Europe/Riga");
+
+  for (const [name, args] of [
+    ["delete_item", { item_id }],
+    ["delete_project", { project: "Launch" }],
+    ["update_project", { project: "Launch", name: "Other" }],
+  ] as const) {
+    expect(await data(reporter, name, args)).toMatchObject({
+      isError: true,
+      error: expect.stringContaining("Report scope cannot"),
+    });
+  }
+  expect(
+    await data(token, "delete_project", { project: "Launch" }),
+  ).toMatchObject({ isError: true, error: "Project still has items" });
+  expect(await data(token, "delete_item", { item_id })).toMatchObject({
+    deleted_item_id: item_id,
+    deleted_count: 1,
+  });
+  expect(
+    await data(token, "delete_project", { project: "Launch" }),
+  ).toMatchObject({ deleted_project_id: project.id });
 });

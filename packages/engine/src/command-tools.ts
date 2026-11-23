@@ -12,6 +12,7 @@ import {
 } from "@heedwork/core";
 import type { Actor, ItemOperationResult, WorkspaceUser } from "@heedwork/core";
 import type { Workspace } from "./workspace.js";
+import { workspaceToolDefinitions, workspaceTools } from "./workspace-tools.js";
 
 const commandActor = {
   kind: "command",
@@ -138,7 +139,7 @@ export const commandTools = [
   ),
   tool(
     "add_item",
-    "Add an item or child. Use a project ID. An existing external_key updates its item. Use acceptance for up to eight short, checkable completion criteria.",
+    "Add an item or child. project takes a project name or ID; create the project first if it does not exist. An existing external_key updates its item. Use acceptance for up to eight short, checkable completion criteria.",
     AddItemSchema,
     (workspace, input, actor, allowItemCreation) => {
       const result = allowItemCreation
@@ -156,7 +157,7 @@ export const commandTools = [
   ),
   tool(
     "update_item",
-    "Edit only the specified item fields. Use project IDs and YYYY-MM-DD for scheduled_on; null clears the date. Pass hidden to hide or show an item.",
+    "Edit only the specified item fields. project takes a project name or ID. Use YYYY-MM-DD for scheduled_on; null clears the date. Pass hidden to hide or show an item.",
     UpdateItemSchema,
     (workspace, input, actor) => itemResult(workspace.updateItem(actor, input)),
   ),
@@ -195,13 +196,12 @@ export const commandTools = [
     SetGuidanceSchema,
     (workspace, { text }, actor) => workspace.setGuidance(actor, text),
   ),
-  tool(
-    "toggle_project",
-    "Hide or show a project by its ID. Pass hidden true to hide, false to show.",
-    z.strictObject({ project_id: z.string().min(1), hidden: z.boolean() }),
-    (workspace, { project_id, hidden }) => ({
-      project: workspace.updateProject(project_id, { hidden: hidden ? 1 : 0 }),
-      guidance_updated_at: workspace.getGuidance().guidance_updated_at,
-    }),
-  ),
+  ...workspaceTools.map(({ name }, index) => ({
+    definition: workspaceToolDefinitions[index] satisfies ToolDefinition,
+    execute: (
+      workspace: Workspace,
+      args: unknown,
+      user: WorkspaceUser | undefined,
+    ) => workspace.runWorkspaceTool({ ...commandActor, user }, name, args),
+  })),
 ];

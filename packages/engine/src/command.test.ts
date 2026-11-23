@@ -143,9 +143,9 @@ it("looks up items, applies multiple steer operations, and undoes them over the 
                 {
                   id: "hide",
                   function: {
-                    name: "toggle_project",
+                    name: "update_project",
                     arguments: JSON.stringify({
-                      project_id: project.id,
+                      project: project.id,
                       hidden: true,
                     }),
                   },
@@ -177,11 +177,14 @@ it("looks up items, applies multiple steer operations, and undoes them over the 
       "Prioritize production incidents.",
     );
     expect(initial.messages[0].content).toContain("Clients");
+    // The text line offers every workspace operation, deletion included.
     expect(
-      initial.tools.some(({ function: tool }: { function: { name: string } }) =>
-        tool.name.includes("delete"),
+      initial.tools.map(
+        ({ function: tool }: { function: { name: string } }) => tool.name,
       ),
-    ).toBe(false);
+    ).toEqual(
+      expect.arrayContaining(["create_project", "delete_item", "get_item"]),
+    );
     expect(run.mock.calls[1][1].messages.at(-1)).toMatchObject({
       role: "tool",
       name: "get_canvas",
@@ -239,7 +242,7 @@ it("looks up items, applies multiple steer operations, and undoes them over the 
             turn(
               "",
               call("update_item", { item_id, priority: 8 }),
-              call("toggle_project", { project_id: project.id, hidden: true }),
+              call("update_project", { project: project.id, hidden: true }),
             ),
           )
           .mockResolvedValueOnce(

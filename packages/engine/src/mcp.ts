@@ -24,6 +24,7 @@ import type { Workspace } from "./workspace.js";
 import { checkLimit, LimitError, OpenPushAllowance } from "./seams.js";
 import type { LimitAction, Limits } from "./seams.js";
 import { mcpChallenge } from "./oauth.js";
+import { workspaceTools } from "./workspace-tools.js";
 import type { JudgingInput } from "./judge.js";
 
 const instructions =
@@ -48,6 +49,7 @@ type McpWorkspace = Pick<
   | "answerHandoff"
   | "reopenItem"
   | "setGuidance"
+  | "runWorkspaceTool"
 >;
 
 type McpContext = {
@@ -83,7 +85,7 @@ function defineTool<T>(
     input: T,
     context: McpContext & { pushCap: number | null },
   ) => Promise<Record<string, unknown>>,
-  limit?: (input: T) => "push" | undefined,
+  limit?: (input: T) => LimitAction | undefined,
 ) {
   const inputSchema = z.toJSONSchema(schema, { io: "input" });
   const definition: Tool = {
@@ -116,7 +118,7 @@ function defineTool<T>(
         ...context,
         pushCap,
       });
-      if (name !== "get_canvas") context.recordWrite(name);
+      if (!readTools.has(name)) context.recordWrite(name);
       return result;
     },
   };
@@ -137,6 +139,16 @@ function itemResult({
   };
 }
 
+const readTools = new Set([
+  "get_canvas",
+  ...workspaceTools.filter(({ read }) => read).map(({ name }) => name),
+]);
+// Hidden from report-scope callers, which the Workspace would refuse.
+const steerTools = new Set([
+  "answer_handoff",
+  ...workspaceTools.filter(({ steer }) => steer).map(({ name }) => name),
+]);
+
 const tools = [
   defineTool(
     "get_canvas",
@@ -148,7 +160,7 @@ const tools = [
   ),
   defineTool(
     "add_item",
-    'Add work to the user\'s view. Use it when you start something that has no item yet, when you split a task into parts (pass parent_id), or when you discover follow-up work that should not be forgotten (leave it in the backlog). Call get_canvas first to avoid duplicates, and pass external_key (PR URL or repo#branch) so retries update the same item. When the work has a clear finish line, pass acceptance: up to eight short, checkable "done when" statements.',
+    'Add work to the user\'s view. Use it when you start something that has no item yet, when you split a task into parts (pass parent_id), or when you discover follow-up work that should not be forgotten (leave it in the backlog). Call get_canvas first to avoid duplicates, and pass external_key (PR URL or repo#branch) so retries update the same item. project takes a project name or ID; call create_project first if it does not exist. When the work has a clear finish line, pass acceptance: up to eight short, checkable "done when" statements.',
     AddItemSchema,
     async (workspace, actor, input, { limits, workspaceId }) =>
       itemResult(
@@ -173,7 +185,7 @@ const tools = [
   ),
   defineTool(
     "update_item",
-    "Use when the details or placement of an existing item change. Pass only the fields you intend to edit and follow the user's guidance for placement. Check ignored_fields for edits the user's locks prevented. Changing project, visibility, sort order, layout position or field locks requires a steer token.",
+    "Use when the details or placement of an existing item change. Pass only the fields you intend to edit and follow the user's guidance for placement. Check ignored_fields for edits the user's locks prevented. project takes a project name or ID. Changing project, visibility, sort order, layout position or field locks requires a steer token.",
     UpdateItemSchema,
     async (workspace, actor, input) =>
       itemResult(await workspace.updateItem(actor, input)),
@@ -226,6 +238,16 @@ const tools = [
     async (workspace, actor, { text }) => ({
       ...(await workspace.setGuidance(actor, text)),
     }),
+  ),
+  ...workspaceTools.map(({ name, description, schema, steer, limit }) =>
+    defineTool(
+      name,
+      steer ? `${description} This requires a steer token.` : description,
+      schema,
+      (workspace, actor, input) =>
+        workspace.runWorkspaceTool(actor, name, input),
+      limit && (() => limit),
+    ),
   ),
 ];
 
@@ -281,9 +303,7 @@ function createServer(
   server.setRequestHandler("tools/list", () => ({
     tools: tools
       .map(({ definition }) => definition)
-      .filter(
-        ({ name }) => name !== "answer_handoff" || actor.scope === "steer",
-      ),
+      .filter(({ name }) => !steerTools.has(name) || actor.scope === "steer"),
   }));
   server.setRequestHandler("tools/call", async ({ params }) => {
     const tool = tools.find(
