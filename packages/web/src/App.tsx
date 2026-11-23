@@ -164,6 +164,7 @@ function Workspace({
   const assistantKey = solv?.assistantKey;
   const assistant = useRef<ReturnType<typeof connectSolv>>(null);
   const solvView = useRef<SolvView>(null);
+  const inspectedId = useRef<string | undefined>(undefined);
   const workspaceApi = useApi();
   const { getJson, postJson } = workspaceApi;
   const api = useMemo(
@@ -225,6 +226,7 @@ function Workspace({
     capabilities.transcription,
     capabilities.command,
     executeCommand,
+    () => inspectedId.current,
   );
   const { line } = command;
   useLayoutEffect(() => {
@@ -327,6 +329,7 @@ function Workspace({
       ? linkedItem.item
       : undefined;
   const inspected = selected ?? fallback;
+  inspectedId.current = inspected?.id;
   const replyTarget =
     replyId && inspected?.id === replyId && hasOpenHandoff(inspected)
       ? inspected

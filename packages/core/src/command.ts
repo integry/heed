@@ -14,6 +14,8 @@ export interface CommandChange {
   type: "item" | "project" | "dependency" | "guidance";
   id?: string;
   blockedById?: string;
+  /** Set when the command created this project. */
+  created?: true;
 }
 
 export interface CommandResult {

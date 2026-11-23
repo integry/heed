@@ -22,11 +22,14 @@ export function Microphone() {
   );
 }
 
+const CORRECTION_WINDOW_MS = 10 * 60 * 1000;
+
 export function useCommandBar(
   save: SaveMutation,
   transcription: boolean,
   model: boolean,
   execute: (text: string) => Promise<string | undefined>,
+  selectedItemId?: () => string | undefined,
 ) {
   const { postJson, requestJson } = useApi();
   const line = useRef<HTMLInputElement>(null);
@@ -41,6 +44,12 @@ export function useCommandBar(
     question: string;
   }>();
   const [clarificationTooLong, setClarificationTooLong] = useState(false);
+  const [previous, setPrevious] = useState<{
+    text: string;
+    summary: string;
+    changes: CommandResult["changes"];
+    at: number;
+  }>();
   const [preferRecording, setPreferRecording] = useState(false);
   const recording = useRef<{
     stopped: AbortController;
@@ -138,7 +147,34 @@ export function useCommandBar(
         setClarificationTooLong(true);
         return;
       }
-      const result = await postJson<CommandResult>("/api/command", { text });
+      // The open item and a recent exchange give the model its context, so
+      // "done" applies to what is on screen and "no, under Acme" corrects.
+      const recent =
+        !request && previous && Date.now() - previous.at < CORRECTION_WINDOW_MS
+          ? previous
+          : undefined;
+      const selected = selectedItemId?.();
+      const result = await postJson<CommandResult>("/api/command", {
+        text,
+        ...(selected && { selected_item_id: selected }),
+        ...(recent && {
+          previous: {
+            text: recent.text,
+            summary: recent.summary.slice(0, 1_000),
+            changes: recent.changes.slice(0, 20),
+          },
+        }),
+      });
+      setPrevious(
+        result.needsClarification || result.refusal
+          ? undefined
+          : {
+              text: original.slice(0, COMMAND_TEXT_LIMIT),
+              summary: result.summary,
+              changes: result.changes,
+              at: Date.now(),
+            },
+      );
       setDraft("");
       setSummary(
         result.refusal && !result.summary.includes(result.refusal.message)
@@ -165,6 +201,7 @@ export function useCommandBar(
           { callerReportsError: true },
         );
         setUndoId(undefined);
+        setPrevious(undefined);
         setRequest(undefined);
         setClarificationTooLong(false);
         setSummary("Command undone.");

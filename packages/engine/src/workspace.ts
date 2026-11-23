@@ -641,12 +641,29 @@ export class Workspace<
     return true;
   }
 
-  getCommandContext() {
+  getCommandContext(selectedItemId?: string) {
     const { timezone } = this.getSettings();
     const projects = this.listProjects();
+    const selected = selectedItemId
+      ? this.#sql
+          .exec<Item>("SELECT * FROM items WHERE id = ?", selectedItemId)
+          .toArray()[0]
+      : undefined;
     return {
       today: today({ now: new Date(), timezone }),
       timezone,
+      ...(selected && {
+        selected_item: {
+          id: selected.id,
+          title: selected.title.slice(0, 200),
+          project_id: selected.project_id,
+          parent_id: selected.parent_id,
+          status: selected.status,
+          priority: selected.priority,
+          scheduled_on: selected.scheduled_on,
+          handoff_note: selected.handoff_note?.slice(0, 300) ?? null,
+        },
+      }),
       projects: projects.slice(0, 100).map(({ id, name, hidden }) => ({
         id,
         name: name.slice(0, 120),
@@ -1455,7 +1472,7 @@ export class Workspace<
   ): Project {
     const project = this.#insertProject(parseInput(CreateProjectSchema, input));
     this.#commandEffects?.push({
-      changes: [{ type: "project", id: project.id }],
+      changes: [{ type: "project", id: project.id, created: true }],
     });
     this.#broadcast({ type: "PROJECT_UPSERT", project });
     return project;
