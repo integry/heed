@@ -1,3 +1,4 @@
+import { nestProblem, nestTarget } from "./radar-nesting";
 import {
   useCallback,
   useId,
@@ -287,6 +288,7 @@ export function RadarLens({
   moveRadar,
   reschedule,
   setPriority,
+  reparent,
 }: LensProps) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const clearPreview = useCallback(() => setPreview(null), []);
@@ -310,6 +312,9 @@ export function RadarLens({
     return () => observer.disconnect();
   }, []);
   const [dropMessage, setDropMessage] = useState<string | null>(null);
+  // A breadcrumb under the pointer while dragging inside an item: an item ID,
+  // or "" for the top level.
+  const [crumbTarget, setCrumbTarget] = useState<string | null>(null);
   const arrowId = useId();
   const projects = useMemo(
     () => allProjects.filter(({ hidden }) => hidden === 0),
@@ -744,14 +749,54 @@ export function RadarLens({
     };
   }
 
+  /** The breadcrumb under the pointer, as a parent ID ("" for the top level). */
+  function crumbAt(event: PointerEvent): string | null {
+    if (!goal) return null;
+    const under =
+      document.elementsFromPoint?.(event.clientX, event.clientY) ?? [];
+    for (const element of under) {
+      const crumb = element.closest<HTMLElement>("[data-drop-parent]");
+      if (crumb) return crumb.dataset.dropParent ?? null;
+    }
+    return null;
+  }
+
+  /** Moves an item under a new parent (null: top level) if the tree allows it. */
+  function nestUnder(item: CanvasItem, parentId: string | null) {
+    if (!reparent || parentId === item.parent_id) return false;
+    const problem = nestProblem(item, parentId, items);
+    if (problem) {
+      setDropMessage(`${item.title} can’t move there because ${problem}.`);
+      return true;
+    }
+    reparent(item.id, parentId);
+    const parent = parentId === null ? undefined : items.get(parentId);
+    setDropMessage(
+      parent
+        ? `Moved ${item.title} into ${parent.title}.`
+        : `Moved ${item.title} to the top level.`,
+    );
+    return true;
+  }
+
   function release(event: PointerEvent<SVGSVGElement>) {
     const result = dragPreview(event, drag.finish(event));
+    setCrumbTarget(null);
     if (!result || !live) return;
     const { next, bubble } = result;
     const { item } = bubble;
     const dropTime = Math.max(now, Date.now());
+    const crumb = next.priority === undefined ? crumbAt(event) : null;
+    const target =
+      next.priority === undefined
+        ? nestTarget(next.point, displayed, item.id)
+        : undefined;
     if (next.priority !== undefined) {
       if (item.priority !== next.priority) setPriority(item.id, next.priority);
+    } else if (crumb !== null) {
+      nestUnder(item, crumb || null);
+    } else if (target && nestUnder(item, target.item.id)) {
+      return;
     } else if (goal) {
       const target = goalDropTarget(next.point);
       const currentBand = bandById.get(item.id);
@@ -769,6 +814,9 @@ export function RadarLens({
           },
           layoutKey,
         );
+      } else {
+        // Dropped outside the item's circle: up one level.
+        nestUnder(item, goal.item.parent_id);
       }
     } else {
       const { cell, day } = dropTarget(next.point);
@@ -818,8 +866,25 @@ export function RadarLens({
   }
 
   const moving = preview && preview.priority === undefined;
+  const nestCandidate =
+    moving && reparent && crumbTarget === null
+      ? nestTarget(preview.point, displayed, preview.id)
+      : undefined;
+  const nestBlocked =
+    nestCandidate &&
+    (() => {
+      const dragged = items.get(preview!.id);
+      return dragged
+        ? nestProblem(dragged, nestCandidate.item.id, items) !== null
+        : true;
+    })();
+  const liftsOut =
+    Boolean(goal && moving && reparent && crumbTarget === null) &&
+    !nestCandidate &&
+    distance(preview!.point, CENTER) > GOAL_RADIUS &&
+    !goalDropTarget(preview!.point);
   let highlight: Cell | null = null;
-  if (!goal && moving) {
+  if (!goal && moving && !nestCandidate) {
     const { cell } = dropTarget(preview.point);
     const item = bubbleById.get(preview.id)?.item;
     if (
@@ -854,6 +919,8 @@ export function RadarLens({
             <button
               className="subtle"
               type="button"
+              data-drop-parent=""
+              data-drop-target={crumbTarget === ""}
               onClick={() => goBack(null)}
             >
               All projects
@@ -868,6 +935,8 @@ export function RadarLens({
                   key={item.id}
                   className="subtle"
                   type="button"
+                  data-drop-parent={item.id}
+                  data-drop-target={crumbTarget === item.id}
                   onClick={() => goBack(item.id)}
                 >
                   {item.title}
@@ -949,7 +1018,11 @@ export function RadarLens({
           {...drag.handlers}
           onPointerMove={(event) => {
             const result = dragPreview(event, drag.movement(event));
-            if (result) setPreview(result.next);
+            if (result) {
+              setPreview(result.next);
+              if (result.next.priority === undefined)
+                setCrumbTarget(crumbAt(event));
+            }
           }}
           onPointerUp={release}
           onClick={() => select(null)}
@@ -976,6 +1049,7 @@ export function RadarLens({
                   cy={CENTER.y}
                   r={GOAL_RADIUS}
                   className="radar-goal-field"
+                  data-lift={liftsOut}
                 />
                 {dependencies.map(({ item_id, blocked_by_id }) => {
                   const source = bubbleById.get(blocked_by_id);
@@ -1023,7 +1097,24 @@ export function RadarLens({
                 subrings={subrings}
               />
             )}
-            {displayed.map((bubble) => (
+            {nestCandidate && (
+              <circle
+                aria-hidden="true"
+                className="radar-nest-target"
+                data-blocked={nestBlocked}
+                cx={nestCandidate.point.x}
+                cy={nestCandidate.point.y}
+                r={nestCandidate.radius + 6 / labelScale}
+              />
+            )}
+            {(preview
+              ? // The bubble being dragged stays on top of the one it is dropped on.
+                [
+                  ...displayed.filter(({ item }) => item.id !== preview.id),
+                  ...displayed.filter(({ item }) => item.id === preview.id),
+                ]
+              : displayed
+            ).map((bubble) => (
               <RadarBubble
                 key={bubble.item.id}
                 bubble={bubble}
