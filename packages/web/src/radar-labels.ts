@@ -11,6 +11,30 @@ import {
   type Point,
 } from "./radar-geometry";
 
+/** Wraps words greedily onto at most `max` lines, truncating the last. */
+export function wrapLines(
+  title: string,
+  width: number,
+  font: number,
+  max: number,
+): string[] {
+  const lines: string[] = [];
+  let rest = title.trim();
+  while (rest && lines.length < max - 1) {
+    let line = "";
+    for (const word of rest.split(/\s+/u)) {
+      const next = line ? `${line} ${word}` : word;
+      if (labelWidth(next, font) > width) break;
+      line = next;
+    }
+    if (!line) break;
+    lines.push(line);
+    rest = rest.slice(line.length).trimStart();
+  }
+  if (rest) lines.push(truncateLabel(rest, width, font));
+  return lines;
+}
+
 export function titleLines(title: string, width: number, font: number) {
   if (labelWidth(title, font) <= width) return [title];
   let first = "";
@@ -39,8 +63,6 @@ export function bubbleLabel(
 ) {
   const font = RADAR_LABEL_FONT / scale;
   const inset = Math.max(0, radius - 2 / scale);
-  const chord = (height: number) =>
-    2 * Math.sqrt(Math.max(0, inset ** 2 - height ** 2));
   const badgeY = inset >= 24 / scale ? 11 / scale : 0;
   const visibleBadge = [
     { text: stamp, padding: 6, height: 14 },
@@ -54,18 +76,28 @@ export function bubbleLabel(
     return [{ text, width, height: height / scale }];
   })[0];
   const labelY = visibleBadge ? -6 / scale : 0;
-  const singleWidth = chord(Math.abs(labelY) + 6 / scale);
-  const doubleWidth = chord(12 / scale);
-  const lines =
-    visibleBadge && badgeY === 0
-      ? []
-      : labelWidth(title, font) <= singleWidth
-        ? [title]
-        : !visibleBadge && doubleWidth >= 25 / scale
-          ? titleLines(title, doubleWidth, font)
-          : singleWidth >= 25 / scale
-            ? [truncateLabel(title, singleWidth, font)]
-            : [];
+  // Text may run up to the outline; each line gets the width at its own
+  // outer edge, where a glyph reaches about 0.42 em from its centre.
+  const edge = Math.max(0, radius - 0.5 / scale);
+  const span = (height: number) =>
+    2 * Math.sqrt(Math.max(0, edge ** 2 - height ** 2));
+  const reach = 0.42 * font;
+  const singleWidth = span(Math.abs(labelY) + reach);
+  const doubleWidth = span(font / 2 + reach);
+  const tripleWidth = span(font + reach);
+  let lines: string[] = [];
+  if (!(visibleBadge && badgeY === 0)) {
+    if (labelWidth(title, font) <= singleWidth) lines = [title];
+    else if (!visibleBadge && doubleWidth >= 25 / scale) {
+      lines = titleLines(title, doubleWidth, font);
+      // A large bubble wraps a long title onto three lines before truncating it.
+      if (lines.join(" ") !== title && tripleWidth >= 40 / scale) {
+        const three = wrapLines(title, tripleWidth, font, 3);
+        if (three.join(" ") === title) lines = three;
+      }
+    } else if (singleWidth >= 25 / scale)
+      lines = [truncateLabel(title, singleWidth, font)];
+  }
   return { labelY, lines, badgeY, visibleBadge, font };
 }
 

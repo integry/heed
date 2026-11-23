@@ -304,3 +304,14 @@ it("lets a bubble callout use space reserved only by a hidden ring label", () =>
     outsideLabels([item], 1, ["today", "later", "backlog"]).get(item.id)!.x,
   ).toBeGreaterThan(item.point.x);
 });
+
+it("wraps a long title onto three lines in a large bubble", async () => {
+  const { bubbleLabel, wrapLines } = await import("./radar-labels");
+  expect(wrapLines("Plan the quarterly review", 75, 11, 3)).toEqual([
+    "Plan the",
+    "quarterly",
+    "review",
+  ]);
+  const fitted = bubbleLabel("Plan the quarterly review", null, null, 36, 1);
+  expect(fitted.lines.join(" ")).toBe("Plan the quarterly review");
+});

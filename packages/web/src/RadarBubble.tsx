@@ -265,7 +265,8 @@ export const RadarBubble = memo(function RadarBubble({
             )}
           </>
         )}
-        {project && (
+        {/* Too small a bubble keeps only the tint; a badge would cover it. */}
+        {project && radius * labelScale >= 14 && (
           <g
             className="radar-project-badge"
             data-project={project.color}
