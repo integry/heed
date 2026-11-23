@@ -580,6 +580,7 @@ export class Workspace<
     return {
       type: "SNAPSHOT",
       ...this.#readSettings(),
+      settings: this.#socketSettings(),
 
       ...this.#canvasSnapshot(),
     };
@@ -944,6 +945,21 @@ export class Workspace<
     };
   }
 
+  /** Counts API tokens and consented apps with unexpired access, not the assistant. */
+  countConnectedAgents(): number {
+    return this.#sql
+      .exec<{ count: number }>(
+        `SELECT COUNT(*) AS count FROM tokens t
+           LEFT JOIN oauth_grants g ON g.id = t.id
+          WHERE g.id IS NULL OR (
+            g.assistant_user IS NULL AND g.access_expires_at IS NOT NULL
+            AND COALESCE(g.refresh_expires_at, g.access_expires_at) > ?
+          )`,
+        Date.now(),
+      )
+      .one().count;
+  }
+
   async createToken(
     label: string,
     scope?: Token["scope"],
@@ -980,6 +996,7 @@ export class Workspace<
         hash,
       )
       .one();
+    this.#broadcastSettings();
     return { ...metadata, token: `heed_${workspaceId}_${secret}` };
   }
 
@@ -998,6 +1015,7 @@ export class Workspace<
         "DELETE FROM tokens WHERE id = ? AND id NOT IN (SELECT id FROM oauth_grants)",
         id,
       ).rowsWritten > 0;
+    if (revoked) this.#broadcastSettings();
     return revoked;
   }
 
@@ -1032,8 +1050,11 @@ export class Workspace<
     return this.#oauth.finishConsent(csrf, userId, resource, decision);
   }
 
-  exchangeOAuthToken(input: OAuthExchange) {
-    return this.#oauth.exchange(input);
+  async exchangeOAuthToken(input: OAuthExchange) {
+    const result = await this.#oauth.exchange(input);
+    // A first exchange connects an app.
+    this.#broadcastSettings();
+    return result;
   }
 
   issueAssistantAccessToken(resource: string, user: WorkspaceUser) {
@@ -1045,7 +1066,9 @@ export class Workspace<
   }
 
   revokeConnectedApp(id: string) {
-    return this.#oauth.revoke(id);
+    const revoked = this.#oauth.revoke(id);
+    this.#broadcastSettings();
+    return revoked;
   }
 
   async mcp(request: Request, secret: string, check: McpLimitCheck) {
@@ -1385,11 +1408,19 @@ export class Workspace<
     return { guidance: value, guidance_updated_at: updatedAt };
   }
 
+  /** Settings as sent to browsers, with the live connection count. */
+  #socketSettings(): Settings {
+    return {
+      ...this.getSettings(),
+      agents_connected: this.countConnectedAgents(),
+    };
+  }
+
   #broadcastSettings(): void {
     const sockets = this.ctx.getWebSockets();
     if (sockets.length > 0) {
       this.#broadcast(
-        { type: "SETTINGS_UPDATE", settings: this.getSettings() },
+        { type: "SETTINGS_UPDATE", settings: this.#socketSettings() },
         sockets,
       );
     }

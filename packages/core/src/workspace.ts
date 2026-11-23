@@ -62,6 +62,8 @@ export const GuidanceSchema = z.object({
 export const SettingsSchema = GuidanceSchema.extend({
   schema_version: z.int().positive(),
   timezone: TimezoneSchema,
+  /** API tokens and connected apps that can currently reach the workspace. */
+  agents_connected: z.int().nonnegative().optional(),
 });
 
 export const SettingSchema = z.object({

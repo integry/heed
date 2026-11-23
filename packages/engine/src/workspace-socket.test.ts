@@ -553,6 +553,12 @@ it("delivers token plaintext only in the creation reply", async () => {
       default_project_id: "inbox",
     },
   });
+  // Both sockets learn that one more agent is connected, without the token.
+  for (const socket of [first, second])
+    expect(await socket.next()).toMatchObject({
+      type: "SETTINGS_UPDATE",
+      settings: { agents_connected: 1 },
+    });
   const reply = await first.next();
   expect(reply).toMatchObject({
     type: "ACK",
@@ -582,6 +588,10 @@ it("delivers token plaintext only in the creation reply", async () => {
     type: "REVOKE_TOKEN",
     requestId: "revoke-token",
     input: { token_id: id },
+  });
+  expect(await first.next()).toMatchObject({
+    type: "SETTINGS_UPDATE",
+    settings: { agents_connected: 0 },
   });
   expect(await first.next()).toMatchObject({
     type: "ACK",

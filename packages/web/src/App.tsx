@@ -282,6 +282,10 @@ function Workspace({
     return { ...selectWorkspace(view, now), now };
   }, [view, clock]);
   const { projects, tree, filtered, liveCount, timezone, now } = derived;
+  // One connection can report under several agent names.
+  const connected = state.settings?.agents_connected;
+  const connectedCount =
+    connected === undefined ? undefined : Math.max(connected, liveCount);
   const focusedGoal = goalId && filtered.has(goalId) ? goalId : null;
   const lens = resolveLens(registry, lensId);
   const LensComponent = lens.component;
@@ -980,7 +984,9 @@ function Workspace({
             >
               ●
             </span>{" "}
-            {liveCount} {liveCount === 1 ? "agent" : "agents"} working
+            {connectedCount === undefined
+              ? `${liveCount} ${liveCount === 1 ? "agent" : "agents"} working`
+              : `${connectedCount} ${connectedCount === 1 ? "agent" : "agents"} connected · ${liveCount} working`}
           </span>
           <time>{date}</time>
         </div>

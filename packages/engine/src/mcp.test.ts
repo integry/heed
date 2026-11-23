@@ -596,3 +596,17 @@ it("manages projects and deletes items with a steer token, and refuses report sc
     await data(token, "delete_project", { project: "Launch" }),
   ).toMatchObject({ deleted_project_id: project.id });
 });
+
+it("counts API tokens and connected apps, but not the text line's assistant", async () => {
+  const connected = () => workspace.countConnectedAgents();
+  const before = await connected();
+  const { id } = await workspace.createToken("Counted agent");
+  expect(await connected()).toBe(before + 1);
+  await workspace.issueAssistantAccessToken("https://heed.test/mcp", {
+    id: "user",
+    email: "user@example.test",
+  } as Parameters<typeof workspace.issueAssistantAccessToken>[1]);
+  expect(await connected()).toBe(before + 1);
+  await workspace.revokeToken(id);
+  expect(await connected()).toBe(before);
+});
