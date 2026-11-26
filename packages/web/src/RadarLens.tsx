@@ -841,7 +841,7 @@ export function RadarLens({
     return goal ? dropZoneAt(event, "drop-parent") : null;
   }
 
-  /** Whether a bubble being moved can be dropped on Done or Won't do. */
+  /** Whether an item can be finished from the Done or Won't do targets. */
   function canFinish(id: string) {
     const item = items.get(id);
     return Boolean(live && finish && item && isOpen(item));
@@ -982,7 +982,12 @@ export function RadarLens({
   }
 
   const moving = preview && preview.priority === undefined;
-  const showFinish = Boolean(moving && canFinish(preview.id));
+  // The targets finish the bubble being moved or, at rest, the selected item;
+  // a priority resize offers neither.
+  const finishId = moving ? preview.id : preview ? null : selectedId;
+  const finishSubject =
+    finishId !== null && canFinish(finishId) ? items.get(finishId) : undefined;
+  const showFinish = Boolean(moving && finishSubject);
   const finishing = showFinish ? finishTarget : null;
   const reportFinishTargets = useEffectEvent((shown: boolean) =>
     finishTargetsShown?.(shown),
@@ -1133,7 +1138,15 @@ export function RadarLens({
           </button>
         </div>
       </div>
-      <div ref={chart} className="radar-chart" data-dragging={Boolean(preview)}>
+      <div
+        ref={chart}
+        className="radar-chart"
+        data-dragging={Boolean(preview)}
+        data-finish-buttons={(finishSubject && !showFinish) || undefined}
+        // Overlays over the chart's foot (inspector, question cards) sit above
+        // the finish targets and the drop message while either is shown.
+        data-bottom-row={Boolean(finishSubject || dropMessage) || undefined}
+      >
         <svg
           ref={svg}
           className="radar-svg"
@@ -1359,20 +1372,31 @@ export function RadarLens({
             )}
           </g>
         </svg>
-        {showFinish && (
-          <div className="radar-finish" data-goal={Boolean(goal)}>
+        {finishSubject && (
+          <div
+            className="radar-finish"
+            data-goal={Boolean(goal)}
+            data-resting={!showFinish}
+          >
             {FINISH_TARGETS.map(({ status, glyph, label }) => (
-              <div
+              <button
                 key={status}
+                type="button"
                 className="radar-finish-target"
                 data-drop-finish={status}
                 data-target={finishing === status}
+                aria-label={`Mark ${finishSubject.title} ${status === "done" ? "done" : "won't do"}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  // A drop finishes on release; this is the tap.
+                  if (!preview) finishItem(finishSubject, status);
+                }}
               >
                 <span className="radar-finish-glyph" aria-hidden="true">
                   {glyph}
                 </span>
                 {label}
-              </div>
+              </button>
             ))}
           </div>
         )}
