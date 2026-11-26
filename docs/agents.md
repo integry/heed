@@ -4,7 +4,7 @@
 
 Add `https://your-heed.example/mcp` as a remote Streamable HTTP server in an OAuth-capable MCP client and use its Connect or Sign in action. Sign in to Heed, verify the workspace and app on the consent screen, and enter the agent label you want to see on the canvas. **Report** is selected by default. Choose **Steer** only for an app you trust to change workspace guidance and protected item fields.
 
-To disconnect an app, open **Settings → API tokens → Connected apps** and revoke its access. The client will need your consent to connect again.
+To disconnect an app, click the agent count in the header to open the **Agents** panel, choose **Disconnect** on its row and confirm. The client will need your consent to connect again. The same panel shows the setup steps for Claude Code, Cursor, Codex and other clients with your workspace's address filled in.
 
 ## Connect with an API token
 
@@ -159,4 +159,4 @@ Agents receive guidance when they connect and in `get_canvas`. The command bar a
 | `report` | Read the canvas and guidance, add items and sub-items, record progress or status, edit unlocked fields, manage dependencies, reopen completed work, and flag handoffs. Handoffs can request push when Web Push is enabled and guidance calls for it. Updates to human-locked fields are ignored and listed in `ignored_fields`. |
 | `steer`  | Do everything a report token can do, plus answer handoffs, replace guidance, move an existing item between projects, change visibility, change sort order and layout position, and unlock fields. Steering writes to lockable fields set human locks.                                                                           |
 
-Create and revoke tokens in **Settings → API tokens**. Give each reporting agent or hook its own report token and reserve steer tokens for clients you operate yourself.
+Create a token by typing "create a token for <label>" (or "new steer token for <label>") on the text line, and disconnect it from the **Agents** panel. Give each reporting agent or hook its own report token and reserve steer tokens for clients you operate yourself.
