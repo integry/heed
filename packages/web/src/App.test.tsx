@@ -75,6 +75,8 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetchSession);
   vi.stubGlobal("WebSocket", TestSocket);
   vi.spyOn(Date, "now").mockReturnValue(Date.parse("2024-04-03T12:00:00Z"));
+  // Many fixtures check completed ghosts, which are hidden by default.
+  localStorage.setItem("heed.showGhosts", "true");
 });
 
 afterEach(() => {
@@ -1772,6 +1774,27 @@ it("keeps radar positions on status updates and toggles completed ghosts", async
 
   fireEvent.click(radar.getByRole("button", { name: goal.title }));
   expect(radar.getByRole("button", { name: child.title })).toBeTruthy();
+});
+
+it("hides completed items from the radar by default and remembers showing them", async () => {
+  localStorage.removeItem("heed.showGhosts");
+  const finished = {
+    ...goal,
+    id: "finished",
+    title: "Shipped work",
+    status: "done",
+    completed_at: "2024-04-03T11:00:00Z",
+    completed_band: "today",
+  } as const;
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: [...snapshot.items, finished],
+  });
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  expect(radar.queryByRole("button", { name: finished.title })).toBeNull();
+  fireEvent.click(menuAction("Show completed ghosts"));
+  expect(radar.getByRole("button", { name: finished.title })).toBeTruthy();
+  expect(localStorage.getItem("heed.showGhosts")).toBe("true");
 });
 
 const completedGoal = {

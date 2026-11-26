@@ -18,7 +18,7 @@ Traditional task trackers (Jira, Linear, Asana) assume human-speed execution and
 * **Guidance is a prompt, not a settings page.** The user keeps one free-form text ("this week billing comes first; park marketing; only notify me about production issues") and can change it at any time. Agents and the in-app command bar read it and follow it when they place items, set priority and decide whether something deserves a notification.
 * **"Needs me" means a human decision or input is required.** It is not a list of the user's own tasks.
 * **No external sync.** No GitHub/Linear/calendar state syncing. PRs, issues and docs are plain clickable links (`ref_url`).
-* **Done work stays in view.** Completed items remain as unobtrusive "ghost moons" for 24 hours and stay in history forever, so anything can be reopened ("boomeranged") when a follow-up or regression appears.
+* **Done work leaves the view, not the record.** Completed items leave the canvas by default; turning on "Show completed ghosts" (remembered per browser) keeps them as unobtrusive "ghost moons" for 24 hours. They stay in the Horizon Stream's Completed section and in history forever, so anything can be reopened ("boomeranged") when a follow-up or regression appears.
 * **Voice and chat use the same tools.** The in-UI command bar calls the same operations as external agents.
 
 Terminology: an **item** is anything shown in Heed (goal, task, sub-task, meeting). Items render as bubbles (or rectangles, or graph nodes, depending on the lens) in the left pane and as rows in the Horizon Stream. A **project** is a user-defined grouping (e.g. Dev, Marketing, Support, Clients, or one per product). Nesting is capped at four levels: project → goal → task → sub-task.
@@ -130,7 +130,7 @@ The left pane is a switchable **lens** over the same items. The Horizon Stream s
 
 Radar rules:
 
-* A bubble's ring is its band from section 5, so a carried-over or active item sits in Today. Ghosts stay in the ring where they were completed, faded.
+* A bubble's ring is its band from section 5, so a carried-over or active item sits in Today. When ghosts are shown, they stay in the ring where they were completed, faded.
 * Dropping a bubble on a ring sets `scheduled_on` to the first day of that band (Today: today; This week: tomorrow; Later: the first day after this week; Backlog: cleared).
 * Zooming into a goal shows its children packed inside it; the Dependencies lens is one tap away from there.
 * Roll-up rings, progress arcs, ghosts and the stale/live states are drawn the same way in every lens.
