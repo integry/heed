@@ -506,8 +506,14 @@
   }
 
   .attention-lens {
+    --radar-height: clamp(270px, 40dvh, 380px);
     flex: none;
-    height: clamp(270px, 40dvh, 380px);
+    height: var(--radar-height);
+  }
+
+  /* The resting finish buttons add a row under the radar without shrinking it. */
+  .attention-lens:has(.radar-finish-slot[data-shown]) {
+    height: calc(var(--radar-height) + var(--radar-finish-rest) + 8px);
   }
 
   .attention-field[data-lens="list"] .attention-lens {

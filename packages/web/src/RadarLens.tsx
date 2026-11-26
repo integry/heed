@@ -998,6 +998,36 @@ export function RadarLens({
     reportFinishTargets(true);
     return () => reportFinishTargets(false);
   }, [showFinish]);
+  function finishTargets(subject: CanvasItem) {
+    return (
+      <div
+        className="radar-finish"
+        data-goal={Boolean(goal)}
+        data-resting={!showFinish}
+      >
+        {FINISH_TARGETS.map(({ status, glyph, label }) => (
+          <button
+            key={status}
+            type="button"
+            className="radar-finish-target"
+            data-drop-finish={status}
+            data-target={finishing === status}
+            aria-label={`Mark ${subject.title} ${status === "done" ? "done" : "won't do"}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              // A drop finishes on release; this is the tap.
+              if (!preview) finishItem(subject, status);
+            }}
+          >
+            <span className="radar-finish-glyph" aria-hidden="true">
+              {glyph}
+            </span>
+            {label}
+          </button>
+        ))}
+      </div>
+    );
+  }
   const nestCandidate =
     moving && reparent && crumbTarget === null && !finishing
       ? nestTarget(preview.point, displayed, preview.id)
@@ -1142,7 +1172,6 @@ export function RadarLens({
         ref={chart}
         className="radar-chart"
         data-dragging={Boolean(preview)}
-        data-finish-buttons={(finishSubject && !showFinish) || undefined}
         // Overlays over the chart's foot (inspector, question cards) sit above
         // the finish targets and the drop message while either is shown.
         data-bottom-row={Boolean(finishSubject || dropMessage) || undefined}
@@ -1372,34 +1401,7 @@ export function RadarLens({
             )}
           </g>
         </svg>
-        {finishSubject && (
-          <div
-            className="radar-finish"
-            data-goal={Boolean(goal)}
-            data-resting={!showFinish}
-          >
-            {FINISH_TARGETS.map(({ status, glyph, label }) => (
-              <button
-                key={status}
-                type="button"
-                className="radar-finish-target"
-                data-drop-finish={status}
-                data-target={finishing === status}
-                aria-label={`Mark ${finishSubject.title} ${status === "done" ? "done" : "won't do"}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  // A drop finishes on release; this is the tap.
-                  if (!preview) finishItem(finishSubject, status);
-                }}
-              >
-                <span className="radar-finish-glyph" aria-hidden="true">
-                  {glyph}
-                </span>
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
+        {showFinish && finishTargets(finishSubject!)}
         {finishing && bubbleById.get(preview!.id) && (
           // Keeps the finishing bubble visible above the finish targets.
           <div className="radar-drag-layer" aria-hidden="true" inert>
@@ -1463,6 +1465,19 @@ export function RadarLens({
           <p className="radar-tooltip">{tooltip}</p>
         )}
       </div>
+      {live && finish && (
+        // The resting buttons take their own row under the chart, so they
+        // never cover bubbles. The row keeps its place during a drag, when
+        // the larger drop targets overlay the chart instead.
+        <div
+          className="radar-finish-slot"
+          data-shown={
+            (selectedId !== null && canFinish(selectedId)) || undefined
+          }
+        >
+          {finishSubject && !showFinish && finishTargets(finishSubject)}
+        </div>
+      )}
     </div>
   );
 }

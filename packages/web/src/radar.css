@@ -585,13 +585,33 @@
   height: var(--radar-finish-rest);
 }
 
-.radar-finish[data-resting="true"] .radar-finish-target:hover {
-  border-color: var(--muted);
+/*
+ * At rest the targets sit in their own row under the chart, centred below the
+ * radar circle, so they never cover bubbles or sector labels. A wide screen
+ * always reserves the row, so selecting never resizes the radar; a single
+ * column adds it only while an open item is selected (see attention.css).
+ */
+.radar-finish-slot {
+  flex: none;
+  box-sizing: border-box;
+  height: calc(var(--radar-finish-rest) + 8px);
+  padding-top: 8px;
 }
 
-/* Messages under the radar sit above the resting targets. */
-.radar-chart[data-finish-buttons] .radar-tooltip {
-  bottom: calc(var(--radar-finish-bottom) + var(--radar-finish-rest) + 8px);
+.radar-finish-slot .radar-finish {
+  position: static;
+  max-width: 520px;
+  margin-inline: auto;
+}
+
+@media (max-width: 760px) {
+  .radar-finish-slot:not([data-shown]) {
+    display: none;
+  }
+}
+
+.radar-finish[data-resting="true"] .radar-finish-target:hover {
+  border-color: var(--muted);
 }
 
 .radar-finish-glyph {

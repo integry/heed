@@ -2128,6 +2128,11 @@ it("shows the finish targets while an open item is selected or a bubble is moved
   expect(radar.getByRole("button", { name: `Mark ${goal.title} done` })).toBe(
     finishTarget("done"),
   );
+  // At rest they take their own row under the chart instead of covering it.
+  const slot = document.querySelector<HTMLElement>(".radar-finish-slot")!;
+  expect(slot.dataset.shown).toBe("true");
+  expect(slot.contains(finishTarget("done"))).toBe(true);
+  expect(finishTarget("done")!.closest(".radar-chart")).toBeNull();
 
   // Dragging another, unselected bubble retargets them to that bubble.
   const bubble = radar.getByRole("button", { name: tomorrow.title });
@@ -2143,6 +2148,10 @@ it("shows the finish targets while an open item is selected or a bubble is moved
   expect(
     finishTarget("done")!.closest<HTMLElement>(".radar-finish")!.dataset,
   ).toMatchObject({ goal: "true", resting: "false" });
+  // While dragging, the targets overlay the chart and the row keeps its place.
+  expect(finishTarget("done")!.closest(".radar-chart")).toBeTruthy();
+  expect(slot.isConnected && slot.dataset.shown).toBe("true");
+  expect(slot.querySelector("[data-drop-finish]")).toBeNull();
   // The canvas holds capture, so re-ordering the dragged bubble on top
   // (which releases the bubble's own capture) does not end the drag.
   expect(drag.capture).toHaveBeenCalledWith(1);
