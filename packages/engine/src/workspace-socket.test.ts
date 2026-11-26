@@ -675,6 +675,50 @@ it("reopens an older item through the shared operation and publishes it to the c
   });
 });
 
+it("undoes a radar finish over the socket for the same person only", async () => {
+  const item_id = await addItem("Finish by drag");
+  const client = await connect();
+  await client.next();
+  client.send({
+    type: "SET_STATUS",
+    requestId: "finish",
+    input: { item_id, status: "cancelled" },
+  });
+  expect(await client.next()).toMatchObject({
+    type: "ITEM_REMOVE",
+    item_id,
+  });
+  expect(await client.next()).toMatchObject({ type: "ACK" });
+
+  client.send({
+    type: "UNDO_FINISH",
+    requestId: "undo",
+    input: { item_id },
+  });
+  expect(await client.next()).toMatchObject({
+    type: "ITEM_UPSERT",
+    item: { id: item_id, status: "queued", reopen_count: 0 },
+  });
+  expect(await client.next()).toMatchObject({
+    type: "ACK",
+    requestId: "undo",
+  });
+
+  client.send({
+    type: "UNDO_FINISH",
+    requestId: "again",
+    input: { item_id },
+  });
+  expect(await client.next()).toMatchObject({
+    type: "ERROR",
+    requestId: "again",
+    error: {
+      code: "conflict",
+      message: "This can no longer be undone. Reopen it from history instead.",
+    },
+  });
+});
+
 it("rolls back a reorder batch if a row disappears before the drop", async () => {
   const item_id = await addItem("Existing item");
   const client = await connect();

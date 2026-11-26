@@ -11,8 +11,11 @@ export function useCanvasDrag<Data>(clearPreview: () => void) {
     data: Data;
     armed: boolean;
     moved: boolean;
+    captureTarget?: Element;
   } | null>(null);
   const hold = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // The element holding pointer capture, when it is not the pressed element.
+  const captured = useRef<Element | null>(null);
   const suppressClick = useRef(false);
 
   const cancel = useCallback(() => {
@@ -21,32 +24,58 @@ export function useCanvasDrag<Data>(clearPreview: () => void) {
     if (pointer.current?.moved || pointer.current?.armed)
       suppressClick.current = true;
     pointer.current = null;
+    captured.current = null;
     clearPreview();
   }, [clearPreview]);
 
   useEffect(() => () => clearTimeout(hold.current), []);
 
-  const start = useCallback((event: PointerEvent<Element>, data: Data) => {
-    if (event.button !== 0 || !event.isPrimary) return;
-    const current = {
-      id: event.pointerId,
-      x: event.clientX,
-      y: event.clientY,
-      data,
-      armed: false,
-      moved: false,
-    };
-    pointer.current = current;
-    // Touch pointers already have implicit capture. Preserve native tap targets.
-    if (event.pointerType === "touch") {
-      hold.current = setTimeout(() => {
-        hold.current = undefined;
-        if (pointer.current === current) current.armed = true;
-      }, holdTime);
-    } else {
-      event.currentTarget.setPointerCapture?.(event.pointerId);
+  /** Moves capture to the gesture's stable element once it is a drag. */
+  function transferCapture(current: { id: number; captureTarget?: Element }) {
+    const target = current.captureTarget;
+    if (!target || captured.current === target) return;
+    captured.current = target;
+    try {
+      target.setPointerCapture?.(current.id);
+    } catch {
+      // The pointer is no longer active.
     }
-  }, []);
+  }
+
+  /**
+   * Starts a gesture. Once it becomes a drag, pointer capture moves to
+   * `captureTarget`, an element that stays in place (such as the canvas), so
+   * re-ordering the pressed element in the DOM does not end the drag. Until
+   * then the pressed element keeps capture, so a plain click still lands on it.
+   */
+  const start = useCallback(
+    (event: PointerEvent<Element>, data: Data, captureTarget?: Element) => {
+      if (event.button !== 0 || !event.isPrimary) return;
+      const current = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        data,
+        armed: false,
+        moved: false,
+        captureTarget,
+      };
+      pointer.current = current;
+      captured.current = null;
+      // Touch pointers already have implicit capture. Preserve native tap targets.
+      if (event.pointerType === "touch") {
+        hold.current = setTimeout(() => {
+          hold.current = undefined;
+          if (pointer.current !== current) return;
+          current.armed = true;
+          transferCapture(current);
+        }, holdTime);
+      } else {
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+      }
+    },
+    [],
+  );
 
   function movement(event: PointerEvent<Element>) {
     const current = pointer.current;
@@ -63,6 +92,7 @@ export function useCanvasDrag<Data>(clearPreview: () => void) {
       return;
     }
     current.moved = true;
+    transferCapture(current);
     return current.data;
   }
 
@@ -96,6 +126,8 @@ export function useCanvasDrag<Data>(clearPreview: () => void) {
         if (pointer.current?.id === event.pointerId) cancel();
       },
       onLostPointerCapture(event: PointerEvent<Element>) {
+        // Capture moving to the canvas releases it from the pressed element.
+        if (captured.current && event.target !== captured.current) return;
         if (pointer.current?.id === event.pointerId) cancel();
       },
       onClickCapture(event: React.MouseEvent<Element>) {

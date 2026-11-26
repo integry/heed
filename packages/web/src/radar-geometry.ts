@@ -18,6 +18,8 @@ const START = -Math.PI / 2;
 const boundaries = [0, 103, 177, 251, 325];
 export const RADAR_RADIUS = boundaries[4];
 export const GOAL_RADIUS = 266;
+/** Scene y of the time chips inside an item: below its circle, above the finish targets. */
+export const GOAL_CHIP_Y = 668;
 export const RADAR_LABEL_FONT = 11;
 export const MIN_FIELD_SCALE = 0.35;
 

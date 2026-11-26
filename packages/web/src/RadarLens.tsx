@@ -38,6 +38,7 @@ import {
   cellBounds,
   cellPoint,
   CENTER,
+  GOAL_CHIP_Y,
   GOAL_RADIUS,
   goalPoint,
   goalPosition,
@@ -82,6 +83,35 @@ type Gesture = {
 };
 type Preview = { id: string; point: Point; priority?: number };
 type Subring = RadarSubgroup & RadialBounds;
+type FinishStatus = "done" | "cancelled";
+/** A message under the radar; `undo` names an item whose finish can be undone. */
+type DropMessage = { text: string; undo?: string };
+
+const FINISH_TARGETS = [
+  { status: "done", glyph: "✓", label: "Done" },
+  { status: "cancelled", glyph: "⊘", label: "Won't do" },
+] as const;
+const FINISH_MESSAGE_MS = 8000;
+const GOAL_CHIP_HALF_HEIGHT = 18;
+
+const ignore = () => {};
+const isOpen = (item: CanvasItem) =>
+  item.status !== "done" && item.status !== "cancelled";
+
+/** The value of a drop zone's data attribute under the pointer, if any. */
+function dropZoneAt(
+  event: PointerEvent,
+  attribute: "drop-parent" | "drop-finish",
+): string | null {
+  // jsdom has no elementsFromPoint.
+  const under =
+    document.elementsFromPoint?.(event.clientX, event.clientY) ?? [];
+  for (const element of under) {
+    const zone = element.closest(`[data-${attribute}]`);
+    if (zone) return zone.getAttribute(`data-${attribute}`);
+  }
+  return null;
+}
 
 function fitOrderedBubbles(
   ordered: { bubble: Bubble; edgeClearance: number }[],
@@ -122,8 +152,10 @@ function pathForCell(cell: Cell) {
   return `M ${a.x} ${a.y} A ${outer} ${outer} 0 ${large} 1 ${b.x} ${b.y} L ${c.x} ${c.y} A ${inner} ${inner} 0 ${large} 0 ${d.x} ${d.y} Z`;
 }
 
+/** The time chip under a point inside an item, above the finish targets. */
 function goalDropTarget(point: Point) {
-  if (point.y < 692 || point.y > 740) return undefined;
+  if (Math.abs(point.y - GOAL_CHIP_Y) > GOAL_CHIP_HALF_HEIGHT + 2)
+    return undefined;
   return RADAR_BANDS.find(
     (_, index) => Math.abs(point.x - (175 + index * 150)) <= 67,
   );
@@ -297,6 +329,8 @@ export function RadarLens({
   reschedule,
   setPriority,
   reparent,
+  finish,
+  undoFinish,
   tagShapes,
 }: LensProps) {
   // Projects other than Inbox carry a colour and a badge on their bubbles.
@@ -333,7 +367,16 @@ export function RadarLens({
     observer.observe(chart.current);
     return () => observer.disconnect();
   }, []);
-  const [dropMessage, setDropMessage] = useState<string | null>(null);
+  const [dropMessage, setDropMessage] = useState<DropMessage | null>(null);
+  useEffect(() => {
+    if (!dropMessage?.undo) return;
+    const timer = setTimeout(() => setDropMessage(null), FINISH_MESSAGE_MS);
+    return () => clearTimeout(timer);
+  }, [dropMessage]);
+  // The finish target under the pointer while moving a bubble.
+  const [finishTarget, setFinishTarget] = useState<FinishStatus | null>(null);
+  // The zoom transform at the start of a gesture, for the drag layer.
+  const [dragTransform, setDragTransform] = useState<string>();
   // A breadcrumb under the pointer while dragging inside an item: an item ID,
   // or "" for the top level.
   const [crumbTarget, setCrumbTarget] = useState<string | null>(null);
@@ -706,15 +749,22 @@ export function RadarLens({
       kind: Gesture["kind"],
     ) => {
       setDropMessage(null);
-      startDrag(event, {
-        id: bubble.item.id,
-        kind,
-        start: scenePoint(event),
-        origin: bubble.point,
-        radius: bubble.radius,
-      });
+      setFinishTarget(null);
+      setDragTransform(layer.current?.getAttribute("transform") ?? undefined);
+      // Capture on the canvas: the dragged bubble is re-ordered to the top.
+      startDrag(
+        event,
+        {
+          id: bubble.item.id,
+          kind,
+          start: scenePoint(event),
+          origin: bubble.point,
+          radius: bubble.radius,
+        },
+        svg.current ?? undefined,
+      );
     },
-    [startDrag, layer],
+    [startDrag, layer, svg],
   );
 
   function dragPreview(event: PointerEvent<SVGSVGElement>, active?: Gesture) {
@@ -766,9 +816,9 @@ export function RadarLens({
       reason = "it would inherit a schedule from an ancestor";
     else if (target === "backlog") reason = "it still has a time set";
     else reason = "its time keeps it in Today";
-    setDropMessage(
-      `${item.title} can’t move to ${RADAR_LABELS[target]} because ${reason}.`,
-    );
+    setDropMessage({
+      text: `${item.title} can’t move to ${RADAR_LABELS[target]} because ${reason}.`,
+    });
     return false;
   }
 
@@ -787,14 +837,33 @@ export function RadarLens({
 
   /** The breadcrumb under the pointer, as a parent ID ("" for the top level). */
   function crumbAt(event: PointerEvent): string | null {
-    if (!goal) return null;
-    const under =
-      document.elementsFromPoint?.(event.clientX, event.clientY) ?? [];
-    for (const element of under) {
-      const crumb = element.closest<HTMLElement>("[data-drop-parent]");
-      if (crumb) return crumb.dataset.dropParent ?? null;
-    }
-    return null;
+    return goal ? dropZoneAt(event, "drop-parent") : null;
+  }
+
+  /** Whether a bubble being moved can be dropped on Done or Won't do. */
+  function canFinish(id: string) {
+    const item = items.get(id);
+    return Boolean(live && finish && item && isOpen(item));
+  }
+
+  /** The finish target under the pointer for a bubble being moved. */
+  function finishAt(event: PointerEvent, id: string): FinishStatus | null {
+    if (!canFinish(id)) return null;
+    const status = dropZoneAt(event, "drop-finish");
+    return status === "done" || status === "cancelled" ? status : null;
+  }
+
+  function finishItem(item: CanvasItem, status: FinishStatus) {
+    finish!(item.id, status);
+    const open = item.progress.total - item.progress.done;
+    const children =
+      open > 0
+        ? ` ${open} ${open === 1 ? "sub-item is" : "sub-items are"} still open.`
+        : "";
+    setDropMessage({
+      text: `Marked ${item.title} ${status === "done" ? "done" : "won't do"}.${children}`,
+      undo: item.id,
+    });
   }
 
   /** Moves an item under a new parent (null: top level) if the tree allows it. */
@@ -802,25 +871,35 @@ export function RadarLens({
     if (!reparent || parentId === item.parent_id) return false;
     const problem = nestProblem(item, parentId, items);
     if (problem) {
-      setDropMessage(`${item.title} can’t move there because ${problem}.`);
+      setDropMessage({
+        text: `${item.title} can’t move there because ${problem}.`,
+      });
       return true;
     }
     reparent(item.id, parentId);
     const parent = parentId === null ? undefined : items.get(parentId);
-    setDropMessage(
-      parent
+    setDropMessage({
+      text: parent
         ? `Moved ${item.title} into ${parent.title}.`
         : `Moved ${item.title} to the top level.`,
-    );
+    });
     return true;
   }
 
   function release(event: PointerEvent<SVGSVGElement>) {
     const result = dragPreview(event, drag.finish(event));
     setCrumbTarget(null);
+    setFinishTarget(null);
     if (!result || !live) return;
     const { next, bubble } = result;
     const { item } = bubble;
+    // A finish target wins over every other reading of the drop.
+    const finishing =
+      next.priority === undefined ? finishAt(event, item.id) : null;
+    if (finishing) {
+      finishItem(item, finishing);
+      return;
+    }
     const dropTime = Math.max(now, Date.now());
     const crumb = next.priority === undefined ? crumbAt(event) : null;
     const target =
@@ -902,8 +981,10 @@ export function RadarLens({
   }
 
   const moving = preview && preview.priority === undefined;
+  const showFinish = Boolean(moving && canFinish(preview.id));
+  const finishing = showFinish ? finishTarget : null;
   const nestCandidate =
-    moving && reparent && crumbTarget === null
+    moving && reparent && crumbTarget === null && !finishing
       ? nestTarget(preview.point, displayed, preview.id)
       : undefined;
   const nestBlocked =
@@ -916,11 +997,12 @@ export function RadarLens({
     })();
   const liftsOut =
     Boolean(goal && moving && reparent && crumbTarget === null) &&
+    !finishing &&
     !nestCandidate &&
     distance(preview!.point, CENTER) > GOAL_RADIUS &&
     !goalDropTarget(preview!.point);
   let highlight: Cell | null = null;
-  if (!goal && moving && !nestCandidate) {
+  if (!goal && moving && !nestCandidate && !finishing) {
     const { cell } = dropTarget(preview.point);
     const item = bubbleById.get(preview.id)?.item;
     if (
@@ -1056,8 +1138,11 @@ export function RadarLens({
             const result = dragPreview(event, drag.movement(event));
             if (result) {
               setPreview(result.next);
-              if (result.next.priority === undefined)
-                setCrumbTarget(crumbAt(event));
+              if (result.next.priority === undefined) {
+                const over = finishAt(event, result.next.id);
+                setFinishTarget(over);
+                setCrumbTarget(over ? null : crumbAt(event));
+              }
             }
           }}
           onPointerUp={release}
@@ -1112,11 +1197,22 @@ export function RadarLens({
                   RADAR_BANDS.map((band, index) => (
                     <g
                       key={band}
-                      transform={translate({ x: 175 + index * 150, y: 716 })}
+                      transform={translate({
+                        x: 175 + index * 150,
+                        y: GOAL_CHIP_Y,
+                      })}
                       className="radar-goal-drop"
-                      data-target={goalDropTarget(preview.point) === band}
+                      data-target={
+                        !finishing && goalDropTarget(preview.point) === band
+                      }
                     >
-                      <rect x={-67} y={-24} width={134} height={48} rx={9} />
+                      <rect
+                        x={-67}
+                        y={-GOAL_CHIP_HALF_HEIGHT}
+                        width={134}
+                        height={GOAL_CHIP_HALF_HEIGHT * 2}
+                        rx={9}
+                      />
                       <text textAnchor="middle" dy="0.35em">
                         {RADAR_LABELS[band]}
                       </text>
@@ -1168,6 +1264,11 @@ export function RadarLens({
                 onGesture={onGesture}
                 onPriority={setPriority}
                 onTooltip={setTooltip}
+                finishing={
+                  bubble.item.id === preview?.id
+                    ? (finishing ?? undefined)
+                    : undefined
+                }
               />
             ))}
             {!goal && (
@@ -1248,8 +1349,76 @@ export function RadarLens({
             )}
           </g>
         </svg>
+        {showFinish && (
+          <div className="radar-finish" data-goal={Boolean(goal)}>
+            {FINISH_TARGETS.map(({ status, glyph, label }) => (
+              <div
+                key={status}
+                className="radar-finish-target"
+                data-drop-finish={status}
+                data-target={finishing === status}
+              >
+                <span className="radar-finish-glyph" aria-hidden="true">
+                  {glyph}
+                </span>
+                {label}
+              </div>
+            ))}
+          </div>
+        )}
+        {finishing && bubbleById.get(preview!.id) && (
+          // Keeps the finishing bubble visible above the finish targets.
+          <div className="radar-drag-layer" aria-hidden="true" inert>
+            <svg
+              className="radar-svg"
+              viewBox={`${viewport.x} ${viewport.y} ${viewport.width} ${viewport.height}`}
+            >
+              <g transform={dragTransform}>
+                <RadarBubble
+                  bubble={bubbleById.get(preview!.id)!}
+                  project={identities.get(
+                    bubbleById.get(preview!.id)!.item.project_id,
+                  )}
+                  shape={itemShape(
+                    readTags(bubbleById.get(preview!.id)!.item.tags),
+                    tagShapes,
+                  )}
+                  selected={false}
+                  live={false}
+                  now={now}
+                  labelScale={labelScale}
+                  timeFormatter={timeFormatter}
+                  onActivate={ignore}
+                  onGesture={ignore}
+                  onPriority={ignore}
+                  onTooltip={ignore}
+                  finishing={finishing}
+                />
+              </g>
+            </svg>
+          </div>
+        )}
         <div aria-live="polite">
-          {dropMessage && <p className="radar-tooltip">{dropMessage}</p>}
+          {dropMessage && (
+            <p
+              className="radar-tooltip"
+              data-actionable={Boolean(dropMessage.undo && undoFinish)}
+            >
+              {dropMessage.text}
+              {dropMessage.undo && undoFinish && (
+                <button
+                  type="button"
+                  className="subtle radar-undo"
+                  onClick={() => {
+                    undoFinish(dropMessage.undo!);
+                    setDropMessage(null);
+                  }}
+                >
+                  Undo
+                </button>
+              )}
+            </p>
+          )}
         </div>
         <div className="sr-only" aria-live="polite">
           {split

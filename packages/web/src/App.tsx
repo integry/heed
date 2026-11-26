@@ -1048,6 +1048,15 @@ function Workspace({
                 placeItem(id, key, position, patch)
               }
               reparent={(id, parent_id) => updateItem(id, { parent_id })}
+              finish={(item_id, status) =>
+                connection.mutate({
+                  type: "SET_STATUS",
+                  input: { item_id, status },
+                })
+              }
+              undoFinish={(item_id) =>
+                connection.mutate({ type: "UNDO_FINISH", input: { item_id } })
+              }
               tagShapes={state.settings?.tag_shapes}
             />
           </div>

@@ -192,6 +192,7 @@ type ItemPatch = Partial<Omit<Item, "id" | "created_at" | "updated_at">>;
 type ItemEdit = Partial<AddItemInput & UpdateItemInput>;
 export type WorkspaceEnv = PushEnv;
 type HumanActor = Extract<Actor, { kind: "human" }>;
+const UNDO_FINISH_WINDOW_MS = 10 * 60 * 1000;
 
 const SOCKET_CREATE_LIMITS: Partial<
   Record<z.output<typeof SocketRequestSchema>["type"], LimitAction>
@@ -460,6 +461,9 @@ export class Workspace<
           break;
         case "REOPEN_ITEM":
           this.reopenItem(actor, mutation.input);
+          break;
+        case "UNDO_FINISH":
+          this.undoFinish(actor, mutation.input);
           break;
         case "FLAG_HANDOFF":
           await this.flagHandoff(actor, mutation.input);
@@ -2015,6 +2019,57 @@ export class Workspace<
       };
       this.#scheduleToday(mutation, patch, item);
       this.#saveItem(mutation, item, patch, { reopened: true });
+      return item.id;
+    });
+  }
+
+  /**
+   * Reverts a person's own recent finish (done or cancelled) without counting
+   * it as a reopen: the schedule, reopen count and reason stay as they were.
+   */
+  undoFinish(actor: Actor, input: ItemIdInput): ItemOperationResult {
+    const data = parseInput(ItemIdSchema, input);
+    return this.#mutateItems(actor, (mutation) => {
+      const item = this.#requireItem(data);
+      const last = this.#sql
+        .exec<{
+          at: string;
+          actor: string;
+          actor_user: string | null;
+          detail: string;
+        }>(
+          "SELECT at, actor, actor_user, detail FROM events WHERE item_id = ? AND kind = 'status' ORDER BY id DESC LIMIT 1",
+          item.id,
+        )
+        .toArray()[0];
+      const detail =
+        last && (JSON.parse(last.detail) as { old?: Status; new?: Status });
+      const user = mutation.actor.user;
+      const sameActor =
+        last !== undefined &&
+        (user
+          ? last.actor_user !== null &&
+            (JSON.parse(last.actor_user) as { id?: string }).id === user.id
+          : last.actor_user === null && last.actor === "human");
+      if (
+        mutation.actor.kind !== "human" ||
+        !detail?.old ||
+        !detail.new ||
+        !sameActor ||
+        isTerminalStatus(detail.old) ||
+        !isTerminalStatus(detail.new) ||
+        detail.new !== item.status ||
+        mutation.now.getTime() - timestamp(last.at) > UNDO_FINISH_WINDOW_MS
+      ) {
+        throw new Error(
+          "This can no longer be undone. Reopen it from history instead.",
+        );
+      }
+      this.#saveItem(mutation, item, {
+        status: detail.old,
+        completed_at: null,
+        completed_band: null,
+      });
       return item.id;
     });
   }

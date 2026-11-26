@@ -8,7 +8,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import {
   COMMAND_HELP,
   COMMAND_TEXT_LIMIT,
@@ -20,6 +20,7 @@ import { mountApp, type MountedApp, type MountAppOptions } from "./index";
 import { lensRegistry, type Lens } from "./lenses";
 import {
   CENTER,
+  GOAL_CHIP_Y,
   cellPoint,
   RADAR_BANDS,
   RADAR_LABELS,
@@ -1799,7 +1800,7 @@ function startRadarRingDrop(
     at ??
     (overview
       ? cellPoint({ band, sector: 0, sectors: 1 }, { angle: 0.5, radius: 0.5 })
-      : { x: 175 + RADAR_BANDS.indexOf(band) * 150, y: 716 });
+      : { x: 175 + RADAR_BANDS.indexOf(band) * 150, y: GOAL_CHIP_Y });
   const pointer = { pointerId: 1, isPrimary: true, button: 0 };
   const destination = { ...pointer, clientX: target.x, clientY: target.y };
   fireEvent.pointerDown(bubble, { ...pointer, clientX, clientY });
@@ -2068,6 +2069,191 @@ it("checks a Radar drop after a time becomes due between clock ticks", async () 
     ),
   ).toBeTruthy();
   expect(TestSocket.current.send).not.toHaveBeenCalled();
+});
+
+/** Starts moving a radar bubble; jsdom has no elementsFromPoint, so it is stubbed. */
+function startRadarFinishDrag(bubble: HTMLElement) {
+  let under: Element[] = [];
+  Object.defineProperty(document, "elementsFromPoint", {
+    configurable: true,
+    value: () => under,
+  });
+  onTestFinished(() => {
+    Reflect.deleteProperty(document, "elementsFromPoint");
+  });
+  const scene = bubble.closest(".radar-node")!.parentElement!;
+  Object.defineProperty(scene, "getScreenCTM", {
+    configurable: true,
+    value: () => null,
+  });
+  const [x, y] = bubble
+    .parentElement!.getAttribute("transform")!
+    .slice("translate(".length, -1)
+    .split(",")
+    .map(Number);
+  const capture = vi.fn();
+  Object.defineProperty(bubble.closest("svg")!, "setPointerCapture", {
+    configurable: true,
+    value: capture,
+  });
+  const pointer = { pointerId: 1, isPrimary: true, button: 0 };
+  fireEvent.pointerDown(bubble, { ...pointer, clientX: x, clientY: y });
+  const at = (point: { x: number; y: number }, elements: Element[] = []) => {
+    under = elements;
+    return { ...pointer, clientX: point.x, clientY: point.y };
+  };
+  return {
+    capture,
+    move: (point: { x: number; y: number }, elements?: Element[]) =>
+      fireEvent.pointerMove(bubble, at(point, elements)),
+    release: (point: { x: number; y: number }, elements?: Element[]) =>
+      fireEvent.pointerUp(bubble, at(point, elements)),
+  };
+}
+
+const finishTarget = (status: "done" | "cancelled") =>
+  document.querySelector<HTMLElement>(`[data-drop-finish="${status}"]`);
+
+it("shows the finish targets only while a bubble is being moved", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  expect(finishTarget("done")).toBeNull();
+
+  const bubble = radar.getByRole("button", { name: tomorrow.title });
+  const drag = startRadarFinishDrag(bubble);
+  const inside = { x: CENTER.x + 40, y: CENTER.y };
+  drag.move(inside);
+  expect(finishTarget("done")!.textContent).toBe("✓Done");
+  expect(finishTarget("cancelled")!.textContent).toBe("⊘Won't do");
+  expect(finishTarget("done")!.dataset.target).toBe("false");
+  expect(
+    finishTarget("done")!.closest<HTMLElement>(".radar-finish")!.dataset.goal,
+  ).toBe("true");
+  // The canvas holds capture, so re-ordering the dragged bubble on top
+  // (which releases the bubble's own capture) does not end the drag.
+  expect(drag.capture).toHaveBeenCalledWith(1);
+  fireEvent.lostPointerCapture(bubble, { pointerId: 1 });
+  expect(finishTarget("done")).toBeTruthy();
+  drag.release(inside);
+  expect(finishTarget("done")).toBeNull();
+  expect(finishTarget("cancelled")).toBeNull();
+  expect(TestSocket.current.latestRequest().type).toBe("UPDATE_ITEM");
+
+  // Resizing for priority never offers them.
+  fireEvent.click(bubble);
+  const handle = radar.getByRole("slider", {
+    name: `Priority for ${tomorrow.title}`,
+  });
+  const pointer = { pointerId: 2, isPrimary: true, button: 0 };
+  fireEvent.pointerDown(handle, { ...pointer, clientX: 0, clientY: 0 });
+  fireEvent.pointerMove(handle, { ...pointer, clientX: 40, clientY: 0 });
+  expect(finishTarget("done")).toBeNull();
+  fireEvent.pointerUp(handle, { ...pointer, clientX: 40, clientY: 0 });
+});
+
+it.each([
+  ["done", "Marked Payment reliability done. 2 sub-items are still open."],
+  [
+    "cancelled",
+    "Marked Payment reliability won't do. 2 sub-items are still open.",
+  ],
+] as const)(
+  "finishes a radar bubble dropped on the %s target and can undo it",
+  async (status, message) => {
+    await openWorkspace();
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
+    const socket = TestSocket.current;
+    const bubble = radar.getByRole("button", { name: goal.title });
+    const drag = startRadarFinishDrag(bubble);
+    // A ring point: without the target this drop would reschedule.
+    const point = cellPoint(
+      { band: "backlog", sector: 0, sectors: 1 },
+      { angle: 0.5, radius: 0.5 },
+    );
+    drag.move(point);
+    const target = finishTarget(status)!;
+    drag.move(point, [target.firstElementChild!, target]);
+    expect(target.dataset.target).toBe("true");
+    expect(bubble.dataset.ghost).toBe("true");
+    expect(bubble.dataset.finishing).toBe(status);
+    // A copy above the targets keeps the finishing look visible.
+    expect(
+      document
+        .querySelector(".radar-drag-layer [data-radar-bubble]")
+        ?.getAttribute("data-finishing"),
+    ).toBe(status);
+    expect(document.querySelector(".radar-drop-cell")).toBeNull();
+    drag.release(point, [target]);
+
+    expect(socket.send).toHaveBeenCalledTimes(1);
+    expect(socket.latestRequest()).toMatchObject({
+      type: "SET_STATUS",
+      input: { item_id: goal.id, status },
+    });
+    expect(finishTarget(status)).toBeNull();
+    expect(radar.getByText(message)).toBeTruthy();
+
+    fireEvent.click(radar.getByRole("button", { name: "Undo" }));
+    expect(socket.send).toHaveBeenCalledTimes(2);
+    expect(socket.latestRequest()).toMatchObject({
+      type: "UNDO_FINISH",
+      input: { item_id: goal.id },
+    });
+    expect(radar.queryByText(message)).toBeNull();
+  },
+);
+
+it("keeps today's radar drop when the bubble is released off the finish targets", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  const socket = TestSocket.current;
+  const drag = startRadarFinishDrag(
+    radar.getByRole("button", { name: goal.title }),
+  );
+  const point = cellPoint(
+    { band: "backlog", sector: 0, sectors: 1 },
+    { angle: 0.5, radius: 0.5 },
+  );
+  drag.move(point);
+  drag.move(point, [finishTarget("done")!]);
+  // Leaving the target restores the ordinary drop.
+  drag.move(point, []);
+  expect(finishTarget("done")!.dataset.target).toBe("false");
+  expect(document.querySelector(".radar-drop-cell")).toBeTruthy();
+  drag.release(point, []);
+  expect(socket.send).toHaveBeenCalledTimes(1);
+  expect(socket.latestRequest()).toMatchObject({
+    type: "UPDATE_ITEM",
+    input: { item_id: goal.id, scheduled_on: null },
+  });
+  expect(radar.queryByRole("button", { name: "Undo" })).toBeNull();
+});
+
+it("clears the finish message and its Undo after a few seconds", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  const drag = startRadarFinishDrag(
+    radar.getByRole("button", { name: tomorrow.title }),
+  );
+  const point = { x: 400, y: 740 };
+  drag.move(point);
+  vi.useFakeTimers();
+  try {
+    drag.release(point, [finishTarget("done")!]);
+    expect(TestSocket.current.latestRequest()).toMatchObject({
+      type: "SET_STATUS",
+      input: { item_id: tomorrow.id, status: "done" },
+    });
+    expect(radar.getByText(/^Marked Run failover drill done\./)).toBeTruthy();
+    act(() => vi.advanceTimersByTime(8000));
+    expect(radar.queryByRole("button", { name: "Undo" })).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it.each(["Radar", "List"])(

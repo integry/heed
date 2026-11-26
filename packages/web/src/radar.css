@@ -539,3 +539,114 @@
   outline-offset: 3px;
   border-radius: 4px;
 }
+
+/* Finish targets appear across the bottom of the chart while moving a bubble. */
+.radar-finish {
+  position: absolute;
+  inset: auto 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  gap: 8px;
+  animation: radar-finish-in 140ms ease-out;
+}
+
+.radar-finish-target {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  height: 68px;
+  border: 2px solid var(--ring);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  font-weight: 650;
+  user-select: none;
+}
+
+.radar-finish[data-goal="true"] .radar-finish-target {
+  height: 56px;
+}
+
+.radar-finish-glyph {
+  font-size: 1.25rem;
+  color: var(--live);
+}
+
+[data-drop-finish="cancelled"] .radar-finish-glyph {
+  color: var(--muted);
+}
+
+[data-drop-finish="done"][data-target="true"] {
+  background: color-mix(in srgb, var(--live) 26%, var(--surface));
+  border-color: var(--live);
+}
+
+[data-drop-finish="cancelled"][data-target="true"] {
+  background: var(--ring);
+  border-color: var(--muted);
+}
+
+@media (pointer: coarse) {
+  .radar-finish-target {
+    min-height: 56px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .radar-finish {
+    animation: none;
+  }
+}
+
+@keyframes radar-finish-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Over a finish target the bubble previews its finished, hollow look. */
+.radar-finish-ring {
+  fill: none;
+  stroke: var(--live);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.radar-bubble[data-finishing] .radar-disc {
+  fill: transparent;
+}
+
+.radar-bubble[data-finishing="cancelled"] .radar-disc {
+  stroke: var(--muted);
+}
+
+.radar-bubble[data-finishing] .radar-progress,
+.radar-bubble[data-finishing] .radar-progress-track,
+.radar-bubble[data-finishing] .radar-pulse {
+  display: none;
+}
+
+/* A drop message with Undo is clickable. */
+.radar-tooltip[data-actionable="true"] {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  pointer-events: auto;
+}
+
+.radar .radar-undo {
+  font-weight: 650;
+  text-decoration: underline;
+  color: var(--text);
+}
+
+.radar-drag-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}

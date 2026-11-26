@@ -41,6 +41,10 @@ export interface LensProps {
   tagShapes?: TagShapes;
   /** Moves an item under another item, or to the top level with null. */
   reparent?: (id: string, parentId: string | null) => void;
+  /** Marks an item done or cancelled (radar finish targets). */
+  finish?: (id: string, status: "done" | "cancelled") => void;
+  /** Reverts the user's own recent finish without counting it as a reopen. */
+  undoFinish?: (id: string) => void;
 }
 
 export interface Lens {
