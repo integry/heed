@@ -993,6 +993,149 @@ it("reopens old history, records the reason and increments the count across canc
   expect(JSON.parse(log[2].detail!)).toEqual({ reason: "Regression found" });
 });
 
+it("undoes a person's own recent finish without counting a reopen", async () => {
+  const stub = newWorkspace();
+  const alice = {
+    kind: "human",
+    user: { id: "alice", email: "alice@example.test", name: "Alice" },
+  } satisfies Actor;
+  const { item_id } = await stub.addItem(alice, {
+    title: "Ship release",
+    scheduled_on: "2030-01-02",
+  });
+  await stub.reportProgress(alice, { item_id, status: "active" });
+  await runInDurableObject(stub, (_, { storage: { sql } }) => {
+    sql.exec(
+      "UPDATE items SET reopen_count = 2, reopen_reason = 'Flaky' WHERE id = ?",
+      item_id,
+    );
+  });
+  const done = (await stub.reportProgress(alice, { item_id, status: "done" }))
+    .items[0];
+  expect(done.completed_at).not.toBeNull();
+  expect(done.completed_band).not.toBeNull();
+
+  const undone = (await stub.undoFinish(alice, { item_id })).items[0];
+  expect(undone).toMatchObject({
+    status: "active",
+    completed_at: null,
+    completed_band: null,
+    reopen_count: 2,
+    reopen_reason: "Flaky",
+    scheduled_on: "2030-01-02",
+  });
+  const log = await events(stub, item_id);
+  expect(log.map(({ kind }) => kind).slice(-3)).toEqual([
+    "status",
+    "status",
+    "status",
+  ]);
+  expect(JSON.parse(log.at(-1)!.detail!)).toMatchObject({
+    old: "done",
+    new: "active",
+  });
+
+  // The latest status change is now the undo, not a finish.
+  await runInDurableObject(stub, (workspace) => {
+    expect(() => workspace.undoFinish(alice, { item_id: item_id })).toThrow(
+      "This can no longer be undone. Reopen it from history instead.",
+    );
+  });
+
+  await stub.reportProgress(alice, { item_id, status: "cancelled" });
+  expect((await stub.undoFinish(alice, { item_id })).items[0]).toMatchObject({
+    status: "active",
+    completed_at: null,
+    reopen_count: 2,
+  });
+});
+
+it("refuses to undo a finish by someone else, too late or that was not a finish", async () => {
+  const stub = newWorkspace();
+  const alice = {
+    kind: "human",
+    user: { id: "alice", email: "alice@example.test", name: "Alice" },
+  } satisfies Actor;
+  const bob = {
+    kind: "human",
+    user: { id: "bob", email: "bob@example.test", name: "Bob" },
+  } satisfies Actor;
+  const refused =
+    "This can no longer be undone. Reopen it from history instead.";
+
+  const { item_id: shared } = await stub.addItem(alice, { title: "Shared" });
+  await stub.reportProgress(alice, { item_id: shared, status: "done" });
+  await runInDurableObject(stub, (workspace) => {
+    expect(() => workspace.undoFinish(bob, { item_id: shared })).toThrow(
+      refused,
+    );
+  });
+  await runInDurableObject(stub, (workspace) => {
+    expect(() => workspace.undoFinish(human, { item_id: shared })).toThrow(
+      refused,
+    );
+  });
+
+  const { item_id: agentDone } = await stub.addItem(alice, {
+    title: "Agent finish",
+  });
+  await stub.reportProgress(reporter, { item_id: agentDone, status: "done" });
+  await runInDurableObject(stub, (workspace) => {
+    expect(() => workspace.undoFinish(alice, { item_id: agentDone })).toThrow(
+      refused,
+    );
+  });
+  await runInDurableObject(stub, (workspace) => {
+    expect(() =>
+      workspace.undoFinish(reporter, { item_id: agentDone }),
+    ).toThrow(refused);
+  });
+
+  const { item_id: old } = await stub.addItem(alice, { title: "Old finish" });
+  await stub.reportProgress(alice, { item_id: old, status: "done" });
+  await runInDurableObject(stub, (_, { storage: { sql } }) => {
+    sql.exec(
+      "UPDATE events SET at = ? WHERE item_id = ? AND kind = 'status'",
+      new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+      old,
+    );
+  });
+  await runInDurableObject(stub, (workspace) => {
+    expect(() => workspace.undoFinish(alice, { item_id: old })).toThrow(
+      refused,
+    );
+  });
+
+  const { item_id: open } = await stub.addItem(alice, { title: "Started" });
+  await stub.reportProgress(alice, { item_id: open, status: "active" });
+  await runInDurableObject(stub, (workspace) => {
+    expect(() => workspace.undoFinish(alice, { item_id: open })).toThrow(
+      refused,
+    );
+  });
+
+  const { item_id: reopened } = await stub.addItem(alice, {
+    title: "Reopened",
+  });
+  await stub.reportProgress(alice, { item_id: reopened, status: "done" });
+  await stub.reopenItem(alice, { item_id: reopened, reason: "Not yet" });
+  await runInDurableObject(stub, (workspace) => {
+    expect(() => workspace.undoFinish(alice, { item_id: reopened })).toThrow(
+      refused,
+    );
+  });
+
+  const statuses = await runInDurableObject(stub, (_, { storage: { sql } }) =>
+    [shared, agentDone, old].map(
+      (id) =>
+        sql
+          .exec<{ status: string }>("SELECT status FROM items WHERE id = ?", id)
+          .one().status,
+    ),
+  );
+  expect(statuses).toEqual(["done", "done", "done"]);
+});
+
 it("refuses report scope a hard delete and returns all removed items after cascading", async () => {
   const stub = newWorkspace();
   const { item_id: parent } = await stub.addItem(human, { title: "Goal" });

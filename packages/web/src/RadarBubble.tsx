@@ -135,6 +135,7 @@ export const RadarBubble = memo(function RadarBubble({
   onGesture,
   onPriority,
   onTooltip,
+  finishing,
 }: {
   bubble: Bubble;
   selected: boolean;
@@ -154,8 +155,13 @@ export const RadarBubble = memo(function RadarBubble({
   ) => void;
   onPriority: (id: string, priority: number) => void;
   onTooltip: (text: string | null) => void;
+  /** Previews the finished look while the bubble is over a finish target. */
+  finishing?: "done" | "cancelled";
 }) {
-  const { item, point, radius, ring, rollup, opensGoal } = bubble;
+  const { item, point, opensGoal } = bubble;
+  const radius = bubble.radius;
+  const ring = finishing ? null : bubble.ring;
+  const rollup = finishing ? null : bubble.rollup;
   const ghost = item.status === "done";
   const showResize = selected && live && !ghost;
   const { detail, stamp, badge } = bubbleDetails(bubble, now, timeFormatter);
@@ -186,7 +192,8 @@ export const RadarBubble = memo(function RadarBubble({
         data-canvas-drag
         data-radar-bubble={item.id}
         className="radar-bubble"
-        data-ghost={ghost}
+        data-ghost={ghost || Boolean(finishing)}
+        data-finishing={finishing}
         role="button"
         tabIndex={0}
         aria-label={item.title}
@@ -231,6 +238,9 @@ export const RadarBubble = memo(function RadarBubble({
             data-ring={ring}
             r={radius + 3}
           />
+        )}
+        {finishing === "done" && (
+          <Outline shape={shape} className="radar-finish-ring" r={radius + 3} />
         )}
         <Outline
           shape={shape}

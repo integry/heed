@@ -60,6 +60,8 @@ export const SocketRequestSchema = z.discriminatedUnion("type", [
   mutation("UNDO_COMMAND", z.strictObject({ id: z.uuid() })),
   mutation("DELETE_ITEM", ItemIdSchema),
   mutation("REOPEN_ITEM", ReopenItemSchema),
+  // Reverts a human's own finish from the last few minutes; not a reopen.
+  mutation("UNDO_FINISH", ItemIdSchema),
   mutation("FLAG_HANDOFF", FlagHandoffSchema.omit({ notify: true })),
   mutation("CLEAR_HANDOFF", ItemIdSchema),
   mutation("ANSWER_HANDOFF", AnswerHandoffSchema),
