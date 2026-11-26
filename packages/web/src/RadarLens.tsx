@@ -920,7 +920,7 @@ export function RadarLens({
     return goal ? dropZoneAt(event, "drop-parent") : null;
   }
 
-  /** Whether a bubble being moved can be dropped on Done or Won't do. */
+  /** Whether an item can be finished from the Done or Won't do targets. */
   function canFinish(id: string) {
     const item = items.get(id);
     return Boolean(live && finish && item && isOpen(item));
@@ -1061,7 +1061,12 @@ export function RadarLens({
   }
 
   const moving = preview && preview.priority === undefined;
-  const showFinish = Boolean(moving && canFinish(preview.id));
+  // The targets finish the bubble being moved or, at rest, the selected item;
+  // a priority resize offers neither.
+  const finishId = moving ? preview.id : preview ? null : selectedId;
+  const finishSubject =
+    finishId !== null && canFinish(finishId) ? items.get(finishId) : undefined;
+  const showFinish = Boolean(moving && finishSubject);
   const finishing = showFinish ? finishTarget : null;
   const reportFinishTargets = useEffectEvent((shown: boolean) =>
     finishTargetsShown?.(shown),
@@ -1072,6 +1077,36 @@ export function RadarLens({
     reportFinishTargets(true);
     return () => reportFinishTargets(false);
   }, [showFinish]);
+  function finishTargets(subject: CanvasItem) {
+    return (
+      <div
+        className="radar-finish"
+        data-goal={Boolean(goal)}
+        data-resting={!showFinish}
+      >
+        {FINISH_TARGETS.map(({ status, glyph, label }) => (
+          <button
+            key={status}
+            type="button"
+            className="radar-finish-target"
+            data-drop-finish={status}
+            data-target={finishing === status}
+            aria-label={`Mark ${subject.title} ${status === "done" ? "done" : "won't do"}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              // A drop finishes on release; this is the tap.
+              if (!preview) finishItem(subject, status);
+            }}
+          >
+            <span className="radar-finish-glyph" aria-hidden="true">
+              {glyph}
+            </span>
+            {label}
+          </button>
+        ))}
+      </div>
+    );
+  }
   const nestCandidate =
     moving && reparent && crumbTarget === null && !finishing
       ? nestTarget(preview.point, displayed, preview.id)
@@ -1212,7 +1247,14 @@ export function RadarLens({
           </button>
         </div>
       </div>
-      <div ref={chart} className="radar-chart" data-dragging={Boolean(preview)}>
+      <div
+        ref={chart}
+        className="radar-chart"
+        data-dragging={Boolean(preview)}
+        // Overlays over the chart's foot (inspector, question cards) sit above
+        // the finish targets and the drop message while either is shown.
+        data-bottom-row={Boolean(finishSubject || dropMessage) || undefined}
+      >
         <svg
           ref={svg}
           className="radar-svg"
@@ -1452,23 +1494,7 @@ export function RadarLens({
             )}
           </g>
         </svg>
-        {showFinish && (
-          <div className="radar-finish" data-goal={Boolean(goal)}>
-            {FINISH_TARGETS.map(({ status, glyph, label }) => (
-              <div
-                key={status}
-                className="radar-finish-target"
-                data-drop-finish={status}
-                data-target={finishing === status}
-              >
-                <span className="radar-finish-glyph" aria-hidden="true">
-                  {glyph}
-                </span>
-                {label}
-              </div>
-            ))}
-          </div>
-        )}
+        {showFinish && finishTargets(finishSubject!)}
         {finishing && bubbleById.get(preview!.id) && (
           // Keeps the finishing bubble visible above the finish targets.
           <div className="radar-drag-layer" aria-hidden="true" inert>
@@ -1532,6 +1558,19 @@ export function RadarLens({
           <p className="radar-tooltip">{tooltip}</p>
         )}
       </div>
+      {live && finish && (
+        // The resting buttons take their own row under the chart, so they
+        // never cover bubbles. The row keeps its place during a drag, when
+        // the larger drop targets overlay the chart instead.
+        <div
+          className="radar-finish-slot"
+          data-shown={
+            (selectedId !== null && canFinish(selectedId)) || undefined
+          }
+        >
+          {finishSubject && !showFinish && finishTargets(finishSubject)}
+        </div>
+      )}
     </div>
   );
 }

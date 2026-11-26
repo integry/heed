@@ -56,7 +56,13 @@
   flex: none;
 }
 
+:root {
+  /* The finish targets' height at rest, while an open item is selected. */
+  --radar-finish-rest: 48px;
+}
+
 .radar-chart {
+  --radar-finish-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
   position: relative;
   flex: 1;
   min-height: 0;
@@ -566,7 +572,7 @@
 /* Finish targets appear across the bottom of the chart while moving a bubble. */
 .radar-finish {
   position: absolute;
-  inset: auto 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  inset: auto 10px var(--radar-finish-bottom);
   display: flex;
   gap: 8px;
   animation: radar-finish-in 140ms ease-out;
@@ -580,6 +586,7 @@
   gap: 8px;
   min-width: 0;
   height: 68px;
+  padding: 0 10px;
   border: 2px solid var(--ring);
   border-radius: var(--radius);
   background: var(--surface);
@@ -587,11 +594,47 @@
   font-family: var(--mono);
   font-size: 0.95rem;
   font-weight: 650;
+  white-space: nowrap;
   user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: height 140ms ease-out;
 }
 
 .radar-finish[data-goal="true"] .radar-finish-target {
   height: 56px;
+}
+
+.radar-finish[data-resting="true"] .radar-finish-target {
+  height: var(--radar-finish-rest);
+}
+
+/*
+ * At rest the targets sit in their own row under the chart, centred below the
+ * radar circle, so they never cover bubbles or sector labels. A wide screen
+ * always reserves the row, so selecting never resizes the radar; a single
+ * column adds it only while an open item is selected (see attention.css).
+ */
+.radar-finish-slot {
+  flex: none;
+  box-sizing: border-box;
+  height: calc(var(--radar-finish-rest) + 8px);
+  padding-top: 8px;
+}
+
+.radar-finish-slot .radar-finish {
+  position: static;
+  max-width: 520px;
+  margin-inline: auto;
+}
+
+@media (max-width: 760px) {
+  .radar-finish-slot:not([data-shown]) {
+    display: none;
+  }
+}
+
+.radar-finish[data-resting="true"] .radar-finish-target:hover {
+  border-color: var(--muted);
 }
 
 .radar-finish-glyph {
@@ -614,14 +657,20 @@
 }
 
 @media (pointer: coarse) {
+  :root {
+    --radar-finish-rest: 56px;
+  }
+
   .radar-finish-target {
     min-height: 56px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .radar-finish {
+  .radar-finish,
+  .radar-finish-target {
     animation: none;
+    transition: none;
   }
 }
 

@@ -77,6 +77,8 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetchSession);
   vi.stubGlobal("WebSocket", TestSocket);
   vi.spyOn(Date, "now").mockReturnValue(Date.parse("2024-04-03T12:00:00Z"));
+  // Many fixtures check completed ghosts, which are hidden by default.
+  localStorage.setItem("heed.showGhosts", "true");
 });
 
 afterEach(() => {
@@ -1776,6 +1778,27 @@ it("keeps radar positions on status updates and toggles completed ghosts", async
   expect(radar.getByRole("button", { name: child.title })).toBeTruthy();
 });
 
+it("hides completed items from the radar by default and remembers showing them", async () => {
+  localStorage.removeItem("heed.showGhosts");
+  const finished = {
+    ...goal,
+    id: "finished",
+    title: "Shipped work",
+    status: "done",
+    completed_at: "2024-04-03T11:00:00Z",
+    completed_band: "today",
+  } as const;
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: [...snapshot.items, finished],
+  });
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  expect(radar.queryByRole("button", { name: finished.title })).toBeNull();
+  fireEvent.click(menuAction("Show completed ghosts"));
+  expect(radar.getByRole("button", { name: finished.title })).toBeTruthy();
+  expect(localStorage.getItem("heed.showGhosts")).toBe("true");
+});
+
 const completedGoal = {
   ...goal,
   status: "done",
@@ -2116,12 +2139,27 @@ function startRadarFinishDrag(bubble: HTMLElement) {
 const finishTarget = (status: "done" | "cancelled") =>
   document.querySelector<HTMLElement>(`[data-drop-finish="${status}"]`);
 
-it("shows the finish targets only while a bubble is being moved", async () => {
+it("shows the finish targets while an open item is selected or a bubble is moved", async () => {
   await openWorkspace();
   const radar = within(screen.getByRole("region", { name: "Attention field" }));
-  fireEvent.click(radar.getByRole("button", { name: goal.title }));
   expect(finishTarget("done")).toBeNull();
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  // At rest they are buttons for the selected item.
+  expect(finishTarget("done")!.tagName).toBe("BUTTON");
+  expect(
+    finishTarget("done")!.closest<HTMLElement>(".radar-finish")!.dataset
+      .resting,
+  ).toBe("true");
+  expect(radar.getByRole("button", { name: `Mark ${goal.title} done` })).toBe(
+    finishTarget("done"),
+  );
+  // At rest they take their own row under the chart instead of covering it.
+  const slot = document.querySelector<HTMLElement>(".radar-finish-slot")!;
+  expect(slot.dataset.shown).toBe("true");
+  expect(slot.contains(finishTarget("done"))).toBe(true);
+  expect(finishTarget("done")!.closest(".radar-chart")).toBeNull();
 
+  // Dragging another, unselected bubble retargets them to that bubble.
   const bubble = radar.getByRole("button", { name: tomorrow.title });
   const drag = startRadarFinishDrag(bubble);
   const inside = { x: CENTER.x + 40, y: CENTER.y };
@@ -2129,17 +2167,26 @@ it("shows the finish targets only while a bubble is being moved", async () => {
   expect(finishTarget("done")!.textContent).toBe("✓Done");
   expect(finishTarget("cancelled")!.textContent).toBe("⊘Won't do");
   expect(finishTarget("done")!.dataset.target).toBe("false");
+  expect(finishTarget("cancelled")!.getAttribute("aria-label")).toBe(
+    `Mark ${tomorrow.title} won't do`,
+  );
   expect(
-    finishTarget("done")!.closest<HTMLElement>(".radar-finish")!.dataset.goal,
-  ).toBe("true");
+    finishTarget("done")!.closest<HTMLElement>(".radar-finish")!.dataset,
+  ).toMatchObject({ goal: "true", resting: "false" });
+  // While dragging, the targets overlay the chart and the row keeps its place.
+  expect(finishTarget("done")!.closest(".radar-chart")).toBeTruthy();
+  expect(slot.isConnected && slot.dataset.shown).toBe("true");
+  expect(slot.querySelector("[data-drop-finish]")).toBeNull();
   // The canvas holds capture, so re-ordering the dragged bubble on top
   // (which releases the bubble's own capture) does not end the drag.
   expect(drag.capture).toHaveBeenCalledWith(1);
   fireEvent.lostPointerCapture(bubble, { pointerId: 1 });
   expect(finishTarget("done")).toBeTruthy();
   drag.release(inside);
-  expect(finishTarget("done")).toBeNull();
-  expect(finishTarget("cancelled")).toBeNull();
+  // Back to the selected item's buttons.
+  expect(finishTarget("done")!.getAttribute("aria-label")).toBe(
+    `Mark ${goal.title} done`,
+  );
   expect(TestSocket.current.latestRequest().type).toBe("UPDATE_ITEM");
 
   // Resizing for priority never offers them.
@@ -2290,6 +2337,129 @@ it("keeps today's radar drop when the bubble is released off the finish targets"
     input: { item_id: goal.id, scheduled_on: null },
   });
   expect(radar.queryByRole("button", { name: "Undo" })).toBeNull();
+});
+
+it.each([
+  [
+    "done",
+    "Done",
+    "Marked Payment reliability done. 2 sub-items are still open.",
+  ],
+  [
+    "cancelled",
+    "Won't do",
+    "Marked Payment reliability won't do. 2 sub-items are still open.",
+  ],
+] as const)(
+  "finishes the selected item with a tap on the %s button",
+  async (status, label, message) => {
+    await openWorkspace();
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
+    const socket = TestSocket.current;
+    fireEvent.click(radar.getByRole("button", { name: goal.title }));
+    const button = radar.getByRole("button", {
+      name: `Mark ${goal.title} ${status === "done" ? "done" : "won't do"}`,
+    });
+    expect(button.textContent).toBe(`${status === "done" ? "✓" : "⊘"}${label}`);
+    fireEvent.click(button);
+
+    expect(socket.send).toHaveBeenCalledTimes(1);
+    expect(socket.latestRequest()).toMatchObject({
+      type: "SET_STATUS",
+      input: { item_id: goal.id, status },
+    });
+    expect(radar.getByText(message)).toBeTruthy();
+    // The tap neither deselects the item nor counts as a background click.
+    expect(screen.getByRole("region", { name: "Selected item" })).toBeTruthy();
+
+    // Once the item is finished the buttons go; Undo stays.
+    socket.receive({
+      type: "ITEM_UPSERT",
+      seq: 2,
+      item: { ...goal, status, completed_at: "2024-04-03T12:00:00Z" },
+    });
+    expect(finishTarget("done")).toBeNull();
+    fireEvent.click(radar.getByRole("button", { name: "Undo" }));
+    expect(socket.latestRequest()).toMatchObject({
+      type: "UNDO_FINISH",
+      input: { item_id: goal.id },
+    });
+  },
+);
+
+it.each(["done", "cancelled"] as const)(
+  "offers no finish buttons for a selected %s item",
+  async (status) => {
+    await openWorkspace();
+    const radar = within(
+      screen.getByRole("region", { name: "Attention field" }),
+    );
+    fireEvent.click(radar.getByRole("button", { name: goal.title }));
+    expect(finishTarget("done")).toBeTruthy();
+    // Finished elsewhere (another tab, an agent) while it stays selected.
+    TestSocket.current.receive({
+      type: "ITEM_UPSERT",
+      seq: 2,
+      item: { ...goal, status, completed_at: "2024-04-03T11:00:00Z" },
+    });
+    expect(screen.getByRole("region", { name: "Selected item" })).toBeTruthy();
+    expect(finishTarget("done")).toBeNull();
+    expect(finishTarget("cancelled")).toBeNull();
+  },
+);
+
+it("offers no finish buttons without a selection", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  expect(finishTarget("done")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+  expect(screen.queryByRole("region", { name: "Selected item" })).toBeNull();
+  expect(finishTarget("done")).toBeNull();
+});
+
+it("keeps question cards visible beside the finish buttons of a selected item", async () => {
+  const question = {
+    ...tomorrow,
+    id: "question",
+    parent_id: null,
+    depth: 1,
+    title: "Client call",
+    status: "blocked",
+    handoff: 1,
+    handoff_note: "Should we call the client today?",
+    handoff_options: '["Yes","No"]',
+    agent_name: "claude-code",
+  } as const;
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: [...snapshot.items, question],
+  });
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  fireEvent.click(radar.getByRole("button", { name: question.title }));
+  expect(
+    radar.getByRole("button", { name: `Mark ${question.title} done` }),
+  ).toBeTruthy();
+  // The radar foot is in use, so the cards sit above it (CSS), not hidden.
+  expect(
+    document.querySelector<HTMLElement>(".radar-chart")!.dataset.bottomRow,
+  ).toBe("true");
+  const card = radar
+    .getByRole("region", { name: `Question about ${question.title}` })
+    .closest<HTMLElement>(".field-questions")!;
+  expect(card.dataset.finishing).toBeUndefined();
+  expect(card.hasAttribute("inert")).toBe(false);
+  expect(card.hasAttribute("aria-hidden")).toBe(false);
+  fireEvent.click(
+    within(
+      radar.getByRole("region", { name: `Question about ${question.title}` }),
+    ).getByRole("button", { name: "Yes" }),
+  );
+  expect(TestSocket.current.latestRequest()).toMatchObject({
+    input: { item_id: question.id },
+  });
 });
 
 it("clears the finish message and its Undo after a few seconds", async () => {

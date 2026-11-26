@@ -408,9 +408,21 @@
   overflow: auto;
 }
 
-/* Hidden, keeping layout, while the radar finish targets are shown. */
+/* Hidden, keeping layout, while a radar bubble is dragged to the finish targets. */
 .field-questions[data-finishing] {
   visibility: hidden;
+}
+
+/*
+ * The radar's foot holds the finish targets and a one-line drop message (with
+ * Undo); the inspector and question cards sit above both instead of on them.
+ */
+.attention-field:has(.radar-chart[data-bottom-row]) .selected-summary {
+  bottom: calc(36px + var(--radar-finish-rest) + 52px);
+}
+
+.attention-field:has(.radar-chart[data-bottom-row]) .field-questions {
+  bottom: calc(42px + var(--radar-finish-rest) + 52px);
 }
 
 .field-question {
@@ -494,8 +506,14 @@
   }
 
   .attention-lens {
+    --radar-height: clamp(270px, 40dvh, 380px);
     flex: none;
-    height: clamp(270px, 40dvh, 380px);
+    height: var(--radar-height);
+  }
+
+  /* The resting finish buttons add a row under the radar without shrinking it. */
+  .attention-lens:has(.radar-finish-slot[data-shown]) {
+    height: calc(var(--radar-height) + var(--radar-finish-rest) + 8px);
   }
 
   .attention-field[data-lens="list"] .attention-lens {
