@@ -2206,6 +2206,64 @@ it.each([
   },
 );
 
+it("hides open question cards above the finish targets while a bubble is moved", async () => {
+  const question = {
+    ...tomorrow,
+    id: "question",
+    title: "Client call",
+    status: "blocked",
+    handoff: 1,
+    handoff_note: "Should we call the client today?",
+    handoff_options: '["Yes","No"]',
+    agent_name: "claude-code",
+  } as const;
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: [...snapshot.items, question],
+  });
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  const socket = TestSocket.current;
+  const card = radar
+    .getByRole("region", { name: `Question about ${question.title}` })
+    .closest<HTMLElement>(".field-questions")!;
+  expect(card.dataset.finishing).toBeUndefined();
+  expect(card.hasAttribute("inert")).toBe(false);
+
+  const drag = startRadarFinishDrag(
+    radar.getByRole("button", { name: goal.title }),
+  );
+  const point = cellPoint(
+    { band: "backlog", sector: 0, sectors: 1 },
+    { angle: 0.5, radius: 0.5 },
+  );
+  drag.move(point);
+  // The cards are out of the way and out of hit-testing for the drag.
+  expect(card.dataset.finishing).toBe("true");
+  expect(card.hasAttribute("inert")).toBe(true);
+  expect(card.getAttribute("aria-hidden")).toBe("true");
+  expect(
+    radar.queryByRole("region", { name: `Question about ${question.title}` }),
+  ).toBeNull();
+  const target = finishTarget("cancelled")!;
+  drag.move(point, [target]);
+  expect(target.dataset.target).toBe("true");
+  drag.release(point, [target]);
+
+  expect(socket.latestRequest()).toMatchObject({
+    type: "SET_STATUS",
+    input: { item_id: goal.id, status: "cancelled" },
+  });
+  // Back, unchanged, once the drag ends.
+  expect(card.dataset.finishing).toBeUndefined();
+  expect(card.hasAttribute("inert")).toBe(false);
+  expect(card.hasAttribute("aria-hidden")).toBe(false);
+  expect(
+    within(
+      radar.getByRole("region", { name: `Question about ${question.title}` }),
+    ).getByRole("button", { name: "Yes" }),
+  ).toBeTruthy();
+});
+
 it("keeps today's radar drop when the bubble is released off the finish targets", async () => {
   await openWorkspace();
   const radar = within(screen.getByRole("region", { name: "Attention field" }));

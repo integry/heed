@@ -331,6 +331,7 @@ export function RadarLens({
   reparent,
   finish,
   undoFinish,
+  finishTargetsShown,
   tagShapes,
 }: LensProps) {
   // Projects other than Inbox carry a colour and a badge on their bubbles.
@@ -983,6 +984,15 @@ export function RadarLens({
   const moving = preview && preview.priority === undefined;
   const showFinish = Boolean(moving && canFinish(preview.id));
   const finishing = showFinish ? finishTarget : null;
+  const reportFinishTargets = useEffectEvent((shown: boolean) =>
+    finishTargetsShown?.(shown),
+  );
+  // Before paint, so question cards never cover the targets for a frame.
+  useLayoutEffect(() => {
+    if (!showFinish) return;
+    reportFinishTargets(true);
+    return () => reportFinishTargets(false);
+  }, [showFinish]);
   const nestCandidate =
     moving && reparent && crumbTarget === null && !finishing
       ? nestTarget(preview.point, displayed, preview.id)

@@ -408,6 +408,11 @@
   overflow: auto;
 }
 
+/* Hidden, keeping layout, while the radar finish targets are shown. */
+.field-questions[data-finishing] {
+  visibility: hidden;
+}
+
 .field-question {
   padding: 10px 14px;
   border-radius: 4px 18px 18px 18px;

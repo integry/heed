@@ -45,6 +45,8 @@ export interface LensProps {
   finish?: (id: string, status: "done" | "cancelled") => void;
   /** Reverts the user's own recent finish without counting it as a reopen. */
   undoFinish?: (id: string) => void;
+  /** Reports whether the radar finish targets are on screen. */
+  finishTargetsShown?: (shown: boolean) => void;
 }
 
 export interface Lens {

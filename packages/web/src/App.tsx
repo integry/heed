@@ -190,6 +190,7 @@ function Workspace({
   const HeaderEnd = options?.headerEnd;
   const signOut = options?.onSignOut;
   const [lensId, setLensId] = useState<string | null>(null);
+  const [finishTargetsShown, setFinishTargetsShown] = useState(false);
   const [selectedItem, setSelectedItem] = useState<{
     id: string;
     fromNotification?: boolean;
@@ -1057,6 +1058,7 @@ function Workspace({
               undoFinish={(item_id) =>
                 connection.mutate({ type: "UNDO_FINISH", input: { item_id } })
               }
+              finishTargetsShown={setFinishTargetsShown}
               tagShapes={state.settings?.tag_shapes}
             />
           </div>
@@ -1066,7 +1068,14 @@ function Workspace({
             </p>
           )}
           {questions.length > 0 && (
-            <div className="field-questions">
+            <div
+              className="field-questions"
+              // The radar finish targets sit under the cards; hide them while
+              // a bubble is being moved so both targets stay reachable.
+              data-finishing={finishTargetsShown || undefined}
+              aria-hidden={finishTargetsShown || undefined}
+              inert={finishTargetsShown}
+            >
               {questions.map((item) => (
                 <QuestionBubble
                   key={item.id}
