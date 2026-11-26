@@ -16,6 +16,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent,
   type PointerEvent,
 } from "react";
 import {
@@ -95,6 +96,20 @@ const FINISH_MESSAGE_MS = 8000;
 const GOAL_CHIP_HALF_HEIGHT = 18;
 
 const ignore = () => {};
+const weekday = new Intl.DateTimeFormat("en", {
+  weekday: "long",
+  timeZone: "UTC",
+});
+
+/** How a new item's prefix names a ring or sub-ring: "backlog", "Thursday". */
+function bandWords(band: RadarBand, group?: Subring) {
+  if (group?.day) return weekday.format(Date.parse(group.day));
+  // Later splits into weeks and months; Today and Backlog split by state and
+  // project, which are not times.
+  if (band === "later" && group && group.id !== "unassigned")
+    return group.label.replace(/^Week of/, "week of");
+  return RADAR_LABELS[band].toLowerCase();
+}
 const isOpen = (item: CanvasItem) =>
   item.status !== "done" && item.status !== "cancelled";
 
@@ -164,6 +179,7 @@ function goalDropTarget(point: Point) {
 function RadarField({
   projects,
   highlight,
+  startCell,
   scale,
   showLabels,
   edges,
@@ -171,6 +187,7 @@ function RadarField({
 }: {
   projects: readonly Project[];
   highlight: Cell | null;
+  startCell: Cell | null;
   scale: number;
   showLabels: boolean;
   edges: number[];
@@ -258,6 +275,9 @@ function RadarField({
           </g>
         );
       })}
+      {startCell && !highlight && (
+        <path d={pathForCell(startCell)} className="radar-start-cell" />
+      )}
       {highlight && (
         <path d={pathForCell(highlight)} className="radar-drop-cell" />
       )}
@@ -333,6 +353,8 @@ export function RadarLens({
   undoFinish,
   finishTargetsShown,
   tagShapes,
+  startItem,
+  startingItem,
 }: LensProps) {
   // Projects other than Inbox carry a colour and a badge on their bubbles.
   const identities = useMemo(
@@ -381,6 +403,8 @@ export function RadarLens({
   // A breadcrumb under the pointer while dragging inside an item: an item ID,
   // or "" for the top level.
   const [crumbTarget, setCrumbTarget] = useState<string | null>(null);
+  // The cell whose new-item prefix is in the text line.
+  const [startCell, setStartCell] = useState<Cell | null>(null);
   const arrowId = useId();
   const projects = useMemo(
     () => allProjects.filter(({ hidden }) => hidden === 0),
@@ -734,7 +758,7 @@ export function RadarLens({
     if (radarZoom) applyZoom(radarZoom.band);
   }, [radarZoom]);
 
-  function scenePoint(event: PointerEvent): Point {
+  function scenePoint(event: MouseEvent): Point {
     const matrix = layer.current?.getScreenCTM();
     return matrix
       ? new DOMPoint(event.clientX, event.clientY).matrixTransform(
@@ -833,7 +857,43 @@ export function RadarLens({
     return {
       cell: cell && group ? { ...cell, radial: group } : cell,
       day: group?.day,
+      group,
     };
+  }
+
+  /** The text-line prefix that starts a new item at a point, if any. */
+  function startPrefix(point: Point) {
+    if (goal) {
+      if (distance(point, CENTER) > GOAL_RADIUS) return null;
+      const band = bandById.get(goal.item.id) ?? "backlog";
+      return {
+        text: `${goal.item.title} › ${bandWords(band)}: `,
+        parentId: goal.item.id,
+        cell: null,
+      };
+    }
+    const { cell, group } = dropTarget(point);
+    const project = cell && projects[cell.sector];
+    if (!cell || !project) return null;
+    return {
+      text: `${project.name} ${bandWords(cell.band, group)}: `,
+      parentId: undefined,
+      cell,
+    };
+  }
+
+  /** Clicking empty sector and ring space starts a new item there. */
+  function startAt(event: MouseEvent<SVGSVGElement>) {
+    // A double click zooms; labels and bubbles keep their own meaning.
+    if (!startItem || !live || event.detail > 1 || drag.dragging()) return;
+    if (
+      event.target instanceof Element &&
+      event.target.closest("text, [data-canvas-drag], [role='button']")
+    )
+      return;
+    const start = startPrefix(scenePoint(event));
+    if (start && startItem(start.text, start.parentId))
+      setStartCell(start.cell);
   }
 
   /** The breadcrumb under the pointer, as a parent ID ("" for the top level). */
@@ -1156,7 +1216,11 @@ export function RadarLens({
             }
           }}
           onPointerUp={release}
-          onClick={() => select(null)}
+          onClick={(event) => {
+            // With an item selected, the first click only deselects it.
+            if (selectedId === null) startAt(event);
+            select(null);
+          }}
         >
           <defs>
             <marker
@@ -1233,6 +1297,7 @@ export function RadarLens({
               <RadarField
                 projects={projects}
                 highlight={highlight}
+                startCell={startingItem && !preview ? startCell : null}
                 scale={labelScale}
                 showLabels={viewport.scale >= MIN_FIELD_SCALE}
                 edges={edges}

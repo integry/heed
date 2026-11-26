@@ -47,6 +47,13 @@ export interface LensProps {
   undoFinish?: (id: string) => void;
   /** Reports whether the radar finish targets are on screen. */
   finishTargetsShown?: (shown: boolean) => void;
+  /**
+   * Starts a new item by putting a prefix such as "Acme backlog: " in the
+   * text line; parentId makes it a child. Returns whether the line took it.
+   */
+  startItem?: (prefix: string, parentId?: string) => boolean;
+  /** Whether a startItem prefix is in the text line, not yet edited. */
+  startingItem?: boolean;
 }
 
 export interface Lens {

@@ -4026,3 +4026,213 @@ it("requires a separate typed confirmation for workspace reset", async () => {
   );
   expect(screen.queryByRole("dialog")).toBeNull();
 });
+
+const digvin = { ...project, id: "digvin", name: "dig.vin", sort: 1 };
+const zupaflow = { ...project, id: "zupaflow", name: "Zupaflow", sort: 2 };
+const notes = {
+  ...goal,
+  id: "notes",
+  title: "Ship release notes",
+  project_id: zupaflow.id,
+  progress: { done: 0, total: 0 },
+};
+
+/** Opens the radar with three projects; returns helpers for empty clicks. */
+async function openStartRadar(
+  commands: Response[] = [],
+  items: Extract<SocketMessage, { type: "SNAPSHOT" }>["items"] = [
+    goal,
+    child,
+    tomorrow,
+    notes,
+  ],
+) {
+  const bodies: { text: string; selected_item_id?: string }[] = [];
+  fetchSession.mockImplementation(
+    async (path: string, options?: RequestInit) => {
+      if (path === "/api/me")
+        return Response.json({
+          workspaceId: "default",
+          email: "person@example.test",
+          capabilities: { command: true, transcription: false },
+        });
+      if (path === "/api/command") {
+        bodies.push(JSON.parse(String(options?.body)));
+        return (
+          commands.shift() ?? Response.json({ summary: "Added.", changes: [] })
+        );
+      }
+      return Response.json([]);
+    },
+  );
+  const previousSocket = TestSocket.current;
+  const { container } = render(<App />);
+  await waitFor(() => expect(TestSocket.current).not.toBe(previousSocket));
+  TestSocket.current.receive({
+    ...snapshot,
+    projects: [project, digvin, zupaflow],
+    items,
+  });
+  const svg = container.querySelector<SVGSVGElement>(".radar-svg")!;
+  Object.defineProperty(svg.querySelector(":scope > g"), "getScreenCTM", {
+    configurable: true,
+    value: () => null,
+  });
+  const draft = screen.getByRole<HTMLInputElement>("textbox", {
+    name: "Workspace command",
+  });
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  /** Clicks empty space in a cell (sectors: Inbox, dig.vin, Zupaflow). */
+  const clickCell = (sector: number, band: Cell["band"], angle = 0.5) => {
+    const { x, y } = cellPoint(
+      { band, sector, sectors: 3 },
+      { angle, radius: 0.5 },
+    );
+    fireEvent.click(svg, { clientX: x, clientY: y });
+  };
+  return { svg, draft, radar, clickCell, bodies, container };
+}
+
+it("starts a new item in the text line from an empty radar cell", async () => {
+  const { draft, radar, clickCell, svg, container } = await openStartRadar();
+  clickCell(1, "backlog");
+  expect(draft.value).toBe("dig.vin backlog: ");
+  expect(document.activeElement).toBe(draft);
+  expect(draft.selectionStart).toBe("dig.vin backlog: ".length);
+  expect(container.querySelector(".radar-start-cell")).not.toBeNull();
+
+  // Another empty spot replaces the untouched prefix.
+  clickCell(2, "today", 0.3);
+  expect(draft.value).toBe("Zupaflow today: ");
+  clickCell(0, "this-week");
+  expect(draft.value).toBe("Inbox this week: ");
+  clickCell(0, "later");
+  expect(draft.value).toBe("Inbox later: ");
+
+  // Outside the outermost ring counts as nothing.
+  fireEvent.click(svg, { clientX: CENTER.x, clientY: CENTER.y - 340 });
+  expect(draft.value).toBe("");
+  expect(container.querySelector(".radar-start-cell")).toBeNull();
+
+  // Clicking a bubble removes an untouched prefix.
+  clickCell(1, "backlog");
+  expect(draft.value).toBe("dig.vin backlog: ");
+  fireEvent.click(radar.getByRole("button", { name: notes.title }));
+  expect(draft.value).toBe("");
+});
+
+it("only deselects on the first empty click while an item is selected", async () => {
+  const { draft, radar, clickCell } = await openStartRadar(
+    [],
+    [{ ...goal, progress: { done: 0, total: 0 } }],
+  );
+  const bubble = radar.getByRole("button", { name: goal.title });
+  fireEvent.click(bubble);
+  expect(bubble.getAttribute("aria-pressed")).toBe("true");
+  clickCell(2, "backlog");
+  expect(draft.value).toBe("");
+  expect(bubble.getAttribute("aria-pressed")).toBe("false");
+  clickCell(2, "backlog");
+  expect(draft.value).toBe("Zupaflow backlog: ");
+});
+
+it("clears an untouched prefix on Escape and other clicks, and switching lens", async () => {
+  const { draft, clickCell } = await openStartRadar();
+  clickCell(1, "later");
+  fireEvent.keyDown(draft, { key: "Escape" });
+  expect(draft.value).toBe("");
+
+  clickCell(1, "later");
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  expect(draft.value).toBe("");
+
+  clickCell(1, "later");
+  fireEvent.click(draft);
+  expect(draft.value).toBe("dig.vin later: ");
+  fireEvent.click(screen.getByRole("button", { name: "Hidden items" }));
+  expect(draft.value).toBe("");
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+  clickCell(1, "later");
+  expect(draft.value).toBe("dig.vin later: ");
+  act(() => {
+    draft.blur();
+  });
+  fireEvent.keyDown(window, { key: "2" });
+  expect(draft.value).toBe("");
+});
+
+it("never replaces or clears a prefix the person has typed on", async () => {
+  const { draft, radar, clickCell, bodies } = await openStartRadar();
+  clickCell(1, "backlog");
+  fireEvent.change(draft, { target: { value: "dig.vin backlog: Fix menu" } });
+  clickCell(2, "today");
+  expect(draft.value).toBe("dig.vin backlog: Fix menu");
+  fireEvent.click(radar.getByRole("button", { name: notes.title }));
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  fireEvent.click(screen.getByRole("button", { name: "Hidden items" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  expect(draft.value).toBe("dig.vin backlog: Fix menu");
+
+  // The prefix carries its own context, not the item selected since.
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(draft.value).toBe(""));
+  expect(bodies).toEqual([{ text: "dig.vin backlog: Fix menu" }]);
+  clickCell(2, "today");
+  expect(draft.value).toBe("");
+  clickCell(2, "today");
+  expect(draft.value).toBe("Zupaflow today: ");
+});
+
+it("prefills a split ring's day and an item's band, sending the item as context", async () => {
+  const { draft, radar, svg, bodies } = await openStartRadar();
+  fireEvent.click(radar.getByRole("button", { name: "This week" }));
+  const thursday = svg.querySelector('[data-day="2024-04-04"]')!;
+  const radius = CENTER.y - Number(thursday.getAttribute("y"));
+  const angle = -Math.PI / 2 + 0.3;
+  fireEvent.click(svg, {
+    clientX: CENTER.x + radius * Math.cos(angle),
+    clientY: CENTER.y + radius * Math.sin(angle),
+  });
+  expect(draft.value).toBe("Inbox Thursday: ");
+  fireEvent.keyDown(document.body, { key: "Escape" });
+
+  // Inside an item: the first click deselects the opened item.
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  expect(
+    radar.getByRole("navigation", { name: "Goal breadcrumb" }),
+  ).toBeTruthy();
+  fireEvent.click(svg, { clientX: CENTER.x + 200, clientY: CENTER.y });
+  expect(draft.value).toBe("");
+  fireEvent.click(svg, { clientX: CENTER.x + 200, clientY: CENTER.y });
+  expect(draft.value).toBe(`${goal.title} › today: `);
+  fireEvent.change(draft, {
+    target: { value: `${goal.title} › today: Add retries` },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(bodies).toHaveLength(1));
+  expect(bodies[0]).toEqual({
+    text: `${goal.title} › today: Add retries`,
+    selected_item_id: goal.id,
+  });
+});
+
+it("does not prefill while the line is busy or the workspace is offline", async () => {
+  const { draft, clickCell } = await openStartRadar([
+    Response.json({
+      summary: "Which project?",
+      needsClarification: true,
+      changes: [],
+    }),
+  ]);
+  fireEvent.change(draft, { target: { value: "menu" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await screen.findByText("Which project?");
+  clickCell(1, "backlog");
+  expect(draft.value).toBe("");
+  fireEvent.click(screen.getByRole("button", { name: "New command" }));
+
+  act(() => TestSocket.current.close(1006));
+  clickCell(1, "backlog");
+  expect(draft.value).toBe("");
+});

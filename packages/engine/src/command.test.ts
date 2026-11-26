@@ -799,3 +799,45 @@ it("gives the model the selected item and the previous exchange", async () => {
     fetchMessage.mockRestore();
   }
 });
+
+it("creates a radar-prefixed item in that project and band, under the goal", async () => {
+  const project = await workspace.createProject({ name: "Zupaflow" });
+  const goal = await workspace.addItem(human, {
+    title: "Launch",
+    project: project.id,
+  });
+  const next = vi
+    .fn()
+    .mockResolvedValueOnce(
+      turn(
+        "",
+        call("add_item", {
+          title: "Write the spec",
+          parent_id: goal.item_id,
+        }),
+      ),
+    )
+    .mockResolvedValueOnce(turn("Added Write the spec under Launch."));
+  const result = await runCommand(
+    workspace,
+    { next },
+    "Launch › backlog: Write the spec",
+    undefined,
+    { selected_item_id: goal.item_id },
+  );
+  const { system, text } = next.mock.calls[0][0];
+  expect(text).toBe("Launch › backlog: Write the spec");
+  expect(system).toContain("'<project> <band>: <title>'");
+  expect(system).toContain("backlog → leave scheduled_on unset");
+  expect(system).toContain(`"selected_item":{"id":"${goal.item_id}"`);
+  const [change] = result.changes;
+  expect(change).toMatchObject({ type: "item" });
+  expect(
+    await workspace.getItem({ item_id: (change as { id: string }).id }),
+  ).toMatchObject({
+    title: "Write the spec",
+    parent_id: goal.item_id,
+    project_id: project.id,
+    scheduled_on: null,
+  });
+});

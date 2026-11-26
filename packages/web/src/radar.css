@@ -177,6 +177,12 @@
   }
 }
 
+.radar-start-cell {
+  fill: var(--muted);
+  fill-opacity: 0.1;
+  pointer-events: none;
+}
+
 .radar-drop-cell {
   fill: var(--muted);
   fill-opacity: 0.2;
