@@ -177,10 +177,27 @@
   }
 }
 
-.radar-start-cell {
-  fill: var(--muted);
-  fill-opacity: 0.1;
+/* Where the item being typed will appear: a faint dashed bubble. */
+.radar-start-bubble {
+  fill: color-mix(in srgb, var(--project, var(--muted)) 12%, transparent);
+  stroke: var(--project, var(--muted));
+  stroke-opacity: 0.75;
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
   pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .radar-start-bubble {
+    animation: radar-start-fade 200ms ease-out;
+  }
+}
+
+@keyframes radar-start-fade {
+  from {
+    opacity: 0;
+  }
 }
 
 .radar-drop-cell {

@@ -19,11 +19,13 @@ import { App } from "./App";
 import { mountApp, type MountedApp, type MountAppOptions } from "./index";
 import { lensRegistry, type Lens } from "./lenses";
 import {
+  bubbleRadius,
   CENTER,
   GOAL_CHIP_Y,
   cellPoint,
   RADAR_BANDS,
   RADAR_LABELS,
+  RADAR_RADIUS,
   radarViewport,
   type Cell,
 } from "./radar-geometry";
@@ -4027,7 +4029,13 @@ it("requires a separate typed confirmation for workspace reset", async () => {
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-const digvin = { ...project, id: "digvin", name: "dig.vin", sort: 1 };
+const digvin = {
+  ...project,
+  id: "digvin",
+  name: "dig.vin",
+  color: "violet",
+  sort: 1,
+};
 const zupaflow = { ...project, id: "zupaflow", name: "Zupaflow", sort: 2 };
 const notes = {
   ...goal,
@@ -4099,7 +4107,7 @@ it("starts a new item in the text line from an empty radar cell", async () => {
   expect(draft.value).toBe("dig.vin backlog: ");
   expect(document.activeElement).toBe(draft);
   expect(draft.selectionStart).toBe("dig.vin backlog: ".length);
-  expect(container.querySelector(".radar-start-cell")).not.toBeNull();
+  expect(container.querySelector(".radar-start-bubble")).not.toBeNull();
 
   // Another empty spot replaces the untouched prefix.
   clickCell(2, "today", 0.3);
@@ -4112,7 +4120,7 @@ it("starts a new item in the text line from an empty radar cell", async () => {
   // Outside the outermost ring counts as nothing.
   fireEvent.click(svg, { clientX: CENTER.x, clientY: CENTER.y - 340 });
   expect(draft.value).toBe("");
-  expect(container.querySelector(".radar-start-cell")).toBeNull();
+  expect(container.querySelector(".radar-start-bubble")).toBeNull();
 
   // Clicking a bubble removes an untouched prefix.
   clickCell(1, "backlog");
@@ -4235,4 +4243,121 @@ it("does not prefill while the line is busy or the workspace is offline", async 
   act(() => TestSocket.current.close(1006));
   clickCell(1, "backlog");
   expect(draft.value).toBe("");
+});
+
+it("draws a placeholder bubble where the new item will go until it is sent or dropped", async () => {
+  const { draft, radar, clickCell, container, bodies } = await openStartRadar();
+  const placeholder = () =>
+    container.querySelector<SVGCircleElement>(".radar-start-bubble");
+  const centre = () => {
+    const circle = placeholder()!;
+    return {
+      x: Number(circle.getAttribute("cx")),
+      y: Number(circle.getAttribute("cy")),
+      r: Number(circle.getAttribute("r")),
+    };
+  };
+  /** Checks the placeholder is a default-size bubble at a backlog spot. */
+  const expectAt = (angle: number) => {
+    const point = cellPoint(
+      { band: "backlog", sector: 1, sectors: 3 },
+      { angle, radius: 0.5 },
+    );
+    const { x, y, r } = centre();
+    expect(x).toBeCloseTo(point.x);
+    expect(y).toBeCloseTo(point.y);
+    expect(r).toBeCloseTo(bubbleRadius(5));
+  };
+  const bubbleCount = () => container.querySelectorAll(".radar-node").length;
+  const layout = () =>
+    [...container.querySelectorAll(".radar-node")].map((node) =>
+      node.getAttribute("transform"),
+    );
+  const before = layout();
+
+  // A dashed, decorative bubble in the project's colour at the clicked spot.
+  clickCell(1, "backlog");
+  expect(placeholder()?.getAttribute("aria-hidden")).toBe("true");
+  expect(placeholder()?.getAttribute("data-project")).toBe("violet");
+  expect(placeholder()?.closest("[role='button']")).toBeNull();
+  expectAt(0.5);
+  expect(layout()).toEqual(before);
+  expect(bubbleCount()).toBe(before.length);
+
+  // Another click in the same cell moves it; a click at the cell's edge is
+  // snapped inside, so the bubble stays within the ring.
+  clickCell(1, "backlog", 0.2);
+  expectAt(0.2);
+  const edge = cellPoint(
+    { band: "backlog", sector: 1, sectors: 3 },
+    { angle: 0.5, radius: 0.99 },
+  );
+  fireEvent.click(container.querySelector(".radar-svg")!, {
+    clientX: edge.x,
+    clientY: edge.y,
+  });
+  expect(draft.value).toBe("dig.vin backlog: ");
+  const snapped = centre();
+  expect(Math.hypot(snapped.x - CENTER.x, snapped.y - CENTER.y)).toBeCloseTo(
+    RADAR_RADIUS - bubbleRadius(5),
+  );
+  // Inbox has no project colour.
+  clickCell(0, "later");
+  expect(placeholder()?.hasAttribute("data-project")).toBe(false);
+
+  // Typing a title keeps it; editing the prefix away removes it.
+  clickCell(1, "backlog");
+  fireEvent.change(draft, { target: { value: "dig.vin backlog: Fix menu" } });
+  expectAt(0.5);
+  fireEvent.click(radar.getByRole("button", { name: notes.title }));
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  expect(placeholder()).not.toBeNull();
+  fireEvent.change(draft, { target: { value: "dig.vin backlg: Fix menu" } });
+  expect(placeholder()).toBeNull();
+  // Restoring the prefix by hand does not bring it back.
+  fireEvent.change(draft, { target: { value: "dig.vin backlog: Fix menu" } });
+  expect(placeholder()).toBeNull();
+  fireEvent.change(draft, { target: { value: "" } });
+
+  // Emptying the line removes it.
+  clickCell(1, "backlog");
+  fireEvent.change(draft, { target: { value: "dig.vin backlog: F" } });
+  fireEvent.change(draft, { target: { value: "" } });
+  expect(placeholder()).toBeNull();
+
+  // Escape, a click elsewhere and a bubble click remove an untouched one.
+  clickCell(1, "backlog");
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  expect(placeholder()).toBeNull();
+  clickCell(1, "backlog");
+  fireEvent.click(screen.getByRole("button", { name: "Hidden items" }));
+  expect(placeholder()).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  clickCell(1, "backlog");
+  fireEvent.click(radar.getByRole("button", { name: notes.title }));
+  expect(placeholder()).toBeNull();
+  fireEvent.click(radar.getByRole("button", { name: notes.title }));
+
+  // Submitting removes it.
+  clickCell(2, "today");
+  clickCell(2, "today");
+  expect(placeholder()).not.toBeNull();
+  fireEvent.change(draft, { target: { value: "Zupaflow today: Plan" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(draft.value).toBe(""));
+  expect(bodies).toEqual([{ text: "Zupaflow today: Plan" }]);
+  expect(placeholder()).toBeNull();
+});
+
+it("removes the placeholder bubble when the lens changes", async () => {
+  const { draft, clickCell, container } = await openStartRadar();
+  clickCell(1, "later");
+  expect(container.querySelector(".radar-start-bubble")).not.toBeNull();
+  act(() => {
+    draft.blur();
+  });
+  fireEvent.keyDown(window, { key: "2" });
+  fireEvent.keyDown(window, { key: "1" });
+  expect(draft.value).toBe("");
+  expect(container.querySelector(".radar-start-bubble")).toBeNull();
 });

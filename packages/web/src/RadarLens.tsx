@@ -50,6 +50,7 @@ import {
   MIN_FIELD_SCALE,
   polar,
   priorityForRadius,
+  snapStart,
   RADAR_BANDS,
   RADAR_LABELS,
   RADAR_LABEL_FONT,
@@ -179,7 +180,6 @@ function goalDropTarget(point: Point) {
 function RadarField({
   projects,
   highlight,
-  startCell,
   scale,
   showLabels,
   edges,
@@ -187,7 +187,6 @@ function RadarField({
 }: {
   projects: readonly Project[];
   highlight: Cell | null;
-  startCell: Cell | null;
   scale: number;
   showLabels: boolean;
   edges: number[];
@@ -275,9 +274,6 @@ function RadarField({
           </g>
         );
       })}
-      {startCell && !highlight && (
-        <path d={pathForCell(startCell)} className="radar-start-cell" />
-      )}
       {highlight && (
         <path d={pathForCell(highlight)} className="radar-drop-cell" />
       )}
@@ -403,8 +399,12 @@ export function RadarLens({
   // A breadcrumb under the pointer while dragging inside an item: an item ID,
   // or "" for the top level.
   const [crumbTarget, setCrumbTarget] = useState<string | null>(null);
-  // The cell whose new-item prefix is in the text line.
-  const [startCell, setStartCell] = useState<Cell | null>(null);
+  // The empty spot clicked to start a new item, and the prefix it gave.
+  const [start, setStart] = useState<{
+    point: Point;
+    text: string;
+    goalId: string | null;
+  } | null>(null);
   const arrowId = useId();
   const projects = useMemo(
     () => allProjects.filter(({ hidden }) => hidden === 0),
@@ -869,6 +869,7 @@ export function RadarLens({
       return {
         text: `${goal.item.title} › ${bandWords(band)}: `,
         parentId: goal.item.id,
+        projectId: goal.item.project_id,
         cell: null,
       };
     }
@@ -878,6 +879,7 @@ export function RadarLens({
     return {
       text: `${project.name} ${bandWords(cell.band, group)}: `,
       parentId: undefined,
+      projectId: project.id,
       cell,
     };
   }
@@ -891,10 +893,27 @@ export function RadarLens({
       event.target.closest("text, [data-canvas-drag], [role='button']")
     )
       return;
-    const start = startPrefix(scenePoint(event));
-    if (start && startItem(start.text, start.parentId))
-      setStartCell(start.cell);
+    const point = scenePoint(event);
+    const prefix = startPrefix(point);
+    if (prefix && startItem(prefix.text, prefix.parentId))
+      setStart({ point, text: prefix.text, goalId: goal?.item.id ?? null });
   }
+
+  /**
+   * The placeholder bubble for the item being started, while the text line
+   * still holds its prefix and the clicked spot still gives that prefix.
+   */
+  function startBubble() {
+    if (!startingItem || !start || preview) return null;
+    if ((goal?.item.id ?? null) !== start.goalId) return null;
+    const target = startPrefix(start.point);
+    if (target?.text !== start.text) return null;
+    return {
+      ...snapStart(start.point, target.cell),
+      color: identities.get(target.projectId)?.color,
+    };
+  }
+  const placeholder = startBubble();
 
   /** The breadcrumb under the pointer, as a parent ID ("" for the top level). */
   function crumbAt(event: PointerEvent): string | null {
@@ -1297,11 +1316,20 @@ export function RadarLens({
               <RadarField
                 projects={projects}
                 highlight={highlight}
-                startCell={startingItem && !preview ? startCell : null}
                 scale={labelScale}
                 showLabels={viewport.scale >= MIN_FIELD_SCALE}
                 edges={edges}
                 subrings={subrings}
+              />
+            )}
+            {placeholder && (
+              <circle
+                aria-hidden="true"
+                className="radar-start-bubble"
+                data-project={placeholder.color}
+                cx={placeholder.point.x}
+                cy={placeholder.point.y}
+                r={placeholder.radius}
               />
             )}
             {nestCandidate && (

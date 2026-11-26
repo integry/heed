@@ -66,6 +66,12 @@ export function useCommandBar(
     parentId?: string;
   }>();
   const untouched = Boolean(prefilled) && draft === prefilled?.text;
+  // Typing after the prefix keeps it in force; emptying the line or editing
+  // the prefix itself drops it, so it cannot come back later.
+  const drafting = Boolean(
+    prefilled && draft.trim().startsWith(prefilled.text.trim()),
+  );
+  if (prefilled && !drafting) setPrefilled(undefined);
   const canPrefill =
     !action.busy && !voice && !request && (!draft || untouched);
 
@@ -302,6 +308,8 @@ export function useCommandBar(
     clearPrefill,
     /** Whether a prefix is in the line and the person has not edited it. */
     prefilled: untouched,
+    /** Whether the line still starts with the prefix, edited or not. */
+    drafting,
     submit,
     undo,
     microphone: voiceAvailable(transcription),

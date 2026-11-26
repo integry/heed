@@ -52,7 +52,10 @@ export interface LensProps {
    * text line; parentId makes it a child. Returns whether the line took it.
    */
   startItem?: (prefix: string, parentId?: string) => boolean;
-  /** Whether a startItem prefix is in the text line, not yet edited. */
+  /**
+   * Whether the text line still starts with the last startItem prefix, with
+   * or without a title typed after it.
+   */
   startingItem?: boolean;
 }
 

@@ -1067,7 +1067,7 @@ function Workspace({
               startItem={(prefix, parentId) =>
                 live && command.prefill(prefix, parentId)
               }
-              startingItem={command.prefilled}
+              startingItem={command.drafting}
             />
           </div>
           {dependencyError && showDependencyErrorInline && (
