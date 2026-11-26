@@ -59,19 +59,24 @@ export function useCommandBar(
   const action = useAction();
   const [undoing, setUndoing] = useState(false);
   // Text a lens put in the line to start an item ("Acme backlog: "). Until the
-  // draft differs from it, it can be replaced or removed; after that the
-  // draft is the person's. `parentId` goes with the request as its context.
+  // draft first differs from it, it can be replaced or removed; after that the
+  // draft is the person's, even if they delete back to the prefix.
+  // `parentId` goes with the request as its context.
   const [prefilled, setPrefilled] = useState<{
     text: string;
     parentId?: string;
+    edited?: boolean;
   }>();
-  const untouched = Boolean(prefilled) && draft === prefilled?.text;
   // Typing after the prefix keeps it in force; emptying the line or editing
   // the prefix itself drops it, so it cannot come back later.
   const drafting = Boolean(
     prefilled && draft.trim().startsWith(prefilled.text.trim()),
   );
   if (prefilled && !drafting) setPrefilled(undefined);
+  else if (prefilled && !prefilled.edited && draft !== prefilled.text)
+    setPrefilled({ ...prefilled, edited: true });
+  const untouched =
+    Boolean(prefilled) && !prefilled?.edited && draft === prefilled?.text;
   const canPrefill =
     !action.busy && !voice && !request && (!draft || untouched);
 
@@ -93,7 +98,8 @@ export function useCommandBar(
   // Put the caret after the inserted prefix.
   useLayoutEffect(() => {
     const input = line.current;
-    if (!prefilled || input?.value !== prefilled.text) return;
+    if (!prefilled || prefilled.edited || input?.value !== prefilled.text)
+      return;
     input.setSelectionRange(prefilled.text.length, prefilled.text.length);
   }, [prefilled]);
 

@@ -19,6 +19,7 @@ import {
   rollUpRing,
   streamOrder,
   streamRows,
+  workspaceCalendar,
 } from "./derived-state.js";
 import type { Item } from "./workspace.js";
 
@@ -137,6 +138,86 @@ describe("radar time zoom", () => {
       ["Mar 2025", ["march"]],
     ]);
   });
+
+  // The text line's radar prefixes ("Acme later: ", "Acme Monday: ",
+  // "Acme May 2024: ") are scheduled by these dates; each must land in the
+  // ring and split group that was clicked.
+  it.each([
+    ["a Sunday", "2024-04-07T12:00:00Z"],
+    ["a Saturday", "2024-04-06T12:00:00Z"],
+    ["a Monday at the start of a month", "2024-04-01T12:00:00Z"],
+  ])(
+    "gives each ring and split group a first date inside it on %s",
+    (_, at) => {
+      const time = Date.parse(at);
+      const dates = workspaceCalendar(time, utc);
+      const ringOf = (scheduled_on: string) =>
+        radarBandsFor([item("x", { scheduled_on })], index([]), time, utc).get(
+          "x",
+        );
+      expect(ringOf(dates.today)).toBe("today");
+      expect(ringOf(dates.tomorrow)).toBe("this-week");
+      expect(ringOf(dates.laterStart)).toBe("later");
+      expect(ringOf(dates.dateAfter(-1))).toBe("today");
+
+      // A weekday names the first such date after today.
+      const weekday = new Intl.DateTimeFormat("en", {
+        weekday: "long",
+        timeZone: utc,
+      });
+      for (const { day } of radarSubgroups(
+        "this-week",
+        [],
+        index([]),
+        [],
+        time,
+        utc,
+      )) {
+        const named = weekday.format(Date.parse(day!));
+        const first = [1, 2, 3, 4, 5, 6, 7]
+          .map((offset) => dates.dateAfter(offset))
+          .find((date) => weekday.format(Date.parse(date)) === named)!;
+        expect(first).toBe(day);
+        expect(ringOf(first)).toBe("this-week");
+      }
+
+      // "Week of <date>" names its start; a month its first day, but no
+      // earlier than the month groups.
+      const months = Array.from({ length: 4 }, (_, index) =>
+        new Date(Date.parse(dates.laterMonths) + index * 31 * 864e5)
+          .toISOString()
+          .slice(0, 7),
+      );
+      const scheduled = months.map((month) =>
+        item(month, { scheduled_on: `${month}-15` }),
+      );
+      const groups = radarSubgroups(
+        "later",
+        scheduled,
+        index(scheduled),
+        [],
+        time,
+        utc,
+      );
+      for (const group of groups) {
+        const target = group.label.startsWith("Week of")
+          ? group.id
+          : [`${group.id}-01`, dates.laterMonths].sort().at(-1)!;
+        expect(ringOf(target)).toBe("later");
+        const probe = item("probe", { scheduled_on: target });
+        expect(
+          radarSubgroups(
+            "later",
+            [...scheduled, probe],
+            index([...scheduled, probe]),
+            [],
+            time,
+            utc,
+          ).find(({ itemIds }) => itemIds.includes("probe"))?.label,
+        ).toBe(group.label);
+      }
+    },
+  );
 
   it("groups Today by attention and orders Next by manual order then priority", () => {
     const items = [

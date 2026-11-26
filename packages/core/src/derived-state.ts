@@ -55,6 +55,8 @@ export function workspaceCalendar(now: number, timezone: string) {
     tomorrow: dateAfter(1),
     nextWeek: dateAfter(daysUntilMonday),
     laterStart: dateAfter(Math.max(2, daysUntilMonday)),
+    /** Where Later's month groups begin, after its four week groups. */
+    laterMonths: dateAfter(daysUntilMonday + 28),
     dateAfter,
     localDate,
     now,
@@ -290,7 +292,7 @@ export function radarSubgroups(
     timeZone: "UTC",
   });
   const nextMonday = Date.parse(dates.nextWeek);
-  const monthStart = new Date(nextMonday + 28 * DAY).toISOString().slice(0, 10);
+  const monthStart = dates.laterMonths;
   for (let week = 0; week < 4; week++) {
     const start =
       week === 0

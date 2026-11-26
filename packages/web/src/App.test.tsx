@@ -4192,6 +4192,30 @@ it("never replaces or clears a prefix the person has typed on", async () => {
   expect(draft.value).toBe("Zupaflow today: ");
 });
 
+it("keeps a prefix the person typed on after they delete back to it", async () => {
+  const { draft, radar, clickCell, container } = await openStartRadar();
+  const placeholder = () => container.querySelector(".radar-start-bubble");
+  clickCell(1, "backlog");
+  fireEvent.change(draft, { target: { value: "dig.vin backlog: F" } });
+  fireEvent.change(draft, { target: { value: "dig.vin backlog: " } });
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  fireEvent.click(radar.getByRole("button", { name: notes.title }));
+  fireEvent.click(radar.getByRole("button", { name: notes.title }));
+  clickCell(2, "today");
+  fireEvent.click(screen.getByRole("button", { name: "Hidden items" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  expect(draft.value).toBe("dig.vin backlog: ");
+  expect(placeholder()).not.toBeNull();
+
+  // Emptying the line ends it; the next prefix is untouched again.
+  fireEvent.change(draft, { target: { value: "" } });
+  expect(placeholder()).toBeNull();
+  clickCell(2, "today");
+  expect(draft.value).toBe("Zupaflow today: ");
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  expect(draft.value).toBe("");
+});
+
 it("prefills a split ring's day and an item's band, sending the item as context", async () => {
   const { draft, radar, svg, bodies } = await openStartRadar();
   fireEvent.click(radar.getByRole("button", { name: "This week" }));

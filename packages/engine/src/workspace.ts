@@ -1,7 +1,12 @@
 import type { VapidKeys } from "@block65/webcrypto-web-push";
 import { DurableObject } from "cloudflare:workers";
 import { z, type ZodType } from "zod";
-import { bandsFor, completionBand, isGhost } from "@heedwork/core";
+import {
+  bandsFor,
+  completionBand,
+  isGhost,
+  workspaceCalendar,
+} from "@heedwork/core";
 import type { CommandChange } from "@heedwork/core";
 import { commandTools, compactCanvas } from "./command-tools.js";
 import { workspaceTools } from "./workspace-tools.js";
@@ -661,9 +666,17 @@ export class Workspace<
           .toArray()[0]
       : undefined;
     const { tag_shapes } = this.getSettings();
+    const dates = workspaceCalendar(Date.now(), timezone);
     return {
       today: today({ now: new Date(), timezone }),
       timezone,
+      // The first day of each radar ring, for prefixes such as "Acme later: ".
+      radar_dates: {
+        today: dates.today,
+        this_week: dates.tomorrow,
+        later: dates.laterStart,
+        later_months: dates.laterMonths,
+      },
       ...(tag_shapes && { tag_shapes }),
       ...(selected && {
         selected_item: {
