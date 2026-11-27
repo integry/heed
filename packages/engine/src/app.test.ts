@@ -845,9 +845,9 @@ it("issues an expiring steer token for MCP and attributes its locked edits to th
   });
   const { secret, workspaceId } = tokenParts(token.access_token)!;
   expect(workspaceId).toBe(alpha);
-  expect(await workspace(alpha).listConnectedApps()).toMatchObject([
-    { client_name: "assistant", label: "assistant", scope: "steer" },
-  ]);
+  // The assistant grant is neither listed nor counted as a connected agent.
+  expect(await workspace(alpha).listConnectedApps()).toEqual([]);
+  expect(await workspace(alpha).countConnectedAgents()).toBe(0);
   expect(
     (await fetch(rpc(`heed_${beta}_${secret}`, "get_canvas"))).status,
   ).toBe(401);
