@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -308,6 +309,9 @@ function Workspace({
     connected === undefined ? undefined : Math.max(connected, liveCount);
   const focusedGoal = goalId && filtered.has(goalId) ? goalId : null;
   const lens = resolveLens(registry, lensId);
+  // A lens's new-item prefix does not outlive the lens.
+  const clearPrefill = useEffectEvent(() => command.clearPrefill());
+  useEffect(() => clearPrefill(), [lens.id]);
   const LensComponent = lens.component;
   const live = state.connection === "live";
   const dependencyError = dependencyEditGoal ? dependencyEdit.error : "";
@@ -1084,6 +1088,10 @@ function Workspace({
               }
               finishTargetsShown={setFinishTargetsShown}
               tagShapes={state.settings?.tag_shapes}
+              startItem={(prefix, parentId) =>
+                live && command.prefill(prefix, parentId)
+              }
+              startingItem={command.drafting}
             />
           </div>
           {dependencyError && showDependencyErrorInline && (

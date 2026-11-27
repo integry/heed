@@ -6,6 +6,7 @@ import {
   cellPoint,
   cellPosition,
   CENTER,
+  GOAL_RADIUS,
   layoutGoal,
   layoutRadar,
   polar,
@@ -17,6 +18,7 @@ import {
   radarViewport,
   readRadarPosition,
   seedPosition,
+  snapStart,
   targetCell,
   type Cell,
 } from "./radar-geometry";
@@ -314,4 +316,42 @@ it("wraps a long title onto three lines in a large bubble", async () => {
   ]);
   const fitted = bubbleLabel("Plan the quarterly review", null, null, 36, 1);
   expect(fitted.lines.join(" ")).toBe("Plan the quarterly review");
+});
+
+it("snaps a new item's placeholder so a default bubble fits inside its cell", () => {
+  const size = bubbleRadius(5);
+  const cell: Cell = { band: "later", sector: 2, sectors: 5 };
+  const inside = cellPoint(cell, { angle: 0.5, radius: 0.5 });
+  expect(snapStart(inside, cell)).toEqual({ point: inside, radius: size });
+
+  // Points at the ring and sector edges move inwards until the bubble fits.
+  for (const position of [
+    { angle: 0, radius: 0 },
+    { angle: 1, radius: 1 },
+    { angle: 0.02, radius: 0.5 },
+  ]) {
+    const { point, radius } = snapStart(cellPoint(cell, position), cell);
+    const from = Math.hypot(point.x - CENTER.x, point.y - CENTER.y);
+    expect(radius).toBe(size);
+    expect(from - radius).toBeGreaterThanOrEqual(177 - 1e-9);
+    expect(from + radius).toBeLessThanOrEqual(251 + 1e-9);
+    const angle = cellPosition(cell, point).angle;
+    const edge = Math.min(angle, 1 - angle) * ((2 * Math.PI) / 5) * from;
+    expect(edge).toBeGreaterThanOrEqual(radius - 1e-6);
+  }
+
+  // A thin wedge at the centre takes a smaller bubble that still fits.
+  const wedge: Cell = { band: "today", sector: 0, sectors: 12 };
+  const { point, radius } = snapStart(CENTER, wedge);
+  const from = Math.hypot(point.x - CENTER.x, point.y - CENTER.y);
+  expect(radius).toBeLessThan(size);
+  expect(from * Math.sin(Math.PI / 12)).toBeGreaterThanOrEqual(radius - 1e-6);
+  expect(from + radius).toBeLessThanOrEqual(103 + 1e-6);
+
+  // Inside an item the bubble stays within the item's circle.
+  const outside = { x: CENTER.x + 400, y: CENTER.y };
+  expect(snapStart(outside, null)).toEqual({
+    point: { x: CENTER.x + GOAL_RADIUS - size, y: CENTER.y },
+    radius: size,
+  });
 });

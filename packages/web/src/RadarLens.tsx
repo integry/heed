@@ -16,6 +16,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent,
   type PointerEvent,
 } from "react";
 import {
@@ -49,6 +50,7 @@ import {
   MIN_FIELD_SCALE,
   polar,
   priorityForRadius,
+  snapStart,
   RADAR_BANDS,
   RADAR_LABELS,
   RADAR_LABEL_FONT,
@@ -95,6 +97,20 @@ const FINISH_MESSAGE_MS = 8000;
 const GOAL_CHIP_HALF_HEIGHT = 18;
 
 const ignore = () => {};
+const weekday = new Intl.DateTimeFormat("en", {
+  weekday: "long",
+  timeZone: "UTC",
+});
+
+/** How a new item's prefix names a ring or sub-ring: "backlog", "Thursday". */
+function bandWords(band: RadarBand, group?: Subring) {
+  if (group?.day) return weekday.format(Date.parse(group.day));
+  // Later splits into weeks and months; Today and Backlog split by state and
+  // project, which are not times.
+  if (band === "later" && group && group.id !== "unassigned")
+    return group.label.replace(/^Week of/, "week of");
+  return RADAR_LABELS[band].toLowerCase();
+}
 const isOpen = (item: CanvasItem) =>
   item.status !== "done" && item.status !== "cancelled";
 
@@ -333,6 +349,8 @@ export function RadarLens({
   undoFinish,
   finishTargetsShown,
   tagShapes,
+  startItem,
+  startingItem,
 }: LensProps) {
   // Projects other than Inbox carry a colour and a badge on their bubbles.
   const identities = useMemo(
@@ -381,6 +399,12 @@ export function RadarLens({
   // A breadcrumb under the pointer while dragging inside an item: an item ID,
   // or "" for the top level.
   const [crumbTarget, setCrumbTarget] = useState<string | null>(null);
+  // The empty spot clicked to start a new item, and the prefix it gave.
+  const [start, setStart] = useState<{
+    point: Point;
+    text: string;
+    goalId: string | null;
+  } | null>(null);
   const arrowId = useId();
   const projects = useMemo(
     () => allProjects.filter(({ hidden }) => hidden === 0),
@@ -734,7 +758,7 @@ export function RadarLens({
     if (radarZoom) applyZoom(radarZoom.band);
   }, [radarZoom]);
 
-  function scenePoint(event: PointerEvent): Point {
+  function scenePoint(event: MouseEvent): Point {
     const matrix = layer.current?.getScreenCTM();
     return matrix
       ? new DOMPoint(event.clientX, event.clientY).matrixTransform(
@@ -833,8 +857,63 @@ export function RadarLens({
     return {
       cell: cell && group ? { ...cell, radial: group } : cell,
       day: group?.day,
+      group,
     };
   }
+
+  /** The text-line prefix that starts a new item at a point, if any. */
+  function startPrefix(point: Point) {
+    if (goal) {
+      if (distance(point, CENTER) > GOAL_RADIUS) return null;
+      const band = bandById.get(goal.item.id) ?? "backlog";
+      return {
+        text: `${goal.item.title} › ${bandWords(band)}: `,
+        parentId: goal.item.id,
+        projectId: goal.item.project_id,
+        cell: null,
+      };
+    }
+    const { cell, group } = dropTarget(point);
+    const project = cell && projects[cell.sector];
+    if (!cell || !project) return null;
+    return {
+      text: `${project.name} ${bandWords(cell.band, group)}: `,
+      parentId: undefined,
+      projectId: project.id,
+      cell,
+    };
+  }
+
+  /** Clicking empty sector and ring space starts a new item there. */
+  function startAt(event: MouseEvent<SVGSVGElement>) {
+    // A double click zooms; labels and bubbles keep their own meaning.
+    if (!startItem || !live || event.detail > 1 || drag.dragging()) return;
+    if (
+      event.target instanceof Element &&
+      event.target.closest("text, [data-canvas-drag], [role='button']")
+    )
+      return;
+    const point = scenePoint(event);
+    const prefix = startPrefix(point);
+    if (prefix && startItem(prefix.text, prefix.parentId))
+      setStart({ point, text: prefix.text, goalId: goal?.item.id ?? null });
+  }
+
+  /**
+   * The placeholder bubble for the item being started, while the text line
+   * still holds its prefix and the clicked spot still gives that prefix.
+   */
+  function startBubble() {
+    if (!startingItem || !start || preview) return null;
+    if ((goal?.item.id ?? null) !== start.goalId) return null;
+    const target = startPrefix(start.point);
+    if (target?.text !== start.text) return null;
+    return {
+      ...snapStart(start.point, target.cell),
+      color: identities.get(target.projectId)?.color,
+    };
+  }
+  const placeholder = startBubble();
 
   /** The breadcrumb under the pointer, as a parent ID ("" for the top level). */
   function crumbAt(event: PointerEvent): string | null {
@@ -1198,7 +1277,11 @@ export function RadarLens({
             }
           }}
           onPointerUp={release}
-          onClick={() => select(null)}
+          onClick={(event) => {
+            // With an item selected, the first click only deselects it.
+            if (selectedId === null) startAt(event);
+            select(null);
+          }}
         >
           <defs>
             <marker
@@ -1279,6 +1362,16 @@ export function RadarLens({
                 showLabels={viewport.scale >= MIN_FIELD_SCALE}
                 edges={edges}
                 subrings={subrings}
+              />
+            )}
+            {placeholder && (
+              <circle
+                aria-hidden="true"
+                className="radar-start-bubble"
+                data-project={placeholder.color}
+                cx={placeholder.point.x}
+                cy={placeholder.point.y}
+                r={placeholder.radius}
               />
             )}
             {nestCandidate && (

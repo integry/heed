@@ -167,6 +167,52 @@ export const bubbleRadius = (priority: number) =>
 export const priorityForRadius = (radius: number) =>
   clamp(Math.round((radius - MIN_RADIUS) / RADIUS_STEP) + 1, 1, 10);
 
+/** New items start at priority 5, as the command model adds them. */
+const NEW_ITEM_RADIUS = bubbleRadius(5);
+
+/**
+ * Where a new item's placeholder bubble sits for a click: the clicked point,
+ * moved just enough for a default-size bubble to fit inside the cell (or,
+ * inside an item, inside the item's circle).
+ */
+export function snapStart(point: Point, cell: Cell | null) {
+  const dx = point.x - CENTER.x;
+  const dy = point.y - CENTER.y;
+  const length = Math.hypot(dx, dy);
+  if (!cell) {
+    const reach = Math.min(length, GOAL_RADIUS - NEW_ITEM_RADIUS);
+    return {
+      point: length
+        ? {
+            x: CENTER.x + (dx / length) * reach,
+            y: CENTER.y + (dy / length) * reach,
+          }
+        : CENTER,
+      radius: NEW_ITEM_RADIUS,
+    };
+  }
+  const { inner, outer, start, span } = cellBounds(cell);
+  const whole = span > 2 * Math.PI - 1e-6;
+  const sine = whole || span >= Math.PI ? 1 : Math.sin(span / 2);
+  // A narrow ring or a thin wedge near the centre takes a smaller bubble.
+  const radius = Math.min(
+    NEW_ITEM_RADIUS,
+    (outer - inner) / 2,
+    (outer * sine) / (1 + sine),
+  );
+  const reach = clamp(
+    length,
+    Math.max(inner + radius, whole ? 0 : radius / sine),
+    outer - radius,
+  );
+  const fraction = cellPosition(cell, point).angle;
+  const margin = whole
+    ? 0
+    : Math.min(0.5, Math.asin(Math.min(1, radius / reach)) / span);
+  const angle = start + span * clamp(fraction, margin, 1 - margin);
+  return { point: polar(angle, reach), radius };
+}
+
 export function radarViewport(width: number, height: number, goal: boolean) {
   const side = Math.min(width, height);
   const padding = Math.min(25, side / 8);

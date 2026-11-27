@@ -1,5 +1,5 @@
 import { useApi } from "./api";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { COMMAND_TEXT_LIMIT, VOICE_SECONDS } from "@heedwork/core";
 import type { CommandResult } from "@heedwork/core";
 import { voiceAvailable, voiceTranscript } from "./command-voice";
@@ -42,6 +42,7 @@ export function useCommandBar(
     original: string;
     replies: string[];
     question: string;
+    prefix?: { text: string; parentId?: string };
   }>();
   const [clarificationTooLong, setClarificationTooLong] = useState(false);
   const [previous, setPrevious] = useState<{
@@ -57,6 +58,79 @@ export function useCommandBar(
   } | null>(null);
   const action = useAction();
   const [undoing, setUndoing] = useState(false);
+  // Text a lens put in the line to start an item ("Acme backlog: "). Until the
+  // draft first differs from it, it can be replaced or removed; after that the
+  // draft is the person's, even if they delete back to the prefix.
+  // `parentId` goes with the request as its context.
+  const [prefilled, setPrefilled] = useState<{
+    text: string;
+    parentId?: string;
+    edited?: boolean;
+    /** Set once the draft is sent; the context stays for a retry. */
+    submitted?: boolean;
+  }>();
+  // Typing after the prefix keeps it in force; emptying the line or editing
+  // the prefix itself drops it, so it cannot come back later.
+  const inForce = Boolean(
+    prefilled && draft.trim().startsWith(prefilled.text.trim()),
+  );
+  // Sending ends the drafting, even before the response arrives or if the
+  // request fails and the draft stays for another try.
+  const drafting = inForce && !prefilled?.submitted;
+  if (prefilled && !inForce) setPrefilled(undefined);
+  else if (prefilled && !prefilled.edited && draft !== prefilled.text)
+    setPrefilled({ ...prefilled, edited: true });
+  const untouched =
+    Boolean(prefilled) && !prefilled?.edited && draft === prefilled?.text;
+  const canPrefill =
+    !action.busy && !voice && !request && (!draft || untouched);
+
+  function prefill(text: string, parentId?: string) {
+    if (!canPrefill) return false;
+    setDraft(text);
+    setPrefilled({ text, parentId });
+    // Focus within the click, so phones open the keyboard.
+    line.current?.focus({ preventScroll: true });
+    return true;
+  }
+
+  function clearPrefill() {
+    if (!untouched) return;
+    setDraft("");
+    setPrefilled(undefined);
+  }
+
+  // Put the caret after the inserted prefix.
+  useLayoutEffect(() => {
+    const input = line.current;
+    if (!prefilled || prefilled.edited || input?.value !== prefilled.text)
+      return;
+    input.setSelectionRange(prefilled.text.length, prefilled.text.length);
+  }, [prefilled]);
+
+  // An untouched prefix goes away when the person clicks anything other than
+  // the text line, or presses Escape. A lens that prefills again on the same
+  // click runs after this capture listener and replaces it.
+  useEffect(() => {
+    if (!untouched) return;
+    function onClick(event: MouseEvent) {
+      const form = line.current?.form;
+      if (event.target instanceof Node && form?.contains(event.target)) return;
+      setDraft("");
+      setPrefilled(undefined);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape" || event.isComposing) return;
+      setDraft("");
+      setPrefilled(undefined);
+    }
+    document.addEventListener("click", onClick, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("click", onClick, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [untouched]);
 
   useEffect(
     () => () => {
@@ -121,6 +195,15 @@ export function useCommandBar(
   function submit(value = draft) {
     const input = value.trim();
     if (!input || voice || action.busy) return;
+    // A prefix from the radar carries its own context: a goal, or none. A
+    // clarification round keeps the context of the request it answers.
+    const prefix =
+      request?.prefix ??
+      (prefilled && input.startsWith(prefilled.text.trim())
+        ? prefilled
+        : undefined);
+    if (prefilled && !prefilled.submitted)
+      setPrefilled({ ...prefilled, submitted: true });
     void action.run(async () => {
       setClarificationTooLong(false);
       setVoiceError("");
@@ -128,6 +211,7 @@ export function useCommandBar(
         const local = await execute(input);
         if (local !== undefined) {
           setDraft("");
+          setPrefilled(undefined);
           setSummary(local);
           return;
         }
@@ -153,7 +237,7 @@ export function useCommandBar(
         !request && previous && Date.now() - previous.at < CORRECTION_WINDOW_MS
           ? previous
           : undefined;
-      const selected = selectedItemId?.();
+      const selected = prefix ? prefix.parentId : selectedItemId?.();
       const result = await postJson<CommandResult>("/api/command", {
         text,
         ...(selected && { selected_item_id: selected }),
@@ -176,6 +260,7 @@ export function useCommandBar(
             },
       );
       setDraft("");
+      setPrefilled(undefined);
       setSummary(
         result.refusal && !result.summary.includes(result.refusal.message)
           ? `${result.summary} ${result.refusal.message}`
@@ -183,7 +268,7 @@ export function useCommandBar(
       );
       setRequest(
         result.needsClarification
-          ? { original, replies, question: result.summary }
+          ? { original, replies, question: result.summary, prefix }
           : undefined,
       );
       if (result.changes.length) setUndoId(result.undoId);
@@ -232,6 +317,12 @@ export function useCommandBar(
     stopVoice,
     cancelVoice,
     newCommand,
+    prefill,
+    clearPrefill,
+    /** Whether a prefix is in the line and the person has not edited it. */
+    prefilled: untouched,
+    /** Whether the line still starts with the prefix, edited or not. */
+    drafting,
     submit,
     undo,
     microphone: voiceAvailable(transcription),
