@@ -4543,6 +4543,56 @@ it("draws a placeholder bubble where the new item will go until it is sent or dr
   expect(placeholder()).toBeNull();
 });
 
+it("removes the placeholder bubble as soon as the draft is sent", async () => {
+  const { draft, clickCell, container, bodies } = await openStartRadar();
+  const placeholder = () => container.querySelector(".radar-start-bubble");
+  const responses: ((response: Response) => void)[] = [];
+  const answer = fetchSession.getMockImplementation()!;
+  fetchSession.mockImplementation(
+    async (path: string, options?: RequestInit) => {
+      if (path !== "/api/command") return answer(path, options);
+      bodies.push(JSON.parse(String(options?.body)));
+      return new Promise<Response>((resolve) => responses.push(resolve));
+    },
+  );
+
+  clickCell(1, "backlog");
+  fireEvent.change(draft, { target: { value: "dig.vin backlog: Fix menu" } });
+  expect(placeholder()).not.toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  // Gone while the command is still pending, with the draft kept.
+  expect(placeholder()).toBeNull();
+  await waitFor(() => expect(responses).toHaveLength(1));
+  expect(placeholder()).toBeNull();
+  expect(draft.value).toBe("dig.vin backlog: Fix menu");
+
+  // A failed request keeps the draft for another try but not the bubble.
+  await act(async () => {
+    responses[0](Response.json({ error: "Unavailable" }, { status: 503 }));
+  });
+  await waitFor(() =>
+    expect(
+      screen.getByRole<HTMLButtonElement>("button", { name: "Send" }).disabled,
+    ).toBe(false),
+  );
+  expect(draft.value).toBe("dig.vin backlog: Fix menu");
+  expect(placeholder()).toBeNull();
+
+  // The retry keeps the prefix's context (the top level, not a selection).
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(responses).toHaveLength(2));
+  expect(placeholder()).toBeNull();
+  await act(async () => {
+    responses[1](Response.json({ summary: "Added.", changes: [] }));
+  });
+  await waitFor(() => expect(draft.value).toBe(""));
+  expect(bodies).toEqual([
+    { text: "dig.vin backlog: Fix menu" },
+    { text: "dig.vin backlog: Fix menu" },
+  ]);
+  expect(placeholder()).toBeNull();
+});
+
 it("removes the placeholder bubble when the lens changes", async () => {
   const { draft, clickCell, container } = await openStartRadar();
   clickCell(1, "later");

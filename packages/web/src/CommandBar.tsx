@@ -66,13 +66,18 @@ export function useCommandBar(
     text: string;
     parentId?: string;
     edited?: boolean;
+    /** Set once the draft is sent; the context stays for a retry. */
+    submitted?: boolean;
   }>();
   // Typing after the prefix keeps it in force; emptying the line or editing
   // the prefix itself drops it, so it cannot come back later.
-  const drafting = Boolean(
+  const inForce = Boolean(
     prefilled && draft.trim().startsWith(prefilled.text.trim()),
   );
-  if (prefilled && !drafting) setPrefilled(undefined);
+  // Sending ends the drafting, even before the response arrives or if the
+  // request fails and the draft stays for another try.
+  const drafting = inForce && !prefilled?.submitted;
+  if (prefilled && !inForce) setPrefilled(undefined);
   else if (prefilled && !prefilled.edited && draft !== prefilled.text)
     setPrefilled({ ...prefilled, edited: true });
   const untouched =
@@ -197,6 +202,8 @@ export function useCommandBar(
       (prefilled && input.startsWith(prefilled.text.trim())
         ? prefilled
         : undefined);
+    if (prefilled && !prefilled.submitted)
+      setPrefilled({ ...prefilled, submitted: true });
     void action.run(async () => {
       setClarificationTooLong(false);
       setVoiceError("");
