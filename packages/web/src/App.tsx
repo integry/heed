@@ -224,7 +224,16 @@ function Workspace({
     null,
   );
   const dependencyEdit = useAction();
-  const [showGhosts, setShowGhosts] = useState(true);
+  // Completed items leave the radar unless the person asks to keep them as ghosts.
+  const [showGhosts, setShowGhostsState] = useState(readShowGhosts);
+  const setShowGhosts = (show: boolean) => {
+    setShowGhostsState(show);
+    try {
+      localStorage.setItem(SHOW_GHOSTS_KEY, String(show));
+    } catch {
+      // The choice lasts for this visit without browser storage.
+    }
+  };
   const [activePanel, setActivePanel] = useState<PanelState | null>(null);
   const panel = activePanel?.kind;
   const [radarZoom, setRadarZoom] = useState<{ band: RadarBand | null }>();
@@ -1322,6 +1331,16 @@ function Workspace({
       )}
     </div>
   );
+}
+
+const SHOW_GHOSTS_KEY = "heed.showGhosts";
+
+function readShowGhosts() {
+  try {
+    return localStorage.getItem(SHOW_GHOSTS_KEY) === "true";
+  } catch {
+    return false;
+  }
 }
 
 export function App({
