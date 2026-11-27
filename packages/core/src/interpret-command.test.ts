@@ -96,6 +96,20 @@ describe("interpretCommand", () => {
         input: { label: "Claude Code", scope: "report" },
       },
     ],
+    [
+      "create a token for my CI bot",
+      {
+        type: "CREATE_TOKEN",
+        input: { label: "CI bot", scope: "report" },
+      },
+    ],
+    [
+      "make a steer token for Deploy bot",
+      {
+        type: "CREATE_TOKEN",
+        input: { label: "Deploy bot", scope: "steer" },
+      },
+    ],
   ])("interprets %s", (command, mutation) => {
     expect(interpretCommand(command, context)).toMatchObject({
       type: "mutate",
@@ -105,6 +119,7 @@ describe("interpretCommand", () => {
 
   it.each([
     ["new steer token", { type: "token-label", scope: "steer" }],
+    ["create a token", { type: "token-label", scope: "report" }],
     [
       'new steer token in "Ops for Release"',
       {

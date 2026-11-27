@@ -40,6 +40,7 @@ import {
   TokenSecret,
 } from "./CommandPanels";
 import { QuestionBubble } from "./QuestionBubble";
+import { AgentsPanel } from "./AgentsPanel";
 import { ItemActivity } from "./ItemActivity";
 import { EnableNotifications, runPushCommand } from "./push-commands";
 import { lensRegistry, resolveLens, type Lens } from "./lenses";
@@ -60,7 +61,14 @@ import { selectWorkspace } from "./workspace-view";
 
 type PanelState =
   | {
-      kind: "guidance" | "host" | "history" | "hidden" | "judge" | "push";
+      kind:
+        | "agents"
+        | "guidance"
+        | "host"
+        | "history"
+        | "hidden"
+        | "judge"
+        | "push";
     }
   | {
       kind: "token-label";
@@ -993,7 +1001,12 @@ function Workspace({
           </div>
         </details>
         <div className="attention-meta">
-          <span>
+          <button
+            className="text-control agents-button"
+            type="button"
+            aria-haspopup="dialog"
+            onClick={() => setActivePanel({ kind: "agents" })}
+          >
             <span
               className="agent-dot"
               data-live={live && liveCount > 0}
@@ -1003,8 +1016,10 @@ function Workspace({
             </span>{" "}
             {connectedCount === undefined
               ? `${liveCount} ${liveCount === 1 ? "agent" : "agents"} working`
-              : `${connectedCount} ${connectedCount === 1 ? "agent" : "agents"} connected · ${liveCount} working`}
-          </span>
+              : connectedCount === 0
+                ? "Connect an agent"
+                : `${connectedCount} ${connectedCount === 1 ? "agent" : "agents"} connected · ${liveCount} working`}
+          </button>
           <time>{date}</time>
         </div>
       </header>
@@ -1177,6 +1192,17 @@ function Workspace({
         />
       </footer>
 
+      {panel === "agents" && (
+        <AgentsPanel
+          close={closePanel}
+          showConnections={!options?.hideScreens?.includes("tokens")}
+          items={view.items}
+          agentsConnected={connected}
+          now={now}
+          live={live}
+          save={connection.save}
+        />
+      )}
       {panel === "hidden" && (
         <Panel title="Hidden items" close={closePanel}>
           {hiddenItems.length === 0 ? (

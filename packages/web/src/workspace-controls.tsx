@@ -70,7 +70,7 @@ export function Panel({
   );
 }
 
-function parseInstant(value: string) {
+export function parseInstant(value: string) {
   return Date.parse(
     value.includes(" ") ? value.replace(" ", "T") + "Z" : value,
   );

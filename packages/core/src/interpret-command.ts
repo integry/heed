@@ -274,7 +274,7 @@ export function interpretCommand(
     );
   if (
     (match =
-      /^new (?:(report|steer) )?token(?:\?|(?: in ("[^"]+"|[^"].*?))?(?: for (.+))?)$/i.exec(
+      /^(?:new|(?:create|make) an?) (?:(report|steer) )?token(?:\?|(?: in ("[^"]+"|[^"].*?))?(?: for (?:my )?(.+))?)$/i.exec(
         text,
       ))
   ) {

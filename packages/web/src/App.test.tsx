@@ -4605,3 +4605,222 @@ it("removes the placeholder bubble when the lens changes", async () => {
   expect(draft.value).toBe("");
   expect(container.querySelector(".radar-start-bubble")).toBeNull();
 });
+
+const agentTokens = [
+  {
+    id: "token-ci",
+    label: "CI bot",
+    scope: "report",
+    default_project_id: null,
+    last_used_at: null,
+    created_at: "2024-04-01 09:00:00",
+  },
+  {
+    id: "token-nightly",
+    label: "Nightly",
+    scope: "steer",
+    default_project_id: null,
+    last_used_at: "2024-04-03 10:00:00",
+    created_at: "2024-04-01 09:00:00",
+  },
+];
+const agentApps = [
+  {
+    id: "grant-docs",
+    label: "Docs",
+    client_name: "Cursor",
+    scope: "steer",
+    last_used_at: "2024-04-01 12:00:00",
+  },
+  {
+    id: "grant-build",
+    label: "build agent",
+    client_name: "Claude Code",
+    scope: "report",
+    last_used_at: "2024-04-03 11:30:00",
+  },
+];
+
+function agentsApi(path: string) {
+  if (path === "/api/tokens") return Response.json(agentTokens);
+  if (path === "/api/connected-apps") return Response.json(agentApps);
+  return Response.json([]);
+}
+
+async function openAgents(agents_connected: number | undefined = 4) {
+  await openWorkspace(
+    undefined,
+    {
+      ...snapshot,
+      settings: { ...snapshot.settings, agents_connected },
+      items: [
+        {
+          ...goal,
+          status: "active",
+          agent_name: "Build agent",
+          last_heartbeat_at: "2024-04-03T11:59:30Z",
+        },
+        child,
+        tomorrow,
+      ],
+    },
+    agentsApi,
+  );
+  const header = screen.getByRole("banner");
+  fireEvent.click(within(header).getByRole("button", { name: /agent/i }));
+  return within(screen.getByRole("dialog", { name: "Agents" }));
+}
+
+it("opens the Agents panel from the header's connected count", async () => {
+  const panel = await openAgents(4);
+  expect(
+    screen.getByRole("button", { name: /4 agents connected · 1 working/ }),
+  ).toBeTruthy();
+  expect(panel.getByRole("heading", { name: "Agents" })).toBeTruthy();
+  fireEvent.click(panel.getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog", { name: "Agents" })).toBeNull();
+});
+
+it.each([
+  [0, "Connect an agent"],
+  [undefined, "0 agents working"],
+])(
+  "labels the header for %s connected agents",
+  async (agents_connected, text) => {
+    await openWorkspace(undefined, {
+      ...snapshot,
+      settings: { ...snapshot.settings, agents_connected },
+    });
+    const header = within(screen.getByRole("banner"));
+    fireEvent.click(header.getByRole("button", { name: new RegExp(text) }));
+    expect(screen.getByRole("dialog", { name: "Agents" })).toBeTruthy();
+  },
+);
+
+it("merges tokens and connected apps with working agents first", async () => {
+  const panel = await openAgents();
+  expect(
+    await panel.findByRole("heading", { name: "Connected · 4" }),
+  ).toBeTruthy();
+  const rows = panel
+    .getAllByRole("listitem")
+    .filter((row) => row.classList.contains("agent-row"));
+  expect(rows.map((row) => row.querySelector("strong")?.textContent)).toEqual([
+    "build agent",
+    "Nightly",
+    "Docs",
+    "CI bot",
+  ]);
+  expect(rows.map((row) => row.dataset.working)).toEqual([
+    "true",
+    "false",
+    "false",
+    "false",
+  ]);
+  expect(rows[0].textContent).toContain(`Working on ${goal.title}`);
+  expect(rows[0].textContent).toContain("Signed in · Claude Code");
+  expect(rows[0].textContent).toContain("Report");
+  expect(rows[1].textContent).toContain("Last seen 2 h ago");
+  expect(rows[1].textContent).toContain("Token");
+  expect(rows[1].textContent).toContain("Steer");
+  expect(rows[2].textContent).toContain("Last seen 2 d ago");
+  expect(rows[3].textContent).toContain("Never used");
+});
+
+it.each([
+  ["Nightly", { type: "REVOKE_TOKEN", input: { token_id: "token-nightly" } }],
+  ["Docs", { type: "REVOKE_CONNECTED_APP", input: { grant_id: "grant-docs" } }],
+])("asks inline before disconnecting %s", async (label, mutation) => {
+  const panel = await openAgents();
+  fireEvent.click(
+    await panel.findByRole("button", { name: `Disconnect ${label}` }),
+  );
+  expect(panel.getByText(`Disconnect ${label}?`)).toBeTruthy();
+  fireEvent.click(panel.getByRole("button", { name: "No" }));
+  expect(panel.queryByText(`Disconnect ${label}?`)).toBeNull();
+  const socket = TestSocket.current;
+  const sent = socket.send.mock.calls.length;
+  fireEvent.click(panel.getByRole("button", { name: `Disconnect ${label}` }));
+  expect(socket.send.mock.calls.length).toBe(sent);
+  const fetches = fetchSession.mock.calls.length;
+  fireEvent.click(panel.getByRole("button", { name: "Yes" }));
+  expect(socket.latestRequest()).toMatchObject(mutation);
+  await act(async () =>
+    socket.receive({
+      type: "ACK",
+      seq: 2,
+      requestId: socket.latestRequest().requestId,
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      fetchSession.mock.calls.slice(fetches).map(([path]) => path),
+    ).toEqual(expect.arrayContaining(["/api/tokens", "/api/connected-apps"])),
+  );
+});
+
+it("fills this workspace's MCP address into each client's setup tab", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  const url = `${window.location.origin}/mcp`;
+  let panel = await openAgents();
+  const snippets = () =>
+    Array.from(
+      panel.getByRole("tabpanel").querySelectorAll("pre"),
+      (pre) => pre.textContent,
+    );
+  expect(
+    panel.getByRole("tab", { name: "Claude Code", selected: true }),
+  ).toBeTruthy();
+  expect(snippets()).toEqual([`claude mcp add --transport http heed ${url}`]);
+  fireEvent.click(panel.getByRole("button", { name: "Copy" }));
+  expect(writeText).toHaveBeenCalledWith(
+    `claude mcp add --transport http heed ${url}`,
+  );
+  expect(await panel.findByRole("button", { name: "Copied" })).toBeTruthy();
+
+  fireEvent.click(panel.getByRole("tab", { name: "Cursor" }));
+  expect(JSON.parse(snippets()[0]!)).toEqual({
+    mcpServers: { heed: { url } },
+  });
+  fireEvent.click(panel.getByRole("tab", { name: "Other" }));
+  expect(snippets()).toEqual([url]);
+  expect(panel.getByRole("tabpanel").textContent).toContain(
+    "ask for a token below",
+  );
+  fireEvent.click(panel.getByRole("tab", { name: "Codex" }));
+  expect(snippets()).toEqual([`[mcp_servers.heed]\nurl = "${url}"`]);
+
+  fireEvent.click(panel.getByRole("button", { name: "Close" }));
+  fireEvent.click(
+    within(screen.getByRole("banner")).getByRole("button", { name: /agent/ }),
+  );
+  panel = within(screen.getByRole("dialog", { name: "Agents" }));
+  expect(
+    panel.getByRole("tab", { name: "Codex", selected: true }),
+  ).toBeTruthy();
+  expect(panel.getByText("create a token for my CI bot")).toBeTruthy();
+});
+
+it("shows only connection instructions when the host hides tokens", async () => {
+  fetchSession.mockImplementation(async (path: string) =>
+    path === "/api/me"
+      ? Response.json({ email: "user@example.test", workspaceId: "default" })
+      : agentsApi(path),
+  );
+  mountHost({ hideScreens: ["tokens"] });
+  await screen.findByRole("banner");
+  TestSocket.current.receive({
+    ...snapshot,
+    settings: { ...snapshot.settings, agents_connected: 2 },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: /2 agents connected · 0 working/ }),
+  );
+  const panel = within(screen.getByRole("dialog", { name: "Agents" }));
+  expect(panel.getByRole("heading", { name: "Connect an agent" })).toBeTruthy();
+  expect(panel.queryByRole("heading", { name: /Connected/ })).toBeNull();
+  expect(panel.queryByRole("heading", { name: "Or ask" })).toBeNull();
+  expect(panel.queryByText(/appears in the list above/)).toBeNull();
+  expect(fetchSession.mock.calls.map(([path]) => path)).toEqual(["/api/me"]);
+});

@@ -310,12 +310,14 @@ export class OAuthStorage {
     );
   }
 
+  /** Lists consented apps with unexpired access, matching the connected-agent count. */
   list(): ConnectedApp[] {
     return this.storage.sql
       .exec<ConnectedApp>(
         `SELECT t.id, g.client_name, t.label, t.scope, t.last_used_at
         FROM tokens t JOIN oauth_grants g ON g.id = t.id
-        WHERE COALESCE(g.refresh_expires_at, g.access_expires_at, g.code_expires_at) > ?
+        WHERE g.assistant_user IS NULL AND g.access_expires_at IS NOT NULL
+          AND COALESCE(g.refresh_expires_at, g.access_expires_at) > ?
         ORDER BY t.created_at, t.id`,
         Date.now(),
       )
