@@ -1,5 +1,5 @@
 import { nestProblem, nestTarget } from "./radar-nesting";
-import { shapeTop } from "./radar-shapes";
+import { shapeContains, shapeTop } from "./radar-shapes";
 import {
   INBOX_PROJECT_ID,
   itemShape,
@@ -832,8 +832,14 @@ export function RadarLens({
         next: {
           id: active.id,
           point,
-          // Released inside its original outline, a move is cancelled.
-          home: distance(cursor, active.origin) <= active.radius,
+          // Released inside its original outline, a move is cancelled. The
+          // test uses the outline as drawn: the bubble's shape, centre, and size.
+          home: shapeContains(
+            itemShape(readTags(bubble.item.tags), tagShapes),
+            bubble.radius,
+            cursor.x - bubble.point.x,
+            cursor.y - bubble.point.y,
+          ),
           touch: active.touch,
         },
       };

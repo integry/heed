@@ -52,3 +52,39 @@ export function shapeTop(shape: ItemShape, r: number): number {
       return r;
   }
 }
+
+/**
+ * Whether an offset `(dx, dy)` from the centre falls inside the outline that
+ * `shapePath(shape, r)` draws, so hit tests agree with what is on screen.
+ */
+export function shapeContains(
+  shape: ItemShape,
+  r: number,
+  dx: number,
+  dy: number,
+): boolean {
+  const x = Math.abs(dx);
+  const y = Math.abs(dy);
+  switch (shape) {
+    case "square": {
+      const h = round(r * SQUARE_HALF);
+      if (x > h || y > h) return false;
+      const c = round(h * 0.22);
+      if (c <= 0 || x <= h - c || y <= h - c) return true;
+      // Each corner is a quadratic curve with its control point on the corner;
+      // in corner units its points satisfy √(1 − a) + √(1 − b) = 1.
+      const a = (x - (h - c)) / c;
+      const b = (y - (h - c)) / c;
+      return Math.sqrt(1 - a) + Math.sqrt(1 - b) >= 1;
+    }
+    case "diamond":
+      return x + y <= round(r * DIAMOND_TIP);
+    case "hexagon": {
+      // Pointy top: flat sides at ±R√3/2, slanted edges through the tips.
+      const R = r * HEXAGON_TIP;
+      return x <= (R * Math.sqrt(3)) / 2 && y + x / Math.sqrt(3) <= R;
+    }
+    default:
+      return Math.hypot(x, y) <= r;
+  }
+}

@@ -2479,6 +2479,42 @@ it("writes nothing when a moved bubble is dropped back on its origin", async () 
   expect(document.querySelector(".radar-tooltip")).toBeNull();
 });
 
+it("cancels a move only inside the origin outline as drawn, not its circle", async () => {
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: snapshot.items.map((item) =>
+      item.id === goal.id ? { ...item, tags: '["ops"]' } : item,
+    ),
+    settings: { ...snapshot.settings, tag_shapes: { ops: "square" } },
+  });
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  const bubble = radar.getByRole("button", { name: goal.title });
+  const start = bubblePoint(bubble);
+  const drag = startRadarFinishDrag(bubble);
+  drag.move(
+    cellPoint(
+      { band: "backlog", sector: 0, sectors: 1 },
+      { angle: 0.5, radius: 0.5 },
+    ),
+  );
+  const outline = document.querySelector<SVGGElement>(".radar-origin")!;
+  const marker = outline.querySelector("path")!;
+  // The square's half-width: its top edge starts at (0, -h).
+  const h = -Number(marker.getAttribute("d")!.split(" ")[2]);
+  const r = h / (Math.sqrt(Math.PI) / 2);
+  // Within the circle of equal area but outside the drawn square.
+  const outside = { x: start.x + 0.95 * r, y: start.y };
+  drag.move(outside);
+  expect(outline.dataset.target).toBe("false");
+  // Near a corner: outside that circle but inside the square.
+  const corner = { x: start.x + 0.8 * r, y: start.y - 0.8 * r };
+  drag.move(corner);
+  expect(outline.dataset.target).toBe("true");
+  drag.release(corner);
+  expect(TestSocket.current.send).not.toHaveBeenCalled();
+  expect(document.querySelector(".radar-origin")).toBeNull();
+});
+
 it("cancels a priority resize with Escape", async () => {
   await openWorkspace();
   const radar = within(screen.getByRole("region", { name: "Attention field" }));
