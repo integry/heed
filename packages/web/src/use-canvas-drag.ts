@@ -3,7 +3,15 @@ import { useCallback, useEffect, useRef, type PointerEvent } from "react";
 const holdTime = 420;
 const moveThreshold = 5;
 
-export function useCanvasDrag<Data>(clearPreview: () => void) {
+/**
+ * A press-and-drag gesture on a canvas. While a drag is in progress, Escape
+ * cancels it: nothing is dropped, `clearPreview` resets the view, the release
+ * that follows is ignored and does not count as a click, and `onEscape` runs.
+ */
+export function useCanvasDrag<Data>(
+  clearPreview: () => void,
+  onEscape?: () => void,
+) {
   const pointer = useRef<{
     id: number;
     x: number;
@@ -17,10 +25,22 @@ export function useCanvasDrag<Data>(clearPreview: () => void) {
   // The element holding pointer capture, when it is not the pressed element.
   const captured = useRef<Element | null>(null);
   const suppressClick = useRef(false);
+  const escapeListener = useRef<((event: KeyboardEvent) => void) | null>(null);
+  const onEscapeRef = useRef(onEscape);
+  useEffect(() => {
+    onEscapeRef.current = onEscape;
+  });
+
+  function stopListening() {
+    if (!escapeListener.current) return;
+    window.removeEventListener("keydown", escapeListener.current, true);
+    escapeListener.current = null;
+  }
 
   const cancel = useCallback(() => {
     clearTimeout(hold.current);
     hold.current = undefined;
+    stopListening();
     if (pointer.current?.moved || pointer.current?.armed)
       suppressClick.current = true;
     pointer.current = null;
@@ -28,7 +48,18 @@ export function useCanvasDrag<Data>(clearPreview: () => void) {
     clearPreview();
   }, [clearPreview]);
 
-  useEffect(() => () => clearTimeout(hold.current), []);
+  const cancelRef = useRef(cancel);
+  useEffect(() => {
+    cancelRef.current = cancel;
+  });
+
+  useEffect(
+    () => () => {
+      clearTimeout(hold.current);
+      stopListening();
+    },
+    [],
+  );
 
   /** Moves capture to the gesture's stable element once it is a drag. */
   function transferCapture(current: { id: number; captureTarget?: Element }) {
@@ -62,6 +93,19 @@ export function useCanvasDrag<Data>(clearPreview: () => void) {
       };
       pointer.current = current;
       captured.current = null;
+      stopListening();
+      // Capture phase on window, so the canvas's and the page's own Escape
+      // handling (closing a split band, the inspector, panels) never sees it.
+      const listener = (key: KeyboardEvent) => {
+        if (key.key !== "Escape" || pointer.current !== current) return;
+        if (!current.armed && !current.moved) return;
+        key.preventDefault();
+        key.stopImmediatePropagation();
+        cancelRef.current();
+        onEscapeRef.current?.();
+      };
+      escapeListener.current = listener;
+      window.addEventListener("keydown", listener, true);
       // Touch pointers already have implicit capture. Preserve native tap targets.
       if (event.pointerType === "touch") {
         hold.current = setTimeout(() => {

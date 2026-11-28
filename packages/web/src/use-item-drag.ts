@@ -51,6 +51,24 @@ export function useItemDrag<Slot extends DropSlot & { project?: string }>(
 
   useEffect(() => () => cancelAnimationFrame(frame.current), []);
 
+  // Escape cancels a drag in progress: nothing drops, and the release that
+  // follows is ignored. Capture phase on window, so no other Escape handling
+  // (panels, the inspector) also reacts.
+  const dragging = drag !== null;
+  useEffect(() => {
+    if (!dragging) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "Escape" || !pointer.current?.moving) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      pointer.current = null;
+      cancelAnimationFrame(frame.current);
+      setDrag(null);
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [dragging]);
+
   function startDrag(event: PointerEvent<HTMLButtonElement>, id: string) {
     if (event.button !== 0 || pointer.current || !live) return;
     event.currentTarget.setPointerCapture(event.pointerId);
