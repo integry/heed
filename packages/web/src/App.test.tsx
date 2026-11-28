@@ -2162,7 +2162,8 @@ it("shows the finish targets while an open item is selected or a bubble is moved
   // Dragging another, unselected bubble retargets them to that bubble.
   const bubble = radar.getByRole("button", { name: tomorrow.title });
   const drag = startRadarFinishDrag(bubble);
-  const inside = { x: CENTER.x + 40, y: CENTER.y };
+  // Clear of its own origin outline, so the release is a real move.
+  const inside = { x: CENTER.x + 40, y: CENTER.y + 120 };
   drag.move(inside);
   expect(finishTarget("done")!.textContent).toBe("✓Done");
   expect(finishTarget("cancelled")!.textContent).toBe("⊘Won't do");
@@ -2337,6 +2338,216 @@ it("keeps today's radar drop when the bubble is released off the finish targets"
     input: { item_id: goal.id, scheduled_on: null },
   });
   expect(radar.queryByRole("button", { name: "Undo" })).toBeNull();
+});
+
+const bubblePoint = (bubble: HTMLElement) => {
+  const [x, y] = bubble
+    .parentElement!.getAttribute("transform")!
+    .slice("translate(".length, -1)
+    .split(",")
+    .map(Number);
+  return { x, y };
+};
+
+it("cancels a radar move with Escape and ignores the release that follows", async () => {
+  const question = {
+    ...tomorrow,
+    id: "question",
+    title: "Client call",
+    status: "blocked",
+    handoff: 1,
+    handoff_note: "Should we call the client today?",
+    handoff_options: '["Yes","No"]',
+    agent_name: "claude-code",
+  } as const;
+  await openWorkspace(undefined, {
+    ...snapshot,
+    items: [...snapshot.items, question],
+  });
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  const socket = TestSocket.current;
+  const card = radar
+    .getByRole("region", { name: `Question about ${question.title}` })
+    .closest<HTMLElement>(".field-questions")!;
+  const bubble = radar.getByRole("button", { name: goal.title });
+  const origin = bubble.parentElement!.getAttribute("transform");
+  const drag = startRadarFinishDrag(bubble);
+  const point = cellPoint(
+    { band: "backlog", sector: 0, sectors: 1 },
+    { angle: 0.5, radius: 0.5 },
+  );
+  drag.move(point);
+  const target = finishTarget("done")!;
+  drag.move(point, [target]);
+  expect(target.dataset.target).toBe("true");
+  expect(card.dataset.finishing).toBe("true");
+  expect(bubble.parentElement!.getAttribute("transform")).not.toBe(origin);
+  expect(document.querySelector(".radar-drag-hint")?.textContent).toBe(
+    "Esc to cancel",
+  );
+
+  const escape = createEvent.keyDown(bubble, { key: "Escape" });
+  fireEvent(bubble, escape);
+  expect(escape.defaultPrevented).toBe(true);
+  // Everything is back as if the drag never happened.
+  expect(finishTarget("done")).toBeNull();
+  expect(bubble.parentElement!.getAttribute("transform")).toBe(origin);
+  expect(bubble.dataset.finishing).toBeUndefined();
+  expect(document.querySelector(".radar-drop-cell")).toBeNull();
+  expect(document.querySelector(".radar-origin")).toBeNull();
+  expect(document.querySelector(".radar-drag-hint")).toBeNull();
+  expect(card.dataset.finishing).toBeUndefined();
+  expect(card.hasAttribute("inert")).toBe(false);
+  expect(radar.getByText("Move cancelled.")).toBeTruthy();
+
+  // The release neither drops nor counts as a click.
+  drag.release(point, [target]);
+  fireEvent.click(bubble, { detail: 1 });
+  expect(socket.send).not.toHaveBeenCalled();
+  expect(screen.queryByRole("region", selectedRegion)).toBeNull();
+  expect(finishTarget("done")).toBeNull();
+});
+
+it("cancels nesting with Escape", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  const drag = startRadarFinishDrag(
+    radar.getByRole("button", { name: child.title }),
+  );
+  const other = bubblePoint(
+    radar.getByRole("button", { name: tomorrow.title }),
+  );
+  drag.move({ x: other.x + 30, y: other.y });
+  drag.move(other);
+  expect(document.querySelector(".radar-nest-target")).toBeTruthy();
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  expect(document.querySelector(".radar-nest-target")).toBeNull();
+  drag.release(other);
+  expect(TestSocket.current.send).not.toHaveBeenCalled();
+});
+
+it("keeps the split band's Escape for when no drag is in progress", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  const band = radar.getByRole("button", { name: "This week" });
+  fireEvent.click(band);
+  expect(band.getAttribute("aria-expanded")).toBe("true");
+  const bubble = radar.getByRole("button", { name: goal.title });
+  const drag = startRadarFinishDrag(bubble);
+  const point = cellPoint(
+    { band: "backlog", sector: 0, sectors: 1 },
+    { angle: 0.5, radius: 0.5 },
+  );
+  drag.move(point);
+  fireEvent.keyDown(bubble, { key: "Escape" });
+  // Only the drag is cancelled.
+  expect(band.getAttribute("aria-expanded")).toBe("true");
+  drag.release(point);
+  expect(TestSocket.current.send).not.toHaveBeenCalled();
+  fireEvent.keyDown(bubble, { key: "Escape" });
+  expect(band.getAttribute("aria-expanded")).toBe("false");
+});
+
+it("writes nothing when a moved bubble is dropped back on its origin", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  const bubble = radar.getByRole("button", { name: goal.title });
+  const start = bubblePoint(bubble);
+  const drag = startRadarFinishDrag(bubble);
+  drag.move(
+    cellPoint(
+      { band: "backlog", sector: 0, sectors: 1 },
+      { angle: 0.5, radius: 0.5 },
+    ),
+  );
+  const outline = document.querySelector<SVGGElement>(".radar-origin")!;
+  expect(outline.getAttribute("aria-hidden")).toBe("true");
+  expect(outline.getAttribute("transform")).toBe(
+    `translate(${start.x},${start.y})`,
+  );
+  expect(outline.dataset.target).toBe("false");
+  // Back within the original outline, though not exactly where it started.
+  const home = { x: start.x + 2, y: start.y - 1 };
+  drag.move(home);
+  expect(outline.dataset.target).toBe("true");
+  expect(document.querySelector(".radar-drop-cell")).toBeNull();
+  expect(document.querySelector(".radar-nest-target")).toBeNull();
+  drag.release(home);
+  expect(TestSocket.current.send).not.toHaveBeenCalled();
+  expect(document.querySelector(".radar-origin")).toBeNull();
+  expect(document.querySelector(".radar-tooltip")).toBeNull();
+});
+
+it("cancels a priority resize with Escape", async () => {
+  await openWorkspace();
+  const radar = within(screen.getByRole("region", { name: "Attention field" }));
+  fireEvent.click(radar.getByRole("button", { name: goal.title }));
+  fireEvent.click(radar.getByRole("button", { name: tomorrow.title }));
+  const handle = radar.getByRole("slider", {
+    name: `Priority for ${tomorrow.title}`,
+  });
+  Object.defineProperty(
+    handle.closest(".radar-node")!.parentElement,
+    "getScreenCTM",
+    {
+      configurable: true,
+      value: () => null,
+    },
+  );
+  Object.defineProperty(handle.closest("svg")!, "setPointerCapture", {
+    configurable: true,
+    value: vi.fn(),
+  });
+  const translate = (element: Element) =>
+    element.getAttribute("transform")!.slice(10, -1).split(",").map(Number);
+  const [x, y] = translate(handle.parentElement!);
+  const [dx, dy] = translate(handle);
+  const press = {
+    pointerId: 1,
+    pointerType: "mouse",
+    isPrimary: true,
+    button: 0,
+    clientX: x + dx,
+    clientY: y + dy,
+  };
+  const pull = { ...press, clientX: press.clientX + 40 };
+  fireEvent.pointerDown(handle, press);
+  fireEvent.pointerMove(handle, pull);
+  expect(document.querySelector(".radar-drag-hint")).toBeTruthy();
+  fireEvent.keyDown(handle, { key: "Escape" });
+  expect(document.querySelector(".radar-drag-hint")).toBeNull();
+  fireEvent.pointerUp(handle, pull);
+  expect(TestSocket.current.send).not.toHaveBeenCalled();
+  // The item stays selected.
+  expect(screen.getByRole("region", selectedRegion)).toBeTruthy();
+});
+
+it("does not start a new item from the release after an Escape cancel", async () => {
+  const { draft, radar, svg } = await openStartRadar();
+  Object.defineProperty(svg, "setPointerCapture", {
+    configurable: true,
+    value: vi.fn(),
+  });
+  const bubble = radar.getByRole("button", { name: notes.title });
+  const start = bubblePoint(bubble);
+  const pointer = { pointerId: 1, isPrimary: true, button: 0 };
+  const away = cellPoint(
+    { band: "backlog", sector: 1, sectors: 3 },
+    { angle: 0.5, radius: 0.5 },
+  );
+  fireEvent.pointerDown(bubble, {
+    ...pointer,
+    clientX: start.x,
+    clientY: start.y,
+  });
+  fireEvent.pointerMove(svg, { ...pointer, clientX: away.x, clientY: away.y });
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  fireEvent.pointerUp(svg, { ...pointer, clientX: away.x, clientY: away.y });
+  fireEvent.click(svg, { clientX: away.x, clientY: away.y, detail: 1 });
+  expect(draft.value).toBe("");
+  expect(screen.queryByRole("region", selectedRegion)).toBeNull();
+  expect(TestSocket.current.send).not.toHaveBeenCalled();
 });
 
 it.each([
@@ -3576,6 +3787,40 @@ it("commits Board pointer drops through the workspace socket", async () => {
     drag(active.title, cell(product.id, "later"));
     expect(socket.send).toHaveBeenCalledTimes(4);
     expect(screen.getByText(/Active can’t move to Later/)).toBeTruthy();
+  } finally {
+    if (hitTest) Object.defineProperty(document, "elementFromPoint", hitTest);
+    else Reflect.deleteProperty(document, "elementFromPoint");
+  }
+});
+
+it("cancels a Board drag with Escape", async () => {
+  await openWorkspace(undefined, { ...snapshot, items: [goal] });
+  switchLens("Board");
+  const board = screen.getByRole("table", { name: "Projects by time band" });
+  const target = board.querySelector(
+    `[data-board-project="${project.id}"][data-board-band="later"]`,
+  )!;
+  const hitTest = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+  Object.defineProperty(document, "elementFromPoint", {
+    configurable: true,
+    value: () => target,
+  });
+  try {
+    const handle = within(board).getByRole("button", {
+      name: `Move ${goal.title}`,
+    });
+    Object.defineProperty(handle, "setPointerCapture", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const pointer = { pointerId: 1, pointerType: "mouse", button: 0 };
+    fireEvent.pointerDown(handle, { ...pointer, clientX: 50, clientY: 100 });
+    fireEvent.pointerMove(handle, { ...pointer, clientX: 50, clientY: 45 });
+    const escape = createEvent.keyDown(handle, { key: "Escape" });
+    fireEvent(handle, escape);
+    expect(escape.defaultPrevented).toBe(true);
+    fireEvent.pointerUp(handle, { ...pointer, clientX: 50, clientY: 45 });
+    expect(TestSocket.current.send).not.toHaveBeenCalled();
   } finally {
     if (hitTest) Object.defineProperty(document, "elementFromPoint", hitTest);
     else Reflect.deleteProperty(document, "elementFromPoint");

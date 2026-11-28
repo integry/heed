@@ -31,7 +31,7 @@ import {
 import type { CanvasItem } from "@heedwork/core";
 import type { Project, RadarBand } from "@heedwork/core";
 import type { LensProps } from "./lenses";
-import { RadarBubble, type Bubble } from "./RadarBubble";
+import { Outline, RadarBubble, type Bubble } from "./RadarBubble";
 import { itemRing } from "./workspace-view";
 import {
   bubbleRadius,
@@ -82,18 +82,31 @@ type Gesture = {
   start: Point;
   origin: Point;
   radius: number;
+  /** Whether a touch drives the gesture: no keyboard, so no Escape hint. */
+  touch: boolean;
 };
-type Preview = { id: string; point: Point; priority?: number };
+type Preview = {
+  id: string;
+  point: Point;
+  priority?: number;
+  /** A move with the pointer back inside the bubble's original outline. */
+  home?: boolean;
+  touch?: boolean;
+};
 type Subring = RadarSubgroup & RadialBounds;
 type FinishStatus = "done" | "cancelled";
-/** A message under the radar; `undo` names an item whose finish can be undone. */
-type DropMessage = { text: string; undo?: string };
+/**
+ * A message under the radar; `undo` names an item whose finish can be undone.
+ * A `brief` message clears itself after a moment.
+ */
+type DropMessage = { text: string; undo?: string; brief?: boolean };
 
 const FINISH_TARGETS = [
   { status: "done", glyph: "✓", label: "Done" },
   { status: "cancelled", glyph: "⊘", label: "Won't do" },
 ] as const;
 const FINISH_MESSAGE_MS = 8000;
+const BRIEF_MESSAGE_MS = 2500;
 const GOAL_CHIP_HALF_HEIGHT = 18;
 
 const ignore = () => {};
@@ -366,8 +379,22 @@ export function RadarLens({
     [allProjects],
   );
   const [preview, setPreview] = useState<Preview | null>(null);
-  const clearPreview = useCallback(() => setPreview(null), []);
-  const drag = useCanvasDrag<Gesture>(clearPreview);
+  // The finish target under the pointer while moving a bubble.
+  const [finishTarget, setFinishTarget] = useState<FinishStatus | null>(null);
+  // A breadcrumb under the pointer while dragging inside an item: an item ID,
+  // or "" for the top level.
+  const [crumbTarget, setCrumbTarget] = useState<string | null>(null);
+  const [dropMessage, setDropMessage] = useState<DropMessage | null>(null);
+  const clearPreview = useCallback(() => {
+    setPreview(null);
+    setFinishTarget(null);
+    setCrumbTarget(null);
+  }, []);
+  const cancelled = useCallback(
+    () => setDropMessage({ text: "Move cancelled.", brief: true }),
+    [],
+  );
+  const drag = useCanvasDrag<Gesture>(clearPreview, cancelled);
   const { cancel: cancelGesture, start: startDrag } = drag;
   const [tooltip, setTooltip] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -386,19 +413,16 @@ export function RadarLens({
     observer.observe(chart.current);
     return () => observer.disconnect();
   }, []);
-  const [dropMessage, setDropMessage] = useState<DropMessage | null>(null);
   useEffect(() => {
-    if (!dropMessage?.undo) return;
-    const timer = setTimeout(() => setDropMessage(null), FINISH_MESSAGE_MS);
+    if (!dropMessage?.undo && !dropMessage?.brief) return;
+    const timer = setTimeout(
+      () => setDropMessage(null),
+      dropMessage.undo ? FINISH_MESSAGE_MS : BRIEF_MESSAGE_MS,
+    );
     return () => clearTimeout(timer);
   }, [dropMessage]);
-  // The finish target under the pointer while moving a bubble.
-  const [finishTarget, setFinishTarget] = useState<FinishStatus | null>(null);
   // The zoom transform at the start of a gesture, for the drag layer.
   const [dragTransform, setDragTransform] = useState<string>();
-  // A breadcrumb under the pointer while dragging inside an item: an item ID,
-  // or "" for the top level.
-  const [crumbTarget, setCrumbTarget] = useState<string | null>(null);
   // The empty spot clicked to start a new item, and the prefix it gave.
   const [start, setStart] = useState<{
     point: Point;
@@ -785,6 +809,7 @@ export function RadarLens({
           start: scenePoint(event),
           origin: bubble.point,
           radius: bubble.radius,
+          touch: event.pointerType === "touch",
         },
         svg.current ?? undefined,
       );
@@ -802,7 +827,16 @@ export function RadarLens({
       y: active.origin.y + cursor.y - active.start.y,
     };
     if (active.kind === "move")
-      return { bubble, next: { id: active.id, point } };
+      return {
+        bubble,
+        next: {
+          id: active.id,
+          point,
+          // Released inside its original outline, a move is cancelled.
+          home: distance(cursor, active.origin) <= active.radius,
+          touch: active.touch,
+        },
+      };
     const radius =
       active.radius +
       distance(cursor, active.origin) -
@@ -813,6 +847,7 @@ export function RadarLens({
         id: active.id,
         point: active.origin,
         priority: priorityForRadius(radius / bubble.scale),
+        touch: active.touch,
       },
     };
   }
@@ -980,6 +1015,8 @@ export function RadarLens({
       finishItem(item, finishing);
       return;
     }
+    // Dropped back on its origin: nothing moves.
+    if (next.home) return;
     const dropTime = Math.max(now, Date.now());
     const crumb = next.priority === undefined ? crumbAt(event) : null;
     const target =
@@ -1061,6 +1098,11 @@ export function RadarLens({
   }
 
   const moving = preview && preview.priority === undefined;
+  // The pointer is back over the moved bubble's original outline.
+  const home = Boolean(moving && preview.home);
+  const origin = moving
+    ? bubbles.find(({ item }) => item.id === preview.id)
+    : undefined;
   // The targets finish the bubble being moved or, at rest, the selected item;
   // a priority resize offers neither.
   const finishId = moving ? preview.id : preview ? null : selectedId;
@@ -1108,7 +1150,7 @@ export function RadarLens({
     );
   }
   const nestCandidate =
-    moving && reparent && crumbTarget === null && !finishing
+    moving && reparent && crumbTarget === null && !finishing && !home
       ? nestTarget(preview.point, displayed, preview.id)
       : undefined;
   const nestBlocked =
@@ -1122,11 +1164,12 @@ export function RadarLens({
   const liftsOut =
     Boolean(goal && moving && reparent && crumbTarget === null) &&
     !finishing &&
+    !home &&
     !nestCandidate &&
     distance(preview!.point, CENTER) > GOAL_RADIUS &&
     !goalDropTarget(preview!.point);
   let highlight: Cell | null = null;
-  if (!goal && moving && !nestCandidate && !finishing) {
+  if (!goal && moving && !nestCandidate && !finishing && !home) {
     const { cell } = dropTarget(preview.point);
     const item = bubbleById.get(preview.id)?.item;
     if (
@@ -1338,7 +1381,9 @@ export function RadarLens({
                       })}
                       className="radar-goal-drop"
                       data-target={
-                        !finishing && goalDropTarget(preview.point) === band
+                        !finishing &&
+                        !home &&
+                        goalDropTarget(preview.point) === band
                       }
                     >
                       <rect
@@ -1416,6 +1461,20 @@ export function RadarLens({
                 }
               />
             ))}
+            {origin && (
+              // Where the moved bubble came from: dropping it back cancels.
+              <g
+                aria-hidden="true"
+                className="radar-origin"
+                data-target={home && !finishing}
+                transform={translate(origin.point)}
+              >
+                <Outline
+                  shape={itemShape(readTags(origin.item.tags), tagShapes)}
+                  r={origin.radius}
+                />
+              </g>
+            )}
             {!goal && (
               <>
                 {subrings.map((group) => {
@@ -1495,6 +1554,15 @@ export function RadarLens({
           </g>
         </svg>
         {showFinish && finishTargets(finishSubject!)}
+        {preview && !preview.touch && (
+          <p
+            className="radar-drag-hint"
+            data-above-finish={showFinish}
+            aria-hidden="true"
+          >
+            Esc to cancel
+          </p>
+        )}
         {finishing && bubbleById.get(preview!.id) && (
           // Keeps the finishing bubble visible above the finish targets.
           <div className="radar-drag-layer" aria-hidden="true" inert>

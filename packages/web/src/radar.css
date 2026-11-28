@@ -555,6 +555,47 @@
   stroke: var(--muted);
 }
 
+/* Where a moved bubble came from; dropping it back there cancels the move. */
+.radar-origin {
+  fill: none;
+  stroke: var(--muted);
+  stroke-opacity: 0.6;
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+
+.radar-origin > * {
+  vector-effect: non-scaling-stroke;
+}
+
+.radar-origin[data-target="true"] {
+  fill: color-mix(in srgb, var(--muted) 14%, transparent);
+  stroke: var(--text);
+  stroke-opacity: 0.85;
+  stroke-width: 2px;
+}
+
+/* A fine pointer's drag can be cancelled with Escape. */
+.radar-drag-hint {
+  position: absolute;
+  inset: auto 10px 10px auto;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  pointer-events: none;
+  user-select: none;
+}
+
+.radar-drag-hint[data-above-finish="true"] {
+  bottom: calc(var(--radar-finish-bottom) + 68px + 6px);
+}
+
+.radar-chart:has(.radar-finish[data-goal="true"])
+  .radar-drag-hint[data-above-finish="true"] {
+  bottom: calc(var(--radar-finish-bottom) + 56px + 6px);
+}
+
 /* Inside an item, dropping outside its circle lifts the item one level. */
 .radar-goal-field[data-lift="true"] {
   stroke: var(--live);

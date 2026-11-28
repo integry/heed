@@ -61,11 +61,15 @@ function DependencyGraph({
   }, []);
 
   useEffect(() => {
+    // Capture phase, so a drag's Escape reaches no other Escape handling.
     function onEscape(event: KeyboardEvent) {
-      if (event.key === "Escape" && gesture.current) cancelConnection();
+      if (event.key !== "Escape" || !gesture.current) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      cancelConnection();
     }
-    window.addEventListener("keydown", onEscape);
-    return () => window.removeEventListener("keydown", onEscape);
+    window.addEventListener("keydown", onEscape, true);
+    return () => window.removeEventListener("keydown", onEscape, true);
   }, [cancelConnection]);
   const goal = goalId ? filtered.get(goalId) : undefined;
   const graph = useMemo(() => {

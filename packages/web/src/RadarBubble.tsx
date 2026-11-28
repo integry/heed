@@ -106,7 +106,7 @@ function BubbleCallout({
 }
 
 /** Circles stay circle elements; other shapes are outlines of equal area. */
-function Outline({
+export function Outline({
   shape,
   r,
   ...rest
